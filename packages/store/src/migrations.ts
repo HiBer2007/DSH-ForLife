@@ -592,6 +592,56 @@ CREATE INDEX IF NOT EXISTS idx_cache_metrics_unexplained ON cache_metrics (cache
 
 const m0010Checksum = createHash('sha256').update(m0010.sql).digest('hex')
 
+/**
+ * 迁移 11：时间读数与漂移遥测（阶段 4 交付物 7/9）。
+ *
+ *  - `time_readings`：每一次给模型的权威读数。有了它才能回答验收里的两个问题：
+ *    "最新读数的年龄是多少"、"压缩后/唤醒后/长空闲后**是不是真的**都有一条新鲜读数"。
+ *  - `time_drift`：从模型输出里抓到的**时间表述与真实时间的偏差**。
+ *    这把"时间幻觉"从感觉变成可看的曲线 —— 用户要的正是"可测"，否则改完不知道有没有变好。
+ */
+const m0011 = {
+  version: 11,
+  name: '0011_time_readings',
+  sql: `
+CREATE TABLE IF NOT EXISTS time_readings (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT,
+  conversation_key TEXT,
+  at           TEXT NOT NULL,          -- 读数时刻（UTC ISO）
+  reason       TEXT NOT NULL,          -- turn-first | interval | date-boundary | after-compaction | after-wake | after-idle | manual
+  timezone     TEXT NOT NULL,
+  text         TEXT NOT NULL,          -- 实际注入给模型的文本（可回放）
+  token_count  INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_time_readings_at ON time_readings (at DESC);
+CREATE INDEX IF NOT EXISTS idx_time_readings_session ON time_readings (session_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_time_readings_reason ON time_readings (reason, at DESC);
+
+CREATE TABLE IF NOT EXISTS time_drift (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT,
+  at           TEXT NOT NULL,          -- 发现时刻
+  claimed      TEXT NOT NULL,          -- 模型说的时间表述
+  claimed_at   TEXT,                   -- 解析出来的时刻
+  actual_at    TEXT NOT NULL,          -- 真实时刻
+  drift_ms     INTEGER,                -- 偏差（正 = 模型说的时间偏晚）
+  excerpt      TEXT,                   -- 上下文片段（便于人判断是不是误报）
+  severity     TEXT NOT NULL DEFAULT 'info' -- info | warn | bad
+);
+
+CREATE INDEX IF NOT EXISTS idx_time_drift_at ON time_drift (at DESC);
+CREATE INDEX IF NOT EXISTS idx_time_drift_severity ON time_drift (severity, at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0011.sql)
+  },
+} as const
+
+const m0011Checksum = createHash('sha256').update(m0011.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -654,10 +704,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0010Checksum,
     up: m0010.up,
   },
+  {
+    version: m0011.version,
+    name: m0011.name,
+    checksum: m0011Checksum,
+    up: m0011.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

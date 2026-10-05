@@ -77,3 +77,16 @@ export {
 } from './cache-metrics.ts'
 export type { CacheMetricRow } from './cache-metrics.ts'
 
+
+export {
+  lastTimeReading,
+  listTimeDrift,
+  listTimeReadings,
+  recordTimeDrift,
+  recordTimeReading,
+  timeDriftStats,
+  timeReadingStats,
+  timeReadingTokens,
+} from './time-readings.ts'
+export type { TimeReadingRow } from './time-readings.ts'
+

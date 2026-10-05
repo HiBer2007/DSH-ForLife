@@ -55,3 +55,29 @@ export {
 } from './cache-metrics.ts'
 export type { CacheCurvePoint, CacheSummary, PrefixChangeEvent, UsageSample } from './cache-metrics.ts'
 
+
+export {
+  dateBounds,
+  decideInjection,
+  defaultClockSettings,
+  describeReason,
+  formatDuration,
+  formatHuman,
+  formatIsoWithOffset,
+  formatRelative,
+  isFresh,
+  readingAgeMs,
+  renderTimeBlock,
+  zonedParts,
+} from './clock.ts'
+export type {
+  ClockReading,
+  ClockSettings,
+  DateBounds,
+  InjectionContext,
+  InjectionDecision,
+  InjectionReason,
+  TimeBlockInput,
+} from './clock.ts'
+
+
