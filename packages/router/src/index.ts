@@ -45,3 +45,53 @@ export type {
 export { reviewCases, summarizeReview } from './review.ts'
 export type { ReviewCase, SuggestionKind, TuningSuggestion } from './review.ts'
 
+
+export {
+  ACCELERATOR_BACKENDS,
+  candidateModels,
+  emptyDeviceProbe,
+  ENDPOINT_TYPES,
+  planBackend,
+  RUN_MODES,
+  suggestBackend,
+  suggestSizing,
+  validateEndpoint,
+} from './endpoints.ts'
+export type {
+  AcceleratorBackend,
+  Architecture,
+  BackendPlan,
+  BackendPlanInput,
+  CandidateModel,
+  DeviceProbe,
+  EndpointHealth,
+  EndpointLimits,
+  EndpointType,
+  InferenceEndpoint,
+  ModelCapability,
+  Quantization,
+  RunMode,
+  SizingAdvice,
+  ValidationIssue,
+} from './endpoints.ts'
+
+export { checkRemoteGuard, estimateContainerMemoryMb, planDeploy, runDeploy } from './deploy.ts'
+export type {
+  DeployExecutor,
+  DeployPlan,
+  DeployResult,
+  DeploySpec,
+  DeployStep,
+  DeployStepKind,
+  DeployTarget,
+  DeployTargetKind,
+  ExternalApiTarget,
+  LocalDockerTarget,
+  PreflightResult,
+  RemoteGuard,
+  RemoteSshTarget,
+  StepResult,
+} from './deploy.ts'
+
+export { fileSha256, resumableDownload, sameSha256 } from './download.ts'
+export type { DownloadOptions, DownloadProgress, DownloadResult } from './download.ts'
