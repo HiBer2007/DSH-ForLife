@@ -116,6 +116,12 @@
     "sticker.autoFetch.perTurnLimit": { "v": 3, "src": "EXECUTION_PLAN §2.17.8" },
     "sticker.capacity.count": { "v": 2000, "src": "EXECUTION_PLAN §2.9" },
     "sticker.capacity.bytes": { "v": 2147483648, "src": "EXECUTION_PLAN §2.9" },
+    "sticker.learnOthers": { "v": true, "src": "EXECUTION_PLAN §2.9.1（用户要求：别人的表情也索引）" },
+    "sticker.sendOthers": { "v": false, "src": "EXECUTION_PLAN §2.9.1（只学习不主动转发）" },
+
+    "media.fingerprint.enabled": { "v": true, "src": "EXECUTION_PLAN §2.9.1（用户要求：哈希索引避免频繁调视觉）" },
+    "vision.ocr.isHintOnly": { "v": true, "src": "EXECUTION_PLAN §2.9.2（用户要求：不完全依赖 OCR）" },
+    "vision.ocr.requireReviewFor": { "v": ["amount", "time", "command", "person_name"], "src": "EXECUTION_PLAN §2.9.2" },
 
     "media.capacity.count": { "v": 2000, "src": "EXECUTION_PLAN §2.9（私有媒体库）" },
     "media.capacity.bytes": { "v": 5368709120, "src": "EXECUTION_PLAN §2.9（私有媒体库）" },
