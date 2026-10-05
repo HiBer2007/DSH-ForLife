@@ -81,3 +81,7 @@ export type {
 } from './clock.ts'
 
 
+
+export { compareRegression, scoreAnswer, scoreRegression, timeQuestions } from './time-regression.ts'
+export type { QuestionScore, RegressionScore, TimeQuestion } from './time-regression.ts'
+
