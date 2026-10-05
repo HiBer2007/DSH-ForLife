@@ -1,3 +1,9 @@
 packages:
   - 'packages/*'
   - 'profiles/*'
+
+# 供应链防护：默认拦截依赖的 postinstall 脚本。
+# esbuild 必须跑它自己的脚本才能装平台二进制（vite 的构建内核），所以显式放行它一个。
+# 除它之外**不要**随意加白名单：每加一个就是让第三方代码在安装期执行。
+allowBuilds:
+  esbuild: true

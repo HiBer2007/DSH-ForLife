@@ -33,5 +33,8 @@
     "scripts/**/*.ts",
     "tests/**/*.ts"
   ],
-  "exclude": ["node_modules", "**/node_modules", "research", ".runtime"]
+  // 注意：`packages/admin-ui` 是**前端包**（Vue + Vite），它有自己的 tsconfig
+  // （需要 DOM lib 与 bundler 解析）。根配置只管 Node 侧代码，所以把它排除掉 ——
+  // 否则根 typecheck 会去解析 .vue 与 DOM API 而失败。
+  "exclude": ["node_modules", "**/node_modules", "research", ".runtime", "packages/admin-ui"]
 }

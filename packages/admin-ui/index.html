@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- 手机端：状态栏配色跟随主题，避免深色下出现白条 -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f8fa" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115" />
+    <meta name="color-scheme" content="light dark" />
+    <title>ForLife 控制台</title>
+    <script>
+      // 主题必须在首屏之前定下来，否则会闪一下白（FOUC）。
+      // 三种取值：system（跟随系统）/ light / dark；用 data-theme 表达，CSS 侧统一处理。
+      ;(() => {
+        const KEY = 'forlife-theme'
+        let mode = 'system'
+        try {
+          const saved = localStorage.getItem(KEY)
+          if (saved === 'light' || saved === 'dark' || saved === 'system') mode = saved
+        } catch {
+          // 隐私模式下 localStorage 会抛，跟随系统即可
+        }
+        document.documentElement.dataset.theme = mode
+        const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
