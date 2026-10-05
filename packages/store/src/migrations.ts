@@ -820,6 +820,58 @@ CREATE INDEX IF NOT EXISTS idx_mode_audit_endpoint ON endpoint_mode_audit (endpo
 
 const m0014Checksum = createHash('sha256').update(m0014.sql).digest('hex')
 
+/**
+ * 迁移 15：图片描述缓存与视觉调用计数（阶段 5 交付物 8，§2.7.2）。
+ *
+ * 两张表各解决一个验收项：
+ * - `image_descriptions`：按 `attachmentId`（`sha256:<64hex>`，内容寻址）缓存描述。
+ *   **同一张图重复出现 ⇒ 第二次 0 次视觉调用**（验收项）。
+ * - `vision_call_log`：每次真的调用了视觉模型就记一行 ——
+ *   "视觉调用计数"这条验收要能数得出来，而不是靠感觉。
+ *
+ * `ocr_text` 单独存一列（不塞进 description）：因为 OCR 是**提示不是结论**，
+ * 上层要能区分"模型看到的画面"与"OCR 认出来的字"，
+ * 才能在重要字段（金额/时间/命令/人名）上要求视觉复核。
+ */
+const m0015 = {
+  version: 15,
+  name: '0015_image_descriptions',
+  sql: `
+CREATE TABLE IF NOT EXISTS image_descriptions (
+  attachment_id TEXT PRIMARY KEY,     -- sha256:<64hex>（内容寻址 ⇒ 天然去重）
+  scene         TEXT NOT NULL,        -- 画面内容
+  ocr_text      TEXT,                 -- 文字（OCR）：**提示，不是结论**
+  uncertain     TEXT,                 -- 不确定之处（模型自己说的）
+  description   TEXT NOT NULL,        -- 拼好的完整描述（注入用）
+  provider      TEXT,
+  model         TEXT,
+  vision_calls  INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vision_call_log (
+  id            TEXT PRIMARY KEY,
+  at            TEXT NOT NULL,
+  attachment_id TEXT NOT NULL,
+  provider      TEXT,
+  model         TEXT,
+  reason        TEXT NOT NULL,        -- bridge | verify-important-fields | tool
+  ok            INTEGER NOT NULL DEFAULT 1,
+  latency_ms    INTEGER,
+  note          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_vision_calls_at ON vision_call_log (at DESC);
+CREATE INDEX IF NOT EXISTS idx_vision_calls_attachment ON vision_call_log (attachment_id, at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0015.sql)
+  },
+} as const
+
+const m0015Checksum = createHash('sha256').update(m0015.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -906,10 +958,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0014Checksum,
     up: m0014.up,
   },
+  {
+    version: m0015.version,
+    name: m0015.name,
+    checksum: m0015Checksum,
+    up: m0015.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

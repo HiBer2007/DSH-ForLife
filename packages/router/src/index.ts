@@ -106,3 +106,30 @@ export type {
   SwitchModeResult,
 } from './mode-switch.ts'
 
+
+export {
+  decideImageRoute,
+  decideVerification,
+  decideVisionCall,
+  decideVisionCallForRow,
+  describePrompt,
+  findImportantFields,
+  markMemorySource,
+  parseDescription,
+  renderDescriptionBlock,
+  verificationPrompt,
+} from './vision.ts'
+export type {
+  DescriptionBlockInput,
+  DescriptionTemplate,
+  ImageRoute,
+  ImageRouteDecision,
+  ImportantField,
+  ImportantFieldKind,
+  InputModalities,
+  MemorySourceMark,
+  ParsedDescription,
+  VerificationDecision,
+  VisionCallCounter,
+} from './vision.ts'
+

@@ -134,3 +134,14 @@ export {
 } from './endpoints.ts'
 export type { EndpointInput, EndpointRow } from './endpoints.ts'
 
+
+export {
+  getImageDescription,
+  lastVisionCallAt,
+  recordVisionCall,
+  saveImageDescription,
+  visionCallsFor,
+  visionStats,
+} from './vision.ts'
+export type { ImageDescriptionRow } from './vision.ts'
+
