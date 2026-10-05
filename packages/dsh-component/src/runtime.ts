@@ -399,6 +399,25 @@ export class MemoryRuntime {
     return row?.conversation_key
   }
 
+  /**
+   * QQ 传输层状态（面板显示"QQ 端连没连上"）。
+   *
+   * 传输层活在网关进程里，而面板接口活在 DSH 进程里 —— 所以这里读的是**共享库里的事实**：
+   * 最后一次入站/出站的时间。比"内存里的连接标志"更诚实：
+   * 网关挂了但 DSH 还活着时，内存标志会是错的，而库里的时间戳不会撒谎。
+   */
+  transportStatus(): { readonly connectedEvidence: boolean; readonly lastInboundAt: string | null; readonly lastOutboundAt: string | null } {
+    const inbound = this.db.prepare('SELECT max(received_at) AS at FROM qq_inbox').get() as { at: string | null }
+    const outbound = this.db.prepare('SELECT max(sent_at) AS at FROM qq_outbox').get() as { at: string | null }
+    const at = (value: string | null): string | null => (value === null ? null : value)
+    const recent = (value: string | null): boolean => value !== null && Date.now() - Date.parse(value) < 300_000
+    return {
+      connectedEvidence: recent(at(inbound.at)) || recent(at(outbound.at)),
+      lastInboundAt: at(inbound.at),
+      lastOutboundAt: at(outbound.at),
+    }
+  }
+
   /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
   resetCompactionAccounting(): void {
     const now = new Date().toISOString()
@@ -544,6 +563,7 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
 
 
 
