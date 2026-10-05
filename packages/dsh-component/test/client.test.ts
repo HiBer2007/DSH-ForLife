@@ -50,6 +50,11 @@ function loadClientModule(): {
     describePanel: (snapshot: unknown) => PanelNodeLike
     renderPanel: (h: unknown, panel: PanelNodeLike) => unknown
     panelText: (panel: PanelNodeLike) => string
+    QqPanel: () => unknown
+    fetchQqSnapshot: (signal?: AbortSignal) => Promise<Record<string, unknown>>
+    describeQq: (snapshot: unknown, ui?: unknown) => PanelNodeLike
+    postAdminMessage: (text: string, actor?: string) => Promise<Record<string, unknown>>
+    patchWakeRule: (scope: string, condition: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>
   }
   jsxCalls: { type: string; props: unknown }[]
 } {
@@ -119,15 +124,103 @@ test('注册契约：先 slots.inject 等声明，再 register 到 settings.sect
 
   exports.apply(ctx)
 
-  assert.deepEqual(injected, ['settings.section'], '必须用 inject 等槽位声明（直接 register 到未声明槽会抛错）')
-  assert.equal(registered.length, 1)
-  assert.deepEqual(registered[0]?.options, {
+  assert.deepEqual([...new Set(injected)], ['settings.section'], '必须用 inject 等槽位声明（直接 register 到未声明槽会抛错）')
+  // 两个区块：「记忆」看记忆本体，「QQ 与后台」看网关与人类直发通道。
+  // 刻意分别注册而不是塞进一个区块 —— 使用场景不同，混在一起两边都难用。
+  assert.equal(registered.length, 2, '应当注册两个设置区块')
+  const byId = new Map(registered.map((entry) => [String(entry.options['id']), entry]))
+  assert.deepEqual(byId.get('forlife-memory')?.options, {
     name: 'settings.section',
     id: 'forlife-memory',
     order: 60,
     label: '记忆',
   })
-  assert.equal(registered[0]?.component, exports.MemoryPanel, '注册的组件必须是面板本身')
+  assert.deepEqual(byId.get('forlife-qq')?.options, {
+    name: 'settings.section',
+    id: 'forlife-qq',
+    order: 61,
+    label: 'QQ 与后台',
+  })
+  assert.equal(byId.get('forlife-memory')?.component, exports.MemoryPanel, '注册的组件必须是面板本身')
+  assert.equal(byId.get('forlife-qq')?.component, exports.QqPanel)
+})
+
+test('渲染内容：QQ 与后台面板画出积压、轮次、规则与人类直发框', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describeQq({
+    qq: {
+      sessions: 3,
+      inbound: 120,
+      inboundPending: 0,
+      turnsRunning: 1,
+      turnsDeferred: 2,
+      outbox: { pending: 1, sending: 0, sent: 9, failed: 2 },
+      pendingUnread: 5,
+      transport: { connectedEvidence: true, lastInboundAt: '2026-10-05T12:00:00.000Z' },
+    },
+    queue: [
+      { id: 'o1', conversation: 'onebot11:88888', conversationKind: 'group', kind: 'text', status: 'failed', source: 'model', attempt: 2, error: '平台拒绝', sentAt: '2026-10-05T12:00:01.000Z' },
+    ],
+    queueStats: { pending: 1, sending: 0, sent: 9, failed: 2 },
+    turns: [
+      { id: 't1', conversation: 'onebot11:10001', status: 'deferred', tokensIn: 1200, tokensOut: 30, toolCalls: 2, deferReason: '等下载完成', error: null, startedAt: '2026-10-05T12:00:02.000Z' },
+    ],
+    rules: [{ scope: '*', condition: 'group_mention_all', enabled: true, probability: 50, dailyLimit: 0, updatedBy: 'admin' }],
+    pending: [{ id: 'p1', sender_name: '老王', summary: '他们聊了明天的会议', at: '2026-10-05T12:00:03.000Z' }],
+    pendingStats: { unread: 5, total: 9 },
+    chat: [
+      { id: 'c1', role: 'human', actor: 'HiBer2007', text: '看看今天的记忆情况', handled: false },
+      { id: 'c2', role: 'model', text: '今天记了 3 条', handled: true },
+    ],
+  })
+  const all = texts(panel).join(' ')
+  for (const expected of [
+    '会话',
+    '3',
+    '入站总数',
+    '120',
+    '挂起轮次',
+    '2',
+    '出站队列：待发 1',
+    'onebot11:88888',
+    '群',
+    '平台拒绝',
+    '挂起',
+    '等下载完成',
+    'group_mention_all',
+    '50%',
+    '他们聊了明天的会议',
+    '唯一能直接对它说人话',
+    '看看今天的记忆情况',
+    'HiBer2007',
+    '今天记了 3 条',
+  ]) {
+    assert.ok(all.includes(expected), `面板应显示「${expected}」，实际：${all.slice(0, 300)}`)
+  }
+  assert.ok(all.includes('QQ 端近期有往来'), '连通性用"近期是否有往来"判断（比内存标志诚实）')
+  const types = new Set<string>()
+  const walk = (n: { type: string; children: unknown[] }): void => {
+    types.add(n.type)
+    for (const child of n.children) if (typeof child !== 'string') walk(child as { type: string; children: unknown[] })
+  }
+  walk(panel as unknown as { type: string; children: unknown[] })
+  assert.ok(types.has('textarea'), '人类直发输入框必须在（唯一入口）')
+  assert.ok(types.has('button'), '规则要有可点的调整按钮')
+})
+
+test('渲染内容：QQ 端久无往来时明确警告（不装作正常）', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describeQq({ qq: { transport: { connectedEvidence: false } } })
+  assert.ok(texts(panel).join(' ').includes('近期没有任何 QQ 往来'), '没连上就要说没连上')
+})
+
+test('结构树 → 文本：QQ 面板也能转纯文本（断言与肉眼对账都靠它）', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describeQq({ qq: {}, queue: [], turns: [], rules: [], pending: [], chat: [] })
+  const text = exports.panelText(panel)
+  assert.ok(text.includes('队列是空的'), '空队列给友好提示')
+  assert.ok(text.includes('还没有轮次记录'))
+  assert.ok(text.includes('还没有对话'))
 })
 
 test('渲染内容：指标、指纹、条目表都画出来', () => {

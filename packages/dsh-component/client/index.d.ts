@@ -73,3 +73,72 @@ export declare function describePanel(snapshot: PanelSnapshot): PanelNode
 export declare function renderPanel(h: CreateElement, panel: PanelNode): unknown
 /** 结构树 → 纯文本（便于断言）。 */
 export declare function panelText(panel: PanelNode): string
+
+// ── QQ 与后台（阶段 3）──────────────────────────────────────────────────────
+
+/** 出站队列行（与 `/api/forlife/qq/queue` 一致）。 */
+export interface QqQueueRow {
+  readonly id: string
+  readonly conversation: string
+  readonly conversationKind: 'group' | 'private' | 'temp'
+  readonly kind: string
+  readonly status: 'pending' | 'sending' | 'sent' | 'failed'
+  readonly source: string
+  readonly attempt: number
+  readonly error: string | null
+  readonly sentAt: string
+}
+
+/** QQ 快照（与 `/api/forlife/qq/*`、`/api/forlife/admin/chat` 一致）。 */
+export interface QqSnapshot {
+  readonly qq?: {
+    readonly sessions?: number
+    readonly inbound?: number
+    readonly inboundPending?: number
+    readonly turnsRunning?: number
+    readonly turnsDeferred?: number
+    readonly outbox?: { readonly pending?: number; readonly sending?: number; readonly sent?: number; readonly failed?: number }
+    readonly pendingUnread?: number
+    readonly transport?: {
+      readonly connectedEvidence?: boolean
+      readonly lastInboundAt?: string | null
+      readonly lastOutboundAt?: string | null
+    }
+  }
+  readonly queue?: readonly QqQueueRow[]
+  readonly queueStats?: Record<string, number>
+  readonly turns?: readonly Record<string, unknown>[]
+  readonly rules?: readonly Record<string, unknown>[]
+  readonly pending?: readonly Record<string, unknown>[]
+  readonly pendingStats?: Record<string, number>
+  readonly chat?: readonly {
+    readonly id: string
+    readonly role: 'human' | 'model'
+    readonly actor?: string | null
+    readonly text: string
+    readonly at?: string
+    readonly handled?: boolean
+    readonly error?: string | null
+  }[]
+  readonly error?: string
+}
+
+/** QQ 面板的交互回调。 */
+export interface QqPanelUi {
+  readonly draft?: string
+  readonly onDraft?: (value: string) => void
+  readonly onSend?: () => void
+  readonly busy?: boolean
+  readonly onPatchRule?: (scope: string, condition: string, patch: Record<string, unknown>) => void
+}
+
+/** QQ 与后台面板容器组件。 */
+export declare function QqPanel(): unknown
+/** 取一份 QQ 与后台快照（失败不抛，落进 `error`）。 */
+export declare function fetchQqSnapshot(signal?: AbortSignal): Promise<QqSnapshot>
+/** QQ 数据 → 结构树（纯函数）。 */
+export declare function describeQq(snapshot: QqSnapshot, ui?: QqPanelUi): PanelNode
+/** 往后台对话发一条消息（**唯一的人类直发通道**）。 */
+export declare function postAdminMessage(text: string, actor?: string): Promise<Record<string, unknown>>
+/** 改一条唤醒规则。 */
+export declare function patchWakeRule(scope: string, condition: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>

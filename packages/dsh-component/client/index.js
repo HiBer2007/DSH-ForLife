@@ -58,6 +58,27 @@ window.__ModuleLoader__.load({
       warn: { color: '#d97706' },
       err: { color: '#dc2626' },
       muted: { opacity: 0.6 },
+      button: {
+        padding: '3px 10px',
+        borderRadius: '6px',
+        border: '1px solid var(--dsh-border, #3336)',
+        background: 'transparent',
+        color: 'inherit',
+        fontSize: '12px',
+        cursor: 'pointer',
+      },
+      textarea: {
+        width: '100%',
+        minHeight: '64px',
+        padding: '8px',
+        borderRadius: '6px',
+        border: '1px solid var(--dsh-border, #3336)',
+        background: 'transparent',
+        color: 'inherit',
+        fontFamily: 'inherit',
+        fontSize: '13px',
+        resize: 'vertical',
+      },
     }
 
     /** 构造一个结构节点（与 React 元素树同构，但只是数据）。 */
@@ -217,6 +238,213 @@ window.__ModuleLoader__.load({
       return own.concat(nested).join(' ')
     }
 
+    // ── QQ 与后台（阶段 3）──────────────────────────────────────────────────
+    //
+    // 设计取舍：这一块**不做"漂亮仪表盘"**，只回答四个排障问题：
+    //   ① 现在积压了什么（队列 + 待读池）
+    //   ② 它什么时候醒过、花了多少（轮次时间线）
+    //   ③ 为什么没醒（唤醒规则的当前值 + 判定留痕）
+    //   ④ 我要跟它说话（唯一的人类直发输入框）
+
+    /** 一张状态徽标。 */
+    function statusBadge(text, tone) {
+      const color = tone === 'bad' ? '#dc2626' : tone === 'warn' ? '#d97706' : tone === 'good' ? '#16a34a' : '#2563eb'
+      return node('span', { style: Object.assign({}, styles.badge, { color }) }, [text])
+    }
+
+    /** 出站队列表。 */
+    function queueTable(rows, stats) {
+      const s = stats || {}
+      const head = node('div', { style: styles.metricLabel }, [
+        `出站队列：待发 ${s.pending || 0} · 发送中 ${s.sending || 0} · 已确认 ${s.sent || 0} · 失败 ${s.failed || 0}`,
+      ])
+      if (!rows || rows.length === 0) {
+        return node('div', { style: styles.card }, [head, node('div', { style: styles.muted }, ['队列是空的。'])])
+      }
+      const body = rows.map((row) =>
+        node('tr', {}, [
+          node('td', { style: styles.td }, [statusBadge(row.status, row.status === 'failed' ? 'bad' : row.status === 'sent' ? 'good' : 'warn')]),
+          node('td', { style: styles.td }, [row.conversation, node('span', { style: styles.muted }, [` · ${row.conversationKind === 'group' ? '群' : '私聊'}`])]),
+          node('td', { style: styles.td }, [row.kind]),
+          node('td', { style: styles.td }, [row.source || '—']),
+          node('td', { style: styles.td }, [String(row.attempt || 0)]),
+          node('td', { style: styles.td }, [row.error ? node('span', { style: styles.err }, [row.error]) : node('span', { style: styles.muted }, ['—'])]),
+          node('td', { style: styles.td }, [node('span', { style: styles.mono }, [String(row.sentAt || '').slice(11, 19)])]),
+        ]),
+      )
+      return node('div', { style: styles.card }, [
+        head,
+        node('table', { style: styles.table }, [
+          node('thead', {}, [
+            node('tr', {}, ['状态', '会话', '类型', '来源', '重试', '错误', '时间'].map((t) => node('th', { style: styles.th }, [t]))),
+          ]),
+          node('tbody', {}, body),
+        ]),
+      ])
+    }
+
+    /** 轮次时间线。 */
+    function turnsTable(turns) {
+      if (!turns || turns.length === 0) {
+        return node('div', { style: styles.card }, [node('div', { style: styles.muted }, ['还没有轮次记录。'])])
+      }
+      const body = turns.map((turn) =>
+        node('tr', {}, [
+          node('td', { style: styles.td }, [
+            statusBadge(
+              turn.status === 'done' ? '完成' : turn.status === 'running' ? '进行中' : turn.status === 'deferred' ? '挂起' : '失败',
+              turn.status === 'failed' ? 'bad' : turn.status === 'deferred' ? 'warn' : turn.status === 'done' ? 'good' : undefined,
+            ),
+          ]),
+          node('td', { style: styles.td }, [turn.conversation]),
+          node('td', { style: styles.td }, [`${turn.tokensIn || 0} / ${turn.tokensOut || 0}`]),
+          node('td', { style: styles.td }, [String(turn.toolCalls || 0)]),
+          node('td', { style: styles.td }, [turn.deferReason ? node('span', { style: styles.warn }, [turn.deferReason]) : node('span', { style: styles.muted }, ['—'])]),
+          node('td', { style: styles.td }, [turn.error ? node('span', { style: styles.err }, [turn.error]) : node('span', { style: styles.muted }, ['—'])]),
+          node('td', { style: styles.td }, [node('span', { style: styles.mono }, [String(turn.startedAt || '').slice(11, 19)])]),
+        ]),
+      )
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, [`最近轮次（${turns.length} 条 · token 为 输入/输出）`]),
+        node('table', { style: styles.table }, [
+          node('thead', {}, [
+            node('tr', {}, ['状态', '会话', 'token', '工具', '挂起原因', '错误', '开始'].map((t) => node('th', { style: styles.th }, [t]))),
+          ]),
+          node('tbody', {}, body),
+        ]),
+      ])
+    }
+
+    /** 唤醒规则表（带开关与概率输入）。 */
+    function wakeRulesTable(rules, onPatch) {
+      if (!rules || rules.length === 0) {
+        return node('div', { style: styles.card }, [node('div', { style: styles.muted }, ['没有唤醒规则。'])])
+      }
+      const body = rules.map((rule) =>
+        node('tr', {}, [
+          node('td', { style: styles.td }, [rule.condition]),
+          node('td', { style: styles.td }, [
+            rule.enabled === false ? statusBadge('关闭', 'warn') : statusBadge(`${rule.probability}%`, rule.probability >= 100 ? 'good' : undefined),
+          ]),
+          node('td', { style: styles.td }, [
+            node(
+              'button',
+              {
+                style: Object.assign({}, styles.button, { marginRight: '6px' }),
+                onClick: () => onPatch && onPatch(rule.scope || '*', rule.condition, { enabled: rule.enabled === false }),
+              },
+              [rule.enabled === false ? '开启' : '关闭'],
+            ),
+            node(
+              'button',
+              { style: styles.button, onClick: () => onPatch && onPatch(rule.scope || '*', rule.condition, { probability: rule.probability >= 100 ? 50 : 100 }) },
+              [rule.probability >= 100 ? '降到 50%' : '提到 100%'],
+            ),
+          ]),
+          node('td', { style: styles.td }, [rule.dailyLimit ? `每天 ${rule.dailyLimit} 次` : '不限']),
+          node('td', { style: styles.td }, [node('span', { style: styles.muted }, [rule.updatedBy || 'system'])]),
+        ]),
+      )
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, ['唤醒规则（每个条件互相独立；改动会留痕并报告给模型）']),
+        node('table', { style: styles.table }, [
+          node('thead', {}, [node('tr', {}, ['条件', '当前', '调整', '限额', '最后修改'].map((t) => node('th', { style: styles.th }, [t])))]),
+          node('tbody', {}, body),
+        ]),
+      ])
+    }
+
+    /** 待读池。 */
+    function pendingTable(items, stats) {
+      const unread = stats && stats.unread !== undefined ? stats.unread : (items || []).length
+      if (!items || items.length === 0) {
+        return node('div', { style: styles.card }, [node('div', { style: styles.muted }, [`待读池：0 条未读（它没有错过任何东西）。`])])
+      }
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, [`待读池：${unread} 条未读（没唤醒它，但它能自己读到）`]),
+      ].concat(
+        items.slice(0, 20).map((item) =>
+          node('div', { style: styles.mono }, [`[${String(item.at || '').slice(11, 19)}] ${item.sender_name || item.sender_id || '?'}：${item.summary}`]),
+        ),
+      ))
+    }
+
+    /** 后台对话（**唯一的人类直发入口**）。 */
+    function adminChatBox(messages, state) {
+      const draft = state && state.draft !== undefined ? state.draft : ''
+      const onDraft = state && state.onDraft
+      const onSend = state && state.onSend
+      const busy = state && state.busy
+      const list = (messages || []).map((message) =>
+        node('div', { style: { marginBottom: '6px' } }, [
+          node('span', { style: Object.assign({}, styles.badge, { marginRight: '6px' }) }, [message.role === 'human' ? `我（${message.actor || 'admin'}）` : '它']),
+          node('span', {}, [message.text]),
+          message.error ? node('span', { style: styles.err }, [` （${message.error}）`]) : node('span', {}, []),
+          message.handled === false ? node('span', { style: styles.muted }, [' · 等待它看到']) : node('span', {}, []),
+        ]),
+      )
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, ['后台对话（这是唯一能直接对它说人话的地方；它不会被当成 QQ 消息）']),
+        node('div', { style: { maxHeight: '260px', overflowY: 'auto', margin: '8px 0' } }, list.length > 0 ? list : [node('div', { style: styles.muted }, ['还没有对话。']) ]),
+        node('textarea', {
+          style: styles.textarea,
+          value: draft,
+          placeholder: '输入要说给它听的话，回车发送…',
+          onChange: (event) => onDraft && onDraft(event.target.value),
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              if (onSend) onSend()
+            }
+          },
+        }),
+        node('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', alignItems: 'center' } }, [
+          node('button', { style: styles.button, onClick: () => onSend && onSend(), disabled: busy }, [busy ? '发送中…' : '发送']),
+          busy ? node('span', { style: styles.muted }, ['已入队，等网关交给模型…']) : node('span', {}, []),
+        ]),
+      ])
+    }
+
+    /**
+     * 把 QQ 快照描述成结构树。
+     * @param {object} snapshot - `{ qq, queue, turns, rules, pending, chat, error }`。
+     * @param {object} [ui] - 交互回调（草稿、发送、改规则）。
+     * @returns {object} 结构树。
+     */
+    function describeQq(snapshot, ui) {
+      const qq = snapshot.qq || {}
+      const transport = qq.transport || {}
+      const outbox = qq.outbox || {}
+      const children = [
+        node('div', { style: styles.card }, [
+          node('div', { style: styles.row }, [
+            metric('会话', qq.sessions),
+            metric('入站总数', qq.inbound),
+            metric('未处理入站', qq.inboundPending),
+            metric('进行中轮次', qq.turnsRunning),
+            metric('挂起轮次', qq.turnsDeferred),
+            metric('待发', outbox.pending),
+            metric('失败', outbox.failed),
+            metric('未读待读', qq.pendingUnread),
+          ]),
+          node('div', { style: styles.muted }, [
+            transport.connectedEvidence
+              ? `QQ 端近期有往来（最后入站 ${String(transport.lastInboundAt || '—').slice(0, 19)}）`
+              : '⚠️ 近期没有任何 QQ 往来：要么还没登录，要么网关没在跑',
+          ]),
+        ]),
+      ]
+      if (snapshot.error !== undefined) {
+        children.push(node('div', { style: styles.err }, [`读取失败：${snapshot.error}`]))
+      }
+      children.push(adminChatBox(snapshot.chat || [], ui))
+      children.push(queueTable(snapshot.queue || [], snapshot.queueStats))
+      children.push(turnsTable(snapshot.turns || []))
+      children.push(wakeRulesTable(snapshot.rules || [], ui && ui.onPatchRule))
+      children.push(pendingTable(snapshot.pending || [], snapshot.pendingStats))
+      return node('div', { style: styles.wrap }, children)
+    }
+
     // ── 取数 ────────────────────────────────────────────────────────────────
 
     const API_BASE = '/api/forlife'
@@ -249,6 +477,74 @@ window.__ModuleLoader__.load({
       return snapshot
     }
 
+    // ── 取数（QQ 与后台）────────────────────────────────────────────────────
+
+    /**
+     * 取一份 QQ 与后台的数据快照。
+     * @param {AbortSignal} [signal] - 取消信号。
+     * @returns {Promise<object>} 快照（失败时带 `error`，不抛）。
+     */
+    async function fetchQqSnapshot(signal) {
+      const snapshot = {}
+      const get = async (path) => {
+        const response = await fetch(API_BASE + path, { signal })
+        if (!response.ok) throw new Error(`${path} → HTTP ${response.status}`)
+        return response.json()
+      }
+      try {
+        const [qq, queue, turns, rules, pending, chat] = await Promise.all([
+          get('/qq/state'),
+          get('/qq/queue?limit=30'),
+          get('/qq/turns?limit=30'),
+          get('/qq/wake-rules?scope=*'),
+          get('/qq/pending?limit=20'),
+          get('/admin/chat?limit=50'),
+        ])
+        snapshot.qq = qq
+        snapshot.queue = queue.rows || []
+        snapshot.queueStats = queue.stats || {}
+        snapshot.turns = turns.turns || []
+        snapshot.rules = rules.rules || []
+        snapshot.pending = pending.items || []
+        snapshot.pendingStats = pending.stats || {}
+        snapshot.chat = chat.messages || []
+      } catch (error) {
+        snapshot.error = String(error && error.message ? error.message : error)
+      }
+      return snapshot
+    }
+
+    /**
+     * 往后台对话发一条消息（**唯一的人类直发通道**）。
+     * @param {string} text - 正文。
+     * @param {string} [actor] - 管理员标识。
+     * @returns {Promise<object>} 接口返回。
+     */
+    async function postAdminMessage(text, actor) {
+      const response = await fetch(API_BASE + '/admin/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, actor: actor || 'admin' }),
+      })
+      return response.json()
+    }
+
+    /**
+     * 改一条唤醒规则。
+     * @param {string} scope - 作用域。
+     * @param {string} condition - 条件。
+     * @param {object} patch - 要改的字段。
+     * @returns {Promise<object>} 接口返回。
+     */
+    async function patchWakeRule(scope, condition, patch) {
+      const response = await fetch(API_BASE + '/qq/wake-rules', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(Object.assign({ scope, condition }, patch)),
+      })
+      return response.json()
+    }
+
     // ── 面板组件 ────────────────────────────────────────────────────────────
 
     /** 面板容器：负责取数；画什么完全交给纯函数。 */
@@ -279,8 +575,68 @@ window.__ModuleLoader__.load({
       return renderPanel(jsx, describePanel(snapshot))
     }
 
+    /** QQ 与后台面板：取数 + 交互（改规则、发消息）。 */
+    function QqPanel() {
+      const [snapshot, setSnapshot] = React.useState({})
+      const [loading, setLoading] = React.useState(true)
+      const [draft, setDraft] = React.useState('')
+      const [busy, setBusy] = React.useState(false)
+
+      const reload = React.useCallback(async () => {
+        const next = await fetchQqSnapshot()
+        setSnapshot(next)
+        setLoading(false)
+      }, [])
+
+      React.useEffect(() => {
+        let alive = true
+        const load = async () => {
+          const next = await fetchQqSnapshot()
+          if (alive) {
+            setSnapshot(next)
+            setLoading(false)
+          }
+        }
+        void load()
+        const timer = setInterval(() => void load(), 5000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [])
+
+      const send = React.useCallback(async () => {
+        const text = draft.trim()
+        if (text === '') return
+        setBusy(true)
+        try {
+          await postAdminMessage(text, 'admin')
+          setDraft('')
+          await reload()
+        } finally {
+          setBusy(false)
+        }
+      }, [draft, reload])
+
+      const onPatchRule = React.useCallback(
+        async (scope, condition, patch) => {
+          await patchWakeRule(scope, condition, patch)
+          await reload()
+        },
+        [reload],
+      )
+
+      if (loading) return jsx('div', { style: { opacity: 0.6 }, children: '正在读取 QQ 网关状态…' })
+      return renderPanel(jsx, describeQq(snapshot, { draft, onDraft: setDraft, onSend: send, busy, onPatchRule }))
+    }
+
     /**
      * 安装面板（宿主调用）。
+     *
+     * 注册**两个**设置区块：「记忆」看记忆本体，「QQ 与后台」看网关与人类直发通道。
+     * 刻意不塞进一个区块：这两块的使用场景不同（一个是理解它记得什么，
+     * 一个是排障与跟它说话），混在一起两边都难用。
+     *
      * @param {object} ctx - 浏览器侧 cordis 上下文。
      */
     function apply(ctx) {
@@ -288,6 +644,12 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           { name: 'settings.section', id: 'forlife-memory', order: 60, label: '记忆' },
           MemoryPanel,
+        ),
+      )
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          { name: 'settings.section', id: 'forlife-qq', order: 61, label: 'QQ 与后台' },
+          QqPanel,
         ),
       )
     }
@@ -308,7 +670,13 @@ window.__ModuleLoader__.load({
     exports.describePanel = describePanel
     exports.renderPanel = renderPanel
     exports.panelText = panelText
+    exports.QqPanel = QqPanel
+    exports.fetchQqSnapshot = fetchQqSnapshot
+    exports.describeQq = describeQq
+    exports.postAdminMessage = postAdminMessage
+    exports.patchWakeRule = patchWakeRule
     return module.exports
   },
 })
+
 
