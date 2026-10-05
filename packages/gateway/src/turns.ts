@@ -27,7 +27,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { nowIso } from '@forlife/store'
 
-import { decideInjection, renderTimeBlock } from '@forlife/memory-core'
+import { decideInjection, extractTimeClaims, findDrift, renderTimeBlock } from '@forlife/memory-core'
 
 import { classifyNoise, type NoiseFilterOptions, type NoiseVerdict } from './timing.ts'
 import { decideWake, type WakeRequest } from './wake.ts'
@@ -186,6 +186,14 @@ export interface TurnRunnerOptions {
     readonly wokeSince: (conversationKey: string, since?: Date) => boolean
     readonly clockSettings: (conversationKey: string) => { readonly conversationTimezone: string; readonly hour24: boolean }
     readonly record: (conversationKey: string, at: Date, reason: string, timezone: string, text: string) => void
+    /** 记一次时间漂移（把"时间幻觉"变成可测指标）。 */
+    readonly recordDrift?: (input: {
+      readonly claim: string
+      readonly actualAt: Date
+      readonly driftMs: number
+      readonly severity: 'info' | 'warn' | 'bad'
+      readonly excerpt: string
+    }) => void
     readonly intervalMs?: number
     readonly idleThresholdMs?: number
   }
@@ -291,6 +299,7 @@ export class TurnRunner {
     try {
       const outcome = await this.options.driver.run({ turnId, conversation: first.conversation, messages: effective, prompt, signal })
       this.finishTurn(turnId, outcome)
+      this.recordTimeDrift(effective, outcome)
       return { turnId, woken: true, reason: 'matched', outcome }
     } catch (error) {
       const message = String(error)
@@ -388,6 +397,36 @@ export class TurnRunner {
     return block
   }
 
+  /**
+   * 从模型的输出里抽时间表述并与真实读数比对（P4 第 11 条）。
+   *
+   * 只在**本轮真的注入过读数**时做：没有读数就没有可比对的锚点，
+   * 那时模型说错时间不算它的错。
+   *
+   * @param messages - 本轮入站消息（提供真实时刻）。
+   * @param outcome - 轮次结果（含模型输出）。
+   */
+  private recordTimeDrift(messages: readonly InboundMessage[], outcome: TurnOutcome): void {
+    const hook = this.options.timeHooks?.recordDrift
+    if (hook === undefined) return
+    const text = (outcome.segments ?? []).join('\n')
+    if (text.trim() === '') return
+    const latest = messages[messages.length - 1]
+    const actualAt = latest === undefined ? new Date() : new Date(latest.at)
+    const claims = extractTimeClaims(text, actualAt)
+    for (const finding of findDrift(claims, actualAt)) {
+      // 只记 warn 以上：info 级（1 小时内）是正常口语精度，记了会淹没真正的问题
+      if (finding.severity === 'info') continue
+      hook({
+        claim: finding.claim.text,
+        actualAt,
+        driftMs: finding.driftMs,
+        severity: finding.severity,
+        excerpt: text.slice(Math.max(0, text.indexOf(finding.claim.text) - 40), text.indexOf(finding.claim.text) + finding.claim.text.length + 40),
+      })
+    }
+  }
+
   /** 收尾：写状态与计量。 */
   private finishTurn(turnId: string, outcome: TurnOutcome): void {
     if (outcome.deferred !== undefined) {
@@ -442,6 +481,7 @@ export function defaultScopeOf(conversation: ConversationRef): string {
   if (conversation.kind === 'group') return `group:${conversation.chatId}`
   return `private:${conversation.chatId}`
 }
+
 
 
 

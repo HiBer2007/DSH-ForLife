@@ -85,3 +85,7 @@ export type {
 export { compareRegression, scoreAnswer, scoreRegression, timeQuestions } from './time-regression.ts'
 export type { QuestionScore, RegressionScore, TimeQuestion } from './time-regression.ts'
 
+
+export { describeDrift, extractTimeClaims, findDrift } from './time-drift.ts'
+export type { DriftFinding, TimeClaim } from './time-drift.ts'
+

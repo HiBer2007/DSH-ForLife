@@ -23,7 +23,7 @@ import z from '@deepseek-ai/schemastery'
 import { createDriver, type TurnDriver } from '@forlife/gateway'
 import { defaultConditionOf, defaultScopeOf, TurnRunner } from '@forlife/gateway'
 import { readPending, seedWakeRules } from '@forlife/gateway'
-import { lastTimeReading, recordTimeReading } from '@forlife/store'
+import { lastTimeReading, recordTimeDrift, recordTimeReading } from '@forlife/store'
 
 import { activeRuntimes, whenRuntimeReady, type MemoryRuntime } from './index.ts'
 
@@ -180,6 +180,19 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
               conversationKey,
             })
           },
+          recordDrift: (input) => {
+            recordTimeDrift(runtime.db, {
+              claimed: input.claim,
+              actualAt: input.actualAt.toISOString(),
+              driftMs: input.driftMs,
+              severity: input.severity,
+              excerpt: input.excerpt,
+            })
+            // 严重漂移（差一天以上）要让人在日志里也看得见，而不是只躺在表里
+            if (input.severity === 'bad') {
+              console.warn(`[forlife] 检测到时间幻觉：「${input.claim}」与真实时间相差 ${String(Math.round(input.driftMs / 60_000))} 分钟`)
+            }
+          },
           intervalMs: defaultFor<number>('clock.intervalMs'),
           idleThresholdMs: defaultFor<number>('clock.idleThresholdMs'),
         },
@@ -218,5 +231,6 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
 export function runtimeCount(): number {
   return activeRuntimes().length
 }
+
 
 

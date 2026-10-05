@@ -312,3 +312,108 @@ test('场景覆盖：压缩后与唤醒后即使刚读过也必须注入（强�
   }
 })
 
+
+test('时间幻觉：模型说错时间时会被抓住并落库（只记 warn 以上）', async () => {
+  const { listTimeDrift, recordTimeDrift } = await import('@forlife/store')
+  const before = listTimeDrift(runtime.db, 100).length
+
+  const drifts: { claimed: string; severity: string }[] = []
+  const runner = new TurnRunner({
+    db: runtime.db,
+    driver: new FakeTurnDriver(() => ({
+      // 模型输出里带了两个时间表述：一个准确（14:00 附近），一个差了一年多
+      segments: ['大概 2024年3月15日 吧，我也不确定。'],
+    })),
+    scopeOf: defaultScopeOf,
+    conditionOf: defaultConditionOf,
+    random: () => 0,
+    log: () => {},
+    timeHooks: {
+      lastReadingAt: () => undefined,
+      lastInteractionAt: () => undefined,
+      lastActionAt: () => undefined,
+      compactedSince: () => false,
+      wokeSince: () => false,
+      clockSettings: () => ({ conversationTimezone: 'Asia/Shanghai', hour24: true }),
+      record: () => {},
+      recordDrift: (input) => {
+        drifts.push({ claimed: input.claim, severity: input.severity })
+        recordTimeDrift(runtime.db, {
+          claimed: input.claim,
+          actualAt: input.actualAt.toISOString(),
+          driftMs: input.driftMs,
+          severity: input.severity,
+          excerpt: input.excerpt,
+        })
+      },
+    },
+  })
+
+  await runner.handleBatch(
+    [
+      {
+        messageId: 'm_drift_1',
+        conversation: { platform: 'onebot11', chatId: '10077', kind: 'private' as const },
+        senderId: '10077',
+        senderName: '小王',
+        text: '现在几点',
+        mentionedMe: true,
+        mentionedAll: false,
+        isPoke: false,
+        isSelf: false,
+        at: new Date().toISOString(),
+        raw: {},
+      },
+    ],
+    new AbortController().signal,
+  )
+
+  assert.ok(drifts.length >= 1, '差一年多的表述必须被抓住')
+  assert.equal(drifts[0]?.severity, 'bad')
+  assert.match(drifts[0]?.claimed ?? '', /2024/)
+  assert.ok(listTimeDrift(runtime.db, 100).length > before, '漂移要落库（面板要画曲线）')
+})
+
+test('时间幻觉：正常口语精度（1 小时内）不记录，避免淹没真正的问题', async () => {
+  const drifts: unknown[] = []
+  const now = new Date()
+  const hhmm = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
+  const runner = new TurnRunner({
+    db: runtime.db,
+    driver: new FakeTurnDriver(() => ({ segments: [`现在是 ${hhmm} 左右。`] })),
+    scopeOf: defaultScopeOf,
+    conditionOf: defaultConditionOf,
+    random: () => 0,
+    log: () => {},
+    timeHooks: {
+      lastReadingAt: () => undefined,
+      lastInteractionAt: () => undefined,
+      lastActionAt: () => undefined,
+      compactedSince: () => false,
+      wokeSince: () => false,
+      clockSettings: () => ({ conversationTimezone: 'Asia/Shanghai', hour24: true }),
+      record: () => {},
+      recordDrift: (input) => void drifts.push(input),
+    },
+  })
+  await runner.handleBatch(
+    [
+      {
+        messageId: 'm_drift_2',
+        conversation: { platform: 'onebot11', chatId: '10078', kind: 'private' as const },
+        senderId: '10078',
+        senderName: '小赵',
+        text: '现在几点',
+        mentionedMe: true,
+        mentionedAll: false,
+        isPoke: false,
+        isSelf: false,
+        at: now.toISOString(),
+        raw: {},
+      },
+    ],
+    new AbortController().signal,
+  )
+  assert.equal(drifts.length, 0, '说对了就不该记录（info 级要丢掉）')
+})
+
