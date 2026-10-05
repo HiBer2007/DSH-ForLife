@@ -228,7 +228,11 @@ window.__ModuleLoader__.load({
      */
     function renderPanel(h, panel) {
       const kids = panel.children.map((child) => (typeof child === 'string' ? child : renderPanel(h, child)))
-      return h(panel.type, panel.props, ...kids)
+      // **children 必须放进 props**：`jsx(type, props, key)` 的第三个参数是 **key**，
+      // 不是子节点。我第一版写成了 `h(type, props, ...kids)` —— 所有子节点都被当成 key
+      // 丢掉，渲染出来是一个**空的 div**，而面板自己的测试（读的是本文件构造的树）
+      // 一直是绿的。所以下面还留了一条"必须走 React 的契约"的测试盯着这件事。
+      return h(panel.type, Object.assign({}, panel.props, { children: kids.length === 1 ? kids[0] : kids }))
     }
 
     /** 结构树 → 纯文本（便于断言与肉眼对账）。 */
@@ -1279,6 +1283,7 @@ window.__ModuleLoader__.load({
     exports.postAdminMessage = postAdminMessage
     exports.patchWakeRule = patchWakeRule
     exports.PromptPanel = PromptPanel
+    exports.RoutesPanel = RoutesPanel
     exports.fetchPromptSnapshot = fetchPromptSnapshot
     exports.describePrompts = describePrompts
     exports.describeRoutes = describeRoutes

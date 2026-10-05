@@ -568,3 +568,66 @@ test('渲染内容：路由读取失败时如实报错（不装作没事）', ()
   assert.ok(text.includes('读取路由失败'))
   assert.ok(text.includes('HTTP 500'))
 })
+
+// ── 渲染契约（这一条是本阶段最贵的教训）────────────────────────────────────
+
+/**
+ * 用**符合 React 契约**的 jsx 桩渲染，断言面板真的有内容。
+ *
+ * 为什么必须单独有这条：面板原先的 `renderPanel` 写成 `jsx(type, props, ...kids)`，
+ * 而 `react/jsx-runtime` 的签名是 `jsx(type, props, key)` —— **第三个参数是 key，不是子节点**。
+ * 于是所有子节点被丢掉，浏览器里渲染出来是**一个空的 div**（用户看到"四个面板全空"）。
+ * 而当时所有测试都是绿的：它们用 `panelText()` 读的是**本文件自己构造的树**，不是 React 看到的东西。
+ *
+ * 教训：**测"我构造了什么"不等于测"React 会渲染出什么"**。这个桩刻意不保留第三个参数。
+ */
+test('渲染契约：子节点必须进 props.children（jsx 的第三参是 key，不是 children）', () => {
+  const { exports } = loadClientModule()
+  // 与 react/jsx-runtime 同签名：刻意忽略第三个参数
+  const reactShapedJsx = (type: unknown, props: unknown): unknown => ({ type, props: (props ?? {}) as Record<string, unknown> })
+
+  /** 按 React 语义取文本（只读 props.children）。 */
+  const textOf = (element: unknown): string => {
+    if (element === null || element === undefined) return ''
+    if (typeof element === 'string') return element
+    if (typeof element === 'number') return String(element)
+    if (Array.isArray(element)) return element.map(textOf).join(' ')
+    const children = (element as { props?: { children?: unknown } }).props?.children
+    return textOf(children)
+  }
+
+  const snapshot = {
+    state: {
+      epoch: 1,
+      revision: 3,
+      activeCount: 2,
+      fragmentCount: 1,
+      activeTokens: 120,
+      fragmentTokens: 40,
+      renderedTokens: 160,
+      renderedSha256: 'abc123',
+    },
+    entries: [{ windowOffset: 0, type: 'active', status: 'active', summary: '测试条目', tokenCount: 120, epoch: 1 }],
+    compaction: [],
+    runs: [],
+  }
+
+  const tree = exports.renderPanel(reactShapedJsx as never, exports.describePanel(snapshot)) as {
+    type: unknown
+    props: { children?: unknown }
+  }
+  assert.equal(tree.type, 'div')
+  const childCount = Array.isArray(tree.props.children) ? tree.props.children.length : 1
+  assert.ok(childCount > 1, `根元素必须有多个子节点（实际 ${String(childCount)}）—— 只有 1 个说明子节点被当成 key 丢掉了`)
+
+  const text = textOf(tree)
+  assert.ok(text.includes('测试条目'), `渲染文本里必须能看到条目内容，实际：${text.slice(0, 200)}`)
+  assert.ok(text.includes('epoch'), '指标也要渲染出来')
+})
+
+test('渲染契约：四个面板的组件都**导出**了（否则测试够不到，浏览器里才暴露）', () => {
+  const { exports } = loadClientModule()
+  for (const name of ['MemoryPanel', 'QqPanel', 'PromptPanel', 'RoutesPanel'] as const) {
+    assert.equal(typeof exports[name], 'function', `${name} 必须是导出且是函数（注册到槽位的就是它）`)
+  }
+})
