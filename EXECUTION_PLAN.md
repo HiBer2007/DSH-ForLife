@@ -2264,6 +2264,7 @@ memory.example.com {
 | M1 | **记忆面板是否真的画出来**（阶段 1 遗留） | `$env:DSH_HOME="D:\DSH-ForLife\.runtime\dsh"; dsh --profile forlife-web` 然后打开「设置 → 记忆」 | 指标行（epoch/修订号/token）+ 提示词前缀指纹 + 条目表 + **压缩历史**区块；无红色报错。接口层已验（`/api/forlife/state` 返回 200 真数据、客户端模块已出现在页面模块清单里），**只差浏览器渲染这一跳** | ⏳ 待验 |
 | M2 | **真模型跑一次结构化压缩**（阶段 2 遗留） | 配好 API key 后正常对话到上下文压力触发压缩，看会话里出现压缩检查点 | 模型返回的 JSON 能通过 §4.2 校验；L3 出现新条目、面板压缩历史里多一条 `已提交`。若模型输出不合规会**抛错并重试**（不会写半成品记忆） | ⏳ 待验 |
 | M3 | **NapCat 容器登录与收发**（阶段 3） | 起 `deploy/docker-compose.yml` 里的 qq 服务，用手机扫码登录 | 登录态持久化在卷里；OneBot 反向 WS 连上我们的网关；收发一条消息全程可见 | ⏳ 待验（需要你的手机） |
+| M4 | **端口发布实测**（阶段 3/10） | `docker compose up -d` 后从**宿主机外**（同网段另一台机器）访问 Caddy 暴露的入口 | 该通的通（后台面板）、不该通的不通（DSH Web 与 QQ 端口**不对外**）；Compose 用 v2.13.0 解析无告警 | ⏳ 待验（需要 Docker 环境；本机只做了 compose 文件的静态校验） |
 
 
 | # | 开关 | 状态 | 建议 / 说明 |
@@ -2312,3 +2313,4 @@ memory.example.com {
 | `research/dsh-std/`（已装 16 个 `@dsh-std/*` 包） | 兼容层 API 的**可查证据本体**：`.d.ts` 类型定义；`research/sqlite-probe.mjs` 是 SQLite 能力探针 |
 
 > 清理提示：`astr-src/AstrBot-master/` 是调研期的完整源码克隆，体积大且可重新获取，交付前删除（保留 `astrbot-admin-panel-research.md` 即可）。
+
