@@ -120,3 +120,17 @@ export {
 } from './routing.ts'
 export type { ModelRouteRow } from './routing.ts'
 
+
+export {
+  deleteEndpoint,
+  endpointOverview,
+  getEndpoint,
+  listEndpoints,
+  listModeSwitches,
+  recordEndpointHealth,
+  recordModeSwitch,
+  setEndpointMode,
+  upsertEndpoint,
+} from './endpoints.ts'
+export type { EndpointInput, EndpointRow } from './endpoints.ts'
+

@@ -761,6 +761,65 @@ CREATE INDEX IF NOT EXISTS idx_uncertain_status ON uncertain_cases (status, at D
 
 const m0013Checksum = createHash('sha256').update(m0013.sql).digest('hex')
 
+/**
+ * 迁移 14：推理端点目录与模式切换审计（阶段 5 交付物 2）。
+ *
+ * - `inference_endpoints`：统一端点抽象（§2.13.2 末）。上层的评分器/视觉/嵌入/子代理
+ *   都只依赖这张表描述的东西，**不关心模型在哪、用什么硬件跑**。
+ * - `endpoint_mode_audit`：每次模式切换尝试一行（含幂等跳过与失败回滚）。
+ *   为什么要记"没切成的"：排障时最关键的问题往往是"为什么它没切过去"。
+ */
+const m0014 = {
+  version: 14,
+  name: '0014_inference_endpoints',
+  sql: `
+CREATE TABLE IF NOT EXISTS inference_endpoints (
+  id             TEXT PRIMARY KEY,
+  type           TEXT NOT NULL,     -- local | remote-selfhost | cloud-api | host-native
+  mode           TEXT NOT NULL,     -- resident | on-demand | remote-api | host-native
+  backend        TEXT NOT NULL,     -- cpu | cuda | rocm | vulkan | sycl
+  base_url       TEXT NOT NULL,
+  api_key_ref    TEXT,              -- **只存引用**，绝不存明文
+  arch           TEXT,              -- x64 | arm64
+  deploy_target  TEXT,              -- local-docker | remote-ssh | external-api
+  deploy_host    TEXT,              -- 外挂目标机（留痕：这个端点部署在哪台机器上）
+  container_name TEXT,
+  model_root     TEXT,
+  models         TEXT NOT NULL DEFAULT '[]',  -- JSON：能力位（含 image / contextLength / reasoningEfforts / embeddingDimensions）
+  limits         TEXT,              -- JSON
+  health_ok      INTEGER,
+  health_checked_at TEXT,
+  health_latency_ms INTEGER,
+  effective_backend TEXT,           -- **实际生效的后端**（有些镜像会静默回落到 CPU）
+  health_note    TEXT,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_endpoints_type ON inference_endpoints (type, enabled);
+
+CREATE TABLE IF NOT EXISTS endpoint_mode_audit (
+  id          TEXT PRIMARY KEY,
+  at          TEXT NOT NULL,
+  endpoint_id TEXT NOT NULL,
+  from_mode   TEXT NOT NULL,
+  to_mode     TEXT NOT NULL,
+  actor       TEXT NOT NULL,        -- auto | admin | api | system
+  reason      TEXT,
+  ok          INTEGER NOT NULL,
+  note        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_mode_audit_endpoint ON endpoint_mode_audit (endpoint_id, at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0014.sql)
+  },
+} as const
+
+const m0014Checksum = createHash('sha256').update(m0014.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -841,10 +900,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0013Checksum,
     up: m0013.up,
   },
+  {
+    version: m0014.version,
+    name: m0014.name,
+    checksum: m0014Checksum,
+    up: m0014.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

@@ -69,7 +69,7 @@ export function lastTimeReading(db: DatabaseSync, sessionId?: string): TimeReadi
 
 /** 列最近读数（新的在前）。 */
 export function listTimeReadings(db: DatabaseSync, limit = 50): readonly TimeReadingRow[] {
-  return db.prepare('SELECT * FROM time_readings ORDER BY at DESC LIMIT ?').all(limit) as unknown as TimeReadingRow[]
+  return db.prepare('SELECT * FROM time_readings ORDER BY at DESC, rowid DESC LIMIT ?').all(limit) as unknown as TimeReadingRow[]
 }
 
 /** 按原因统计（面板要回答"压缩后到底有没有补读数"）。 */
@@ -137,5 +137,7 @@ export function timeDriftStats(db: DatabaseSync): {
 
 /** 列最近漂移记录。 */
 export function listTimeDrift(db: DatabaseSync, limit = 50): readonly Record<string, unknown>[] {
-  return db.prepare('SELECT * FROM time_drift ORDER BY at DESC LIMIT ?').all(limit) as unknown as Record<string, unknown>[]
+  return db.prepare('SELECT * FROM time_drift ORDER BY at DESC, rowid DESC LIMIT ?').all(limit) as unknown as Record<string, unknown>[]
 }
+
+

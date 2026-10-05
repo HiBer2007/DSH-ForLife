@@ -95,3 +95,14 @@ export type {
 
 export { fileSha256, resumableDownload, sameSha256 } from './download.ts'
 export type { DownloadOptions, DownloadProgress, DownloadResult } from './download.ts'
+
+export { adviseAutoSwitch, defaultSwitchOptions, switchMode } from './mode-switch.ts'
+export type {
+  AutoSwitchAdvice,
+  AutoSwitchSignals,
+  ModeSwitchEffects,
+  SwitchModeOptions,
+  SwitchModeRequest,
+  SwitchModeResult,
+} from './mode-switch.ts'
+

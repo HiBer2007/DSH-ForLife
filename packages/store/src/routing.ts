@@ -145,7 +145,7 @@ export function recordRoutingDecision(
 
 /** 最近的路由决策（新的在前）。 */
 export function listRoutingLog(db: DatabaseSync, limit = 50): readonly Record<string, unknown>[] {
-  return db.prepare('SELECT * FROM routing_log ORDER BY at DESC LIMIT ?').all(limit) as unknown as Record<string, unknown>[]
+  return db.prepare('SELECT * FROM routing_log ORDER BY at DESC, rowid DESC LIMIT ?').all(limit) as unknown as Record<string, unknown>[]
 }
 
 /** 路由统计（面板看"各档位用了多少次、降级率多少"）。 */
@@ -213,3 +213,4 @@ export function uncertainStats(db: DatabaseSync): { readonly pending: number; re
   const get = (status: string): number => rows.find((row) => row.status === status)?.n ?? 0
   return { pending: get('pending'), reviewed: get('reviewed') }
 }
+

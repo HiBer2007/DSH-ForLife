@@ -32,6 +32,14 @@ export interface DebounceOptions {
   readonly now?: () => number
   readonly setTimer?: (callback: () => void, ms: number) => unknown
   readonly clearTimer?: (handle: unknown) => void
+  /**
+   * **T14：窗口开启时回调一次**（只在第一条消息到达时触发，不随重置重复触发）。
+   *
+   * 用途是"在等待期内把评分算完"，从而完全隐藏评分延迟（模型路由.MD §8.5）。
+   * 之所以只在**开启**时触发一次：连发 5 条消息会重置 5 次计时，
+   * 每次都重算评分既浪费又会让"防抖窗口越久评分越多次"——那不是优化是负担。
+   */
+  readonly onWindowOpen?: (conversationKey: string) => void
 }
 
 /** 防抖调度器。 */
@@ -39,6 +47,7 @@ export class Debouncer {
   private readonly entries = new Map<string, DebounceEntry>()
   private readonly windowMs: number
   private readonly onFlush: (conversationKey: string, ids: readonly string[]) => void
+  private readonly onWindowOpen: ((conversationKey: string) => void) | undefined
   private readonly now: () => number
   private readonly setTimer: (callback: () => void, ms: number) => unknown
   private readonly clearTimer: (handle: unknown) => void
@@ -46,6 +55,7 @@ export class Debouncer {
   constructor(options: DebounceOptions) {
     this.windowMs = options.windowMs
     this.onFlush = options.onFlush
+    this.onWindowOpen = options.onWindowOpen
     this.now = options.now ?? ((): number => Date.now())
     this.setTimer = options.setTimer ?? ((callback, ms): unknown => setTimeout(callback, ms))
     this.clearTimer = options.clearTimer ?? ((handle): void => clearTimeout(handle as ReturnType<typeof setTimeout>))
@@ -72,6 +82,8 @@ export class Debouncer {
       openedAt: this.now(),
     }
     this.entries.set(conversationKey, entry)
+    // T14：窗口刚开启 ⇒ 现在就把评分跑起来（等窗口关闭时结果已就绪）
+    this.onWindowOpen?.(conversationKey)
     return 1
   }
 
@@ -231,4 +243,5 @@ export function classifyNoise(message: NoiseMessage, options: NoiseFilterOptions
   }
   return { noise: false }
 }
+
 
