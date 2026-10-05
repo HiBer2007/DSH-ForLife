@@ -141,13 +141,33 @@ test('串行：同 key 顺序执行、跨 key 并行', async () => {
   await Promise.all([task('slow', 40), task('fast', 1)])
   assert.deepEqual(order, ['slow:start', 'slow:end', 'fast:start', 'fast:end'], '同 key 必须严格串行')
 
-  // 跨 key 并行：两个 key 各睡 30ms，总耗时应远小于 60ms
-  const started = Date.now()
-  await Promise.all([
-    mutex.run('k1', async () => sleep(30)),
-    mutex.run('k2', async () => sleep(30)),
+  // 跨 key 并行：用**交叉等待**做确定性断言，而不是掐墙钟。
+  // 两个任务各自等对方先开始 —— 真并行时两边都能等到；一旦被串行化就会互等死锁。
+  // （原先用"两个 30ms 任务总耗时 < 55ms"断言，在整套测试并发跑时会抖，属于坏测试。）
+  let signalA: () => void = () => {}
+  let signalB: () => void = () => {}
+  const aStarted = new Promise<void>((resolve) => {
+    signalA = resolve
+  })
+  const bStarted = new Promise<void>((resolve) => {
+    signalB = resolve
+  })
+  const guard = new Promise<never>((_resolve, reject) => {
+    setTimeout(() => reject(new Error('跨 key 被串行化了：两个任务互等超时')), 2000)
+  })
+  await Promise.race([
+    Promise.all([
+      mutex.run('k1', async () => {
+        signalA()
+        await bStarted
+      }),
+      mutex.run('k2', async () => {
+        signalB()
+        await aStarted
+      }),
+    ]),
+    guard,
   ])
-  assert.ok(Date.now() - started < 55, '跨 key 必须并行（否则多会话会互相饿死）')
 })
 
 test('串行：前一个任务失败不会卡住该会话（重要）', async () => {
@@ -204,3 +224,4 @@ test('噪音过滤：规则可替换（配置化）', () => {
   assert.equal(verdict.rule, 'block-all')
   assert.ok(DEFAULT_NOISE_RULES.length >= 3, '默认规则集应包含基础规则')
 })
+
