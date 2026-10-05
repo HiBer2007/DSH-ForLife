@@ -2444,6 +2444,28 @@ memory.example.com {
 | M3 | **NapCat 容器登录与收发**（阶段 3） | 起 `deploy/docker-compose.yml` 里的 qq 服务，用手机扫码登录 | 登录态持久化在卷里；OneBot 反向 WS 连上我们的网关；收发一条消息全程可见 | ⏳ 待验（需要你的手机） |
 | M4 | **端口发布实测**（阶段 3/10） | `docker compose up -d` 后从**宿主机外**（同网段另一台机器）访问 Caddy 暴露的入口 | 该通的通（后台面板）、不该通的不通（DSH Web 与 QQ 端口**不对外**）；Compose 用 v2.13.0 解析无告警 | ⏳ 待验（需要 Docker 环境；本机只做了 compose 文件的静态校验） |
 
+#### 8.0.1 面板缺陷登记（你在浏览器里逐条发现的）
+
+> 这一节记的是**只有真浏览器才暴露**的缺陷：接口全 200、单元测试全绿，界面却是一片空白。
+> 规矩：每条修复都必须配一条**"撤回它就变红"**的测试，否则不算修完 ——
+> 我在这上面栽过：旧测试测的是 `describeX(snapshot)` + `renderPanel()`，**绕过了组件本身**，
+> 而 bug 恰恰在组件里；旧测试还用"我以为的快照形状"，而真接口从不产生那个形状。
+
+| # | 你看到的 | 真因 | 修复与护栏 | 状态 |
+| :-- | :--- | :--- | :--- | :--- |
+| P1 | 「模型与路由」整块空白（左侧导航有，右侧内容区空） | `RoutesPanel` 把 `node()` 造的**裸描述符**（`{type, props, children}` 纯数据）直接 `return` 给 React，漏了 `renderPanel(jsx, …)`；React 抛 "Objects are not valid as a React child"，被宿主 `SlotErrorBoundary` 吞成 `<div data-slot-error>`。**loading 分支同样漏了** | 两个分支都改走 `jsx()` / `renderPanel()`；新增 `test/panel-render.test.ts`：用**真服务端响应**把四个组件各渲染**两遍**，断言返回值必须是 `jsx()` 造的元素。**已验证**：撤回修复该测试立刻变红 | ✅ |
+| P2 | 点「预览」没反应（永远停在"点「预览」看看…"） | 预览结果在 React 状态 `ui.preview` 里，卡片却读 `snapshot.preview` —— 而 `fetchPromptSnapshot` **从不设置**该字段。旧测试把 `preview` 塞进了 snapshot，所以一直绿（典型的"测我构造了什么"） | 改为 `promptPreviewCard(ui.preview \|\| snapshot.preview)`；新增走真实路径的测试。**已验证**：撤回修复该测试变红 | ✅ |
+| P3 | 结构树出错时只剩一句无用的 `Cannot read properties of undefined (reading 'map')` | `renderPanel` 递归时没有位置信息，且宿主 ErrorBoundary 把异常吞掉，排查成本极高 | `renderPanel(h, panel, path)` 带上路径；遇到"不像元素的节点"直接报出 type 与位置 | ✅ |
+
+**验收标准**
+
+- [x] 四个设置区块在真实数据下都渲染出内容，且**第一遍（加载中）与第二遍（数据到达）都必须是 React 元素**（`panel-render.test.ts` 5 项）
+- [x] 面板测试的输入来自**真实服务端响应**（`packages/dsh-component/test/fixtures/panel-api.json`，密钥字段已脱敏），不是手写的假快照
+- [x] 每条修复都有"撤回即变红"的证据；另有**自检项**：故意让一个组件返回裸描述符，检查必须报错（防"永远不失败的检查"）
+- [x] 测试替身本身按 React 语义写（`{type, props}` 元素形状、子节点在 `props.children`、Hook 数量一致性）——替身写错会冤枉被测代码，我这次就被自己的替身绕了一圈
+- [x] 服务端**实际发出去**的客户端已核验含修复（不是只看本地文件）：`scripts/verify-served-client.mjs`
+- [ ] 你在浏览器里确认四个区块都有内容（M1 的浏览器那一跳；服务端已重启）
+
 
 | # | 开关 | 状态 | 建议 / 说明 |
 | :-- | :--- | :--- | :--- |

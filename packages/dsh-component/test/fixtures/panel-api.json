@@ -1,0 +1,752 @@
+{
+  "/api/forlife/state": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "epoch": 0,
+      "revision": 0,
+      "activeCount": 0,
+      "fragmentCount": 0,
+      "activeTokens": "«redacted»",
+      "fragmentTokens": "«redacted»",
+      "renderedTokens": "«redacted»",
+      "renderedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "violations": [],
+      "dbPath": "D:\\DSH-ForLife\\.runtime\\dsh\\forlife\\db\\forlife.sqlite"
+    }
+  },
+  "/api/forlife/entries": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "epoch": null,
+      "count": 0,
+      "entries": []
+    }
+  },
+  "/api/forlife/compaction?limit=10": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "log": [],
+      "runs": []
+    }
+  },
+  "/api/forlife/qq/state": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "sessions": 0,
+      "inbound": 0,
+      "inboundPending": 0,
+      "turnsRunning": 0,
+      "turnsDeferred": 0,
+      "outbox": {
+        "pending": 0,
+        "sending": 0,
+        "sent": 0,
+        "failed": 0
+      },
+      "pendingUnread": 0,
+      "transport": {
+        "connectedEvidence": false,
+        "lastInboundAt": null,
+        "lastOutboundAt": null
+      }
+    }
+  },
+  "/api/forlife/qq/queue?limit=30": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "count": 0,
+      "stats": {
+        "pending": 0,
+        "sending": 0,
+        "sent": 0,
+        "failed": 0
+      },
+      "rows": []
+    }
+  },
+  "/api/forlife/qq/turns?limit=30": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "count": 0,
+      "turns": []
+    }
+  },
+  "/api/forlife/qq/wake-rules?scope=*": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "scope": "*",
+      "groups": [
+        {
+          "kind": "私聊",
+          "note": "好友/单向好友的直接消息",
+          "conditions": [
+            "private_message",
+            "peer_input_status"
+          ]
+        },
+        {
+          "kind": "临时会话",
+          "note": "非好友（群临时会话）的第一条消息 —— 默认只给很低概率，避免被陌生人刷屏",
+          "conditions": [
+            "temp_message"
+          ]
+        },
+        {
+          "kind": "群聊",
+          "note": "四个触发各管一类：@我 / @全体 / 普通消息抽样 / 拍一拍",
+          "conditions": [
+            "group_mention",
+            "group_mention_all",
+            "group_message_any",
+            "group_poke"
+          ]
+        },
+        {
+          "kind": "不分会话类型",
+          "note": "这些条件与\"在哪说的\"无关（回复我、媒体、撤回、机器人掉线等）",
+          "conditions": [
+            "reply_to_me",
+            "media_received",
+            "file_received",
+            "message_recalled",
+            "bot_offline",
+            "external_request",
+            "peer_status_change",
+            "self_message_sent"
+          ]
+        }
+      ],
+      "scopes": [
+        "*"
+      ],
+      "conditions": [
+        "private_message",
+        "temp_message",
+        "group_message_any",
+        "group_mention",
+        "group_mention_all",
+        "group_poke",
+        "reply_to_me",
+        "peer_input_status",
+        "peer_status_change",
+        "media_received",
+        "file_received",
+        "bot_offline",
+        "message_recalled",
+        "external_request",
+        "self_message_sent"
+      ],
+      "rules": [
+        {
+          "scope": "*",
+          "condition": "private_message",
+          "overridden": true,
+          "enabled": true,
+          "probability": 80,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "temp_message",
+          "overridden": true,
+          "enabled": true,
+          "probability": 20,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "group_message_any",
+          "overridden": true,
+          "enabled": false,
+          "probability": 0,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "group_mention",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "group_mention_all",
+          "overridden": true,
+          "enabled": true,
+          "probability": 50,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "group_poke",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "reply_to_me",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "peer_input_status",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "peer_status_change",
+          "overridden": true,
+          "enabled": false,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "media_received",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "file_received",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "bot_offline",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "message_recalled",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "external_request",
+          "overridden": true,
+          "enabled": true,
+          "probability": 100,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        },
+        {
+          "scope": "*",
+          "condition": "self_message_sent",
+          "overridden": true,
+          "enabled": true,
+          "probability": 0,
+          "dailyLimit": 0,
+          "minIntervalMs": 0,
+          "quietUntil": null,
+          "updatedBy": "system",
+          "updatedAt": "2026-10-05T09:03:27.375Z"
+        }
+      ]
+    }
+  },
+  "/api/forlife/qq/pending?limit=20": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "count": 0,
+      "stats": {
+        "unread": 0,
+        "total": 0
+      },
+      "items": []
+    }
+  },
+  "/api/forlife/admin/chat?limit=50": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "pending": 0,
+      "count": 0,
+      "messages": []
+    }
+  },
+  "/api/forlife/time": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "settings": {
+        "systemTimezone": "UTC",
+        "conversationTimezone": "Asia/Shanghai",
+        "displayTimezone": "Asia/Shanghai",
+        "hour24": true,
+        "source": "default"
+      },
+      "latest": null,
+      "freshThresholdMs": 30000,
+      "byReason": [],
+      "tokenCost": "«redacted»",
+      "readings": [],
+      "clocks": [],
+      "drift": {
+        "count": 0,
+        "avgMs": null,
+        "maxMs": null,
+        "bySeverity": []
+      },
+      "recentDrift": []
+    }
+  },
+  "/api/forlife/qq/wake-overview": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "scopes": [
+        "*"
+      ],
+      "effective": [
+        {
+          "scope": "*",
+          "rules": [
+            {
+              "condition": "private_message",
+              "enabled": true,
+              "probability": 80
+            },
+            {
+              "condition": "temp_message",
+              "enabled": true,
+              "probability": 20
+            },
+            {
+              "condition": "group_message_any",
+              "enabled": false,
+              "probability": 0
+            },
+            {
+              "condition": "group_mention",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "group_mention_all",
+              "enabled": true,
+              "probability": 50
+            },
+            {
+              "condition": "group_poke",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "reply_to_me",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "peer_input_status",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "peer_status_change",
+              "enabled": false,
+              "probability": 100
+            },
+            {
+              "condition": "media_received",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "file_received",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "bot_offline",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "message_recalled",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "external_request",
+              "enabled": true,
+              "probability": 100
+            },
+            {
+              "condition": "self_message_sent",
+              "enabled": true,
+              "probability": 0
+            }
+          ]
+        }
+      ],
+      "overrideCounts": [],
+      "groups": [
+        {
+          "kind": "私聊",
+          "note": "好友/单向好友的直接消息",
+          "conditions": [
+            "private_message",
+            "peer_input_status"
+          ]
+        },
+        {
+          "kind": "临时会话",
+          "note": "非好友（群临时会话）的第一条消息 —— 默认只给很低概率，避免被陌生人刷屏",
+          "conditions": [
+            "temp_message"
+          ]
+        },
+        {
+          "kind": "群聊",
+          "note": "四个触发各管一类：@我 / @全体 / 普通消息抽样 / 拍一拍",
+          "conditions": [
+            "group_mention",
+            "group_mention_all",
+            "group_message_any",
+            "group_poke"
+          ]
+        },
+        {
+          "kind": "不分会话类型",
+          "note": "这些条件与\"在哪说的\"无关（回复我、媒体、撤回、机器人掉线等）",
+          "conditions": [
+            "reply_to_me",
+            "media_received",
+            "file_received",
+            "message_recalled",
+            "bot_offline",
+            "external_request",
+            "peer_status_change",
+            "self_message_sent"
+          ]
+        }
+      ]
+    }
+  },
+  "/api/forlife/prompts": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "slugs": [
+        {
+          "slug": "p1-system",
+          "text": "你是{{persona_name}}，{{persona_role}}。\n\n## 你是什么\n- 你不是客服，也不是助手：你是一个**有自己的记忆、会记得住事**的伙伴。\n- 你有长期记忆和中期记忆，它们是你的经历，不是参考资料。提到过去的事时用自己的话讲，不要念条目。\n- 记忆里没有的事就说不知道或记不清。**绝不编造**自己经历过什么。\n\n## 你的边界\n- 你只能通过工具发消息、发表情、查记忆。做不到的事直说做不到。\n- 涉及钱、账号、隐私、承诺的请求要谨慎，拿不准就先问。\n- 别人让你做的事若与主人的长期利益冲突，以主人的利益优先，并说明理由。\n\n## 输出规范\n- 用{{language}}回答。\n- 先说结论再补细节；不确定的部分要标出来。\n- 不要输出工具调用的原始参数或内部 id，除非对方问起。\n",
+          "sha256": "999e29c03068bae6cc5a87636d8e176a4b4ae2168e7b4fc49c68412457ce7110",
+          "tokenCount": "«redacted»",
+          "variables": [
+            "persona_name",
+            "persona_role",
+            "language"
+          ],
+          "updatedAt": "2026-10-05T09:47:39.702Z",
+          "updatedBy": "system",
+          "revisions": 1
+        },
+        {
+          "slug": "p2-style",
+          "text": "## 说话方式\n- 像人一样说话：短句、口语，不用「您好」「请问有什么可以帮您」这类客服腔。\n- 默认简短。一句话能说清就别写三句；对方明显想聊再展开。\n- 少用感叹号和 emoji；要用也只用一两个，别堆。\n- 群里说话更随意，私聊可以更亲近一点。\n- 不确定对方在开玩笑时，按字面理解并反问一句，别自作聪明地接梗。\n- 不要每句都加「哈哈」，也不要刻意卖萌。\n\n## 分段\n- 内容长的时候分成多条短消息发（多次调用发送工具），像人打字那样。\n- 每段只讲一件事。\n",
+          "sha256": "c3e36ad33474345843696415492527facb6d8c7fd730e78deaf18b8773fc9972",
+          "tokenCount": "«redacted»",
+          "variables": [],
+          "updatedAt": "2026-10-05T09:47:39.703Z",
+          "updatedBy": "system",
+          "revisions": 1
+        }
+      ],
+      "variables": [
+        {
+          "name": "persona_name",
+          "dynamic": false,
+          "description": "它的名字",
+          "sample": "团子"
+        },
+        {
+          "name": "owner_name",
+          "dynamic": false,
+          "description": "主人的称呼",
+          "sample": "主人"
+        },
+        {
+          "name": "language",
+          "dynamic": false,
+          "description": "回答语言",
+          "sample": "中文"
+        },
+        {
+          "name": "persona_role",
+          "dynamic": false,
+          "description": "身份一句话",
+          "sample": "一个住在 QQ 里的伙伴"
+        },
+        {
+          "name": "style_notes",
+          "dynamic": false,
+          "description": "风格补充（由后台维护）",
+          "sample": "少用感叹号，不说套话"
+        },
+        {
+          "name": "now",
+          "dynamic": true,
+          "description": "当前时间（**禁止进前缀**）",
+          "sample": "2026-10-05T12:00:00Z"
+        },
+        {
+          "name": "today",
+          "dynamic": true,
+          "description": "今天的日期（**禁止进前缀**）",
+          "sample": "2026-10-05"
+        },
+        {
+          "name": "conversation",
+          "dynamic": true,
+          "description": "当前会话键（**禁止进前缀**）",
+          "sample": "onebot11:88888"
+        },
+        {
+          "name": "unread_summary",
+          "dynamic": true,
+          "description": "未读摘要（**禁止进前缀**）",
+          "sample": "老王：明天的会议改到十点"
+        }
+      ],
+      "overrides": []
+    }
+  },
+  "/api/forlife/prompts/revisions?slug=p1-system&limit=20": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "slug": "p1-system",
+      "activeId": "pr_5ba9b8ad-3356-462a-8c3a-821e3864da85",
+      "count": 1,
+      "revisions": [
+        {
+          "id": "pr_5ba9b8ad-3356-462a-8c3a-821e3864da85",
+          "sha256": "999e29c03068bae6cc5a87636d8e176a4b4ae2168e7b4fc49c68412457ce7110",
+          "tokenCount": "«redacted»",
+          "variables": [
+            "persona_name",
+            "persona_role",
+            "language"
+          ],
+          "note": "内置默认值（首次启动播种）",
+          "createdBy": "system",
+          "createdAt": "2026-10-05T09:47:39.702Z",
+          "active": true,
+          "excerpt": "你是{{persona_name}}，{{persona_role}}。 "
+        }
+      ]
+    }
+  },
+  "/api/forlife/prompts/revisions?slug=p2-style&limit=20": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "slug": "p2-style",
+      "activeId": "pr_2087fe03-cf0f-46b5-82ac-7246c239a070",
+      "count": 1,
+      "revisions": [
+        {
+          "id": "pr_2087fe03-cf0f-46b5-82ac-7246c239a070",
+          "sha256": "c3e36ad33474345843696415492527facb6d8c7fd730e78deaf18b8773fc9972",
+          "tokenCount": "«redacted»",
+          "variables": [],
+          "note": "内置默认值（首次启动播种）",
+          "createdBy": "system",
+          "createdAt": "2026-10-05T09:47:39.703Z",
+          "active": true,
+          "excerpt": "## 说话方式 - 像人一样说话：短句、口语，不用「您好」「请问有什么可以帮您」这类客服腔。"
+        }
+      ]
+    }
+  },
+  "/api/forlife/routes": {
+    "status": 200,
+    "payload": {
+      "ok": true,
+      "roles": [
+        {
+          "role": "L1",
+          "candidates": [
+            {
+              "rank": 0,
+              "provider": "deepseek-official",
+              "model": "deepseek-flash",
+              "effort": "low",
+              "enabled": true,
+              "note": "闲聊与简单问答（内置播种）",
+              "updatedAt": "2026-10-05T12:11:23.007Z"
+            }
+          ]
+        },
+        {
+          "role": "L2",
+          "candidates": [
+            {
+              "rank": 0,
+              "provider": "deepseek-official",
+              "model": "deepseek-flash",
+              "effort": "medium",
+              "enabled": true,
+              "note": "一般任务（内置播种）",
+              "updatedAt": "2026-10-05T12:11:23.008Z"
+            }
+          ]
+        },
+        {
+          "role": "L3",
+          "candidates": [
+            {
+              "rank": 0,
+              "provider": "deepseek-official",
+              "model": "deepseek-flash",
+              "effort": "high",
+              "enabled": true,
+              "note": "复杂任务：架构/长链推理（内置播种）",
+              "updatedAt": "2026-10-05T12:11:23.008Z"
+            }
+          ]
+        },
+        {
+          "role": "vision",
+          "candidates": [],
+          "purpose": "视觉桥接：必须用声明了 image 能力的模型"
+        },
+        {
+          "role": "embedding",
+          "candidates": []
+        },
+        {
+          "role": "scorer",
+          "candidates": [
+            {
+              "rank": 0,
+              "provider": "deepseek-official",
+              "model": "deepseek-flash",
+              "effort": "low",
+              "enabled": true,
+              "note": "复杂度评分器（内置播种：默认复用主模型；装了 0.5B 评分模型后请在面板里改）",
+              "updatedAt": "2026-10-05T12:11:23.008Z"
+            }
+          ]
+        },
+        {
+          "role": "subagent",
+          "candidates": []
+        }
+      ],
+      "endpoints": [],
+      "overview": {
+        "total": 0,
+        "byType": [],
+        "byMode": [],
+        "unhealthy": [],
+        "backendMismatch": []
+      },
+      "probe": [],
+      "stats": {
+        "byTier": [],
+        "bySource": [],
+        "degradedRate": 0,
+        "total": 0
+      },
+      "uncertain": {
+        "pending": 0,
+        "reviewed": 0
+      },
+      "devices": {
+        "renderNodes": [],
+        "nvidia": true,
+        "rocm": false,
+        "intel": false,
+        "vulkan": true
+      },
+      "issues": [],
+      "tierOverride": null
+    }
+  }
+}

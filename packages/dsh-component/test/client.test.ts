@@ -235,6 +235,37 @@ test('渲染内容：提示词面板画出编辑器、预览、历史与变量�
   assert.ok(types.has('textarea'), '两个槽位都要有编辑框')
 })
 
+test('渲染内容：预览结果走 ui.preview 也要画出来（这才是真实路径）', () => {
+  const { exports } = loadClientModule()
+  // 真实的 fetchPromptSnapshot **从不**设置 snapshot.preview：
+  // 预览结果只存在于 React 状态里，经 ui.preview 传进来。
+  // 上面那条测试把 preview 塞进了 snapshot，所以它一直是绿的 —— 而点「预览」其实毫无反应。
+  const panel = exports.describePrompts(
+    {
+      prompts: [{ slug: 'p1-system', tokenCount: 320, revisions: 1 }],
+      revisions: [],
+      variables: [],
+      overrides: [],
+    },
+    {
+      drafts: {},
+      preview: {
+        slug: 'p1-system',
+        errors: [],
+        warnings: [],
+        tokenCount: 330,
+        tokenDelta: 10,
+        willChange: true,
+        diff: [{ kind: 'added', text: '新加的这一行' }],
+      },
+    },
+  )
+  const all = texts(panel).join(' ')
+  assert.ok(all.includes('预览（p1-system）'), `点完预览必须看到结果，实际：${all.slice(0, 300)}`)
+  assert.ok(all.includes('+ 新加的这一行'), `diff 必须画出来，实际：${all.slice(0, 300)}`)
+  assert.ok(!all.includes('点「预览」看看'), '不能还停在占位文字上（说明预览结果没接上）')
+})
+
 test('渲染内容：QQ 与后台面板画出积压、轮次、规则与人类直发框', () => {
   const { exports } = loadClientModule()
   const panel = exports.describeQq({

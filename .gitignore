@@ -14,6 +14,9 @@ lib/
 research/_sources/
 research/**/node_modules/
 
+# 截图素材（面板对账用的图，不入库）
+test_photo/
+
 # 本地环境
 .env
 .env.local

@@ -234,8 +234,28 @@ window.__ModuleLoader__.load({
      * @param {object} panel - `describePanel` 的产物。
      * @returns {unknown} React 元素。
      */
-    function renderPanel(h, panel) {
-      const kids = panel.children.map((child) => (typeof child === 'string' ? child : renderPanel(h, child)))
+    function renderPanel(h, panel, path) {
+      // `path` 只为报错服务：原先遇到空子节点会抛一句
+      // "Cannot read properties of undefined (reading 'map')" —— 看不出是谁干的，
+      // 而宿主的 SlotErrorBoundary 又把它吞成一个空 div。空白面板 + 一句无用的报错，
+      // 是排查成本最高的一种组合。
+      const at = path || '面板根'
+      if (panel === null || panel === undefined || typeof panel !== 'object') {
+        throw new Error(`结构树里出现了空节点（位置：${at}，值：${String(panel)}）`)
+      }
+      if (!Array.isArray(panel.children)) {
+        // 走到这里说明某个"子节点"其实是个普通对象/数组（不是 node() 造的）。
+        // React 遇到这种子节点也会抛 "Objects are not valid as a React child"，
+        // 所以这里必须**响亮地**失败，而不是把 undefined.children 的那句
+        // "Cannot read properties of undefined" 抛出去 —— 那句话对排查毫无帮助。
+        throw new Error(
+          `结构树里的节点不像元素（位置：${at}，type=${String(panel.type)}，children=${Array.isArray(panel.children) ? '数组' : typeof panel.children}）`,
+        )
+      }
+      const kids = panel.children.map((child, index) => {
+        if (typeof child === 'string') return child
+        return renderPanel(h, child, `${at} › [${index}] ${child !== null && typeof child === 'object' && child.type ? child.type : typeof child}`)
+      })
       // **children 必须放进 props**：`jsx(type, props, key)` 的第三个参数是 **key**，
       // 不是子节点。我第一版写成了 `h(type, props, ...kids)` —— 所有子节点都被当成 key
       // 丢掉，渲染出来是一个**空的 div**，而面板自己的测试（读的是本文件构造的树）
@@ -1037,7 +1057,10 @@ window.__ModuleLoader__.load({
 
       children.push(promptEditor('P1 系统提示词', 'p1-system', drafts['p1-system'], Object.assign({ dirty }, ui), find('p1-system')))
       children.push(promptEditor('P2 回答风格', 'p2-style', drafts['p2-style'], Object.assign({ dirty }, ui), find('p2-style')))
-      children.push(promptPreviewCard(snapshot.preview))
+      // 预览结果在 **ui.preview**（React 状态，点「预览」才有），不在 snapshot 里 ——
+      // 之前只读 snapshot.preview，而 fetchPromptSnapshot 从不设置它，
+      // 于是"点预览没反应"：卡片永远停在占位文字上。snapshot.preview 保留为兜底。
+      children.push(promptPreviewCard((ui && ui.preview) || snapshot.preview))
       children.push(promptHistoryCard(snapshot.revisions, ui))
       children.push(promptVariablesCard(snapshot.variables))
       return node('div', { style: styles.wrap }, children)
@@ -1297,7 +1320,12 @@ window.__ModuleLoader__.load({
         [load],
       )
 
-      if (loading) return node('div', { style: styles.muted }, ['加载中…'])
+      // **必须走 `jsx`**：`node()` 只造 `{type, props, children}` 这种**数据**，
+      // 直接把它交给 React 当元素渲染会抛 "Objects are not valid as a React child"，
+      // 而宿主的 SlotErrorBoundary 会把这个异常吞成 `<div data-slot-error>` ——
+      // 表现就是"区块一片空白、控制台里才有真相"。四个面板里只有这一块漏了包装，
+      // 所以只有它一直空（另一块漏在这里的 loading 分支）。
+      if (loading) return jsx('div', { style: { opacity: 0.6 }, children: '正在读取模型与路由…' })
 
       const children = [describeRoutes(snapshot)]
       if (notice) children.push(node('div', { style: styles.muted }, [notice]))
@@ -1369,7 +1397,8 @@ window.__ModuleLoader__.load({
         )
       }
 
-      return node('div', {}, children)
+      // 同上：整棵结构树必须经 `renderPanel` 转成 React 元素再返回。
+      return renderPanel(jsx, node('div', {}, children))
     }
 
     function PromptPanel() {
