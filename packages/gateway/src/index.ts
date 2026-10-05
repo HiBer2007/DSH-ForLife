@@ -55,6 +55,20 @@ export {
   setSystemStatus,
 } from './status.ts'
 export type { CurrentStatus, SetStatusResult, StatusSource, StatusState } from './status.ts'
+export {
+  affectsModel,
+  ALLOWED_SOURCES,
+  assertReportSource,
+  collectReportable,
+  decideDelivery,
+  FORBIDDEN_SOURCES,
+  isAwake,
+  markReported,
+  recordAdminAction,
+  renderReport,
+  runReportCycle,
+} from './reports.ts'
+export type { DeliveryDecision, ForlifeSource, ReportableEffect, ReportBatch } from './reports.ts'
 export { conversationKey, parseConversationKey } from './transport.ts'
 export type {
   ConversationKind,
@@ -67,6 +81,7 @@ export type {
   TransportStatus,
 } from './transport.ts'
 export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, DebounceOptions } from './timing.ts'
+
 
 
 
