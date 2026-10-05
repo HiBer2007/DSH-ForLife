@@ -230,3 +230,30 @@ test('决策说明：一行里能看出档位、来源、置信度、耗时与�
 })
 
 
+
+test('同步路径的超时必须严格是文档原值（防止"偏离泄漏"到不该受影响的路径）', async () => {
+  // 预评分有 800ms 的软预算（见 RULE_DEVIATIONS），而同步路径必须仍是 50ms。
+  // 这两条路径若混用 defaultFor，同步路径会从 50ms 悄悄变成 800ms ——
+  // 用户在白等一个本该立刻降级的评分，而且没有任何报错。
+  const { baselineValue, defaultFor } = await import('@forlife/contracts')
+  assert.equal(baselineValue('router.scorer.timeoutMs'), 50, '文档原值是 50ms，不该被改')
+  assert.equal(defaultFor<number>('router.scorer.timeoutMs'), 50, '这条不该有偏离登记')
+  assert.ok(defaultFor<number>('router.preScore.softBudgetMs') >= 50, '预评分软预算应当更宽松')
+
+  // 行为验证：一个 200ms 才返回的评分后端，在同步路径上必须**已经降级**
+  const router = new Router({
+    scorer: {
+      kind: 'local-container',
+      available: () => true,
+      score: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        return { tier: 'L3', confidence: 0.99 }
+      },
+    },
+  })
+  const started = Date.now()
+  const decision = await router.route({ text: '帮我看看这个方案行不行' })
+  const elapsed = Date.now() - started
+  assert.equal(decision.degraded, true, '200ms 的后端在 50ms 同步超时下必须降级')
+  assert.ok(elapsed < 150, `不该等满 200ms（实际 ${String(elapsed)}ms）—— 说明超时用的不是 50ms`)
+})

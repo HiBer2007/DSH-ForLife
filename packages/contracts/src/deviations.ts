@@ -42,6 +42,12 @@ export interface RuleDeviation {
  * 数值偏离：目前**没有**。
  *
  * 这本身是一个可断言的结论 —— "PLAN.MD 与 模型路由.MD 里的每个可调项都按原值实现"。
+ *
+ * 关于阶段的预评分软预算：它**不是**数值偏离。文档里唯一的评分时间预算
+ * （`router.scorer.timeoutMs` = 50ms 硬超时）**一分未改**；软预算是我们**新增**的
+ * 另一条路径上的参数（design 来源，`router.preScore.softBudgetMs`）。
+ * 把它登记成数值偏离会误导 —— 它会让人以为"文档的 50ms 被改成了 800ms"，
+ * 而事实是两条路径并存。所以它进 `RULE_DEVIATIONS`（规则级例外）。
  */
 export const DEVIATIONS: readonly Deviation[] = []
 
@@ -49,6 +55,18 @@ export const DEVIATIONS: readonly Deviation[] = []
  * 规则级偏离：允许受控例外，但必须显式登记。
  */
 export const RULE_DEVIATIONS: readonly RuleDeviation[] = [
+  {
+    rule: '模型路由.MD §5.3 / §8.5：评分在同步路径上、50ms 未返回就降级到启发式',
+    behavior:
+      '**两条路径并存**：① 同步兜底路径仍是文档原值 **50ms 硬超时 → 启发式**（一分未改）；' +
+      '② **新增**预评分路径，在防抖窗口（2–3 s）内把评分跑完（`router.preScore.softBudgetMs` = 800ms，' +
+      'design 来源参数）。超软预算的结果仍可用，但会标 `slowPreScore` 以便发现"窗口没盖住它"。',
+    reason:
+      '纯 CPU 环境下 0.5B Q4 有相当概率逼近或超过 50ms；若只有同步路径，"评分由 L1 模型主导"这条' +
+      '核心决策等于被废掉（几乎永远落到启发式兜底）。文档 §8.5 自己给了 T14（防抖期间预评分），' +
+      '所以这不是违背文档，而是启用文档已经给出的手段。',
+    approvedBy: 'EXECUTION_PLAN §2.13.4（明写"必须登记"）',
+  },
   {
     rule: 'PLAN.MD §8.6 / §9.2：同一逻辑轮次内模型固定，路由决策在轮次开始时做一次',
     behavior:

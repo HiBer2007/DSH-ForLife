@@ -25,11 +25,25 @@
  *
  * @module @forlife/router/pipeline
  */
-import { defaultFor } from '@forlife/contracts'
+import { baselineValue, defaultFor } from '@forlife/contracts'
 
 import { runGuards, type GuardContext, type GuardRule, type Tier } from './guards.ts'
 import { heuristicScore, type HeuristicInput } from './heuristic.ts'
 import { HeuristicTierScorer, type ScoreResult, type ScoringInput, type TierScorer } from './scorer.ts'
+
+/**
+ * 同步路径的硬超时（**文档原值，不走偏离**）。
+ *
+ * 刻意用 `baselineValue` 而不是 `defaultFor`：后者会把预评分的偏离值（800ms）也应用过来，
+ * 那样同步路径就会从 50ms 悄悄变成 800ms —— 用户在等一个本该立刻降级的评分。
+ * 这类"偏离泄漏到不该受影响的路径"是最难发现的一类错误。
+ *
+ * @returns 毫秒。
+ */
+function syncTimeoutMs(): number {
+  // baselineValue 返回 unknown（它不是泛型函数），所以显式断言成 number
+  return baselineValue('router.scorer.timeoutMs') as number
+}
 
 /** 档位顺序（用于"升一档"）。 */
 const TIER_ORDER: readonly Tier[] = ['L1', 'L2', 'L3']
@@ -69,6 +83,8 @@ export interface RoutingDecision {
   readonly latencyMs: number
   /** 启发式明细（降级时给，便于复盘）。 */
   readonly heuristicParts?: readonly { readonly name: string; readonly value: number }[]
+  /** 预评分是否超出了软预算（超了仍可用，但说明防抖窗口没盖住它）。 */
+  readonly slowPreScore?: boolean
 }
 
 /** 路由配置。 */
@@ -123,8 +139,10 @@ export class Router {
       }
     }
 
-    // 第二层：L1 评分（带超时）
-    const timeoutMs = defaultFor<number>('router.scorer.timeoutMs')
+    // 第二层：L1 评分（带超时）。
+    // **同步路径必须用文档原值 50ms**（保真，不动）：它是兜底路径，超时就该立刻降级，
+    // 不能让用户等。宽松的软预算只属于"预评分路径"（在防抖窗口里跑，见 startPreScore）。
+    const timeoutMs = syncTimeoutMs()
     const lowConfidence = defaultFor<number>('router.confidence.low')
 
     let scored: { tier: Tier; confidence: number } | undefined
@@ -136,12 +154,30 @@ export class Router {
     } else {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
+      // **真的竞速**，而不只是发一个 abort 信号：
+      // abort 是**协作式**的 —— 评分器不理会它的话，`await` 会一直等到对方返回，
+      // 50ms 预算就不成立了（用户白等）。所以我们自己对预算负责：
+      // 到点就用兜底结果，把那个还在跑的 Promise 丢在一边（孤儿）。
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      const budget = new Promise<'timeout'>((resolve) => {
+        timeoutId = setTimeout(() => resolve('timeout'), timeoutMs)
+      })
       try {
-        scored = await this.scorer.score(input, controller.signal)
-      } catch (error) {
-        const aborted = controller.signal.aborted
-        degradeReason = aborted ? `评分超时（>${String(timeoutMs)}ms）` : `评分失败：${String(error)}`
+        const raced = await Promise.race([
+          this.scorer.score(input, controller.signal).catch((error: unknown) => ({ error })),
+          budget,
+        ])
+        if (raced === 'timeout') {
+          degradeReason = `评分超时（>${String(timeoutMs)}ms，已放弃等待并降级）`
+        } else if ('error' in raced) {
+          degradeReason = controller.signal.aborted
+            ? `评分超时（>${String(timeoutMs)}ms）`
+            : `评分失败：${String(raced.error)}`
+        } else {
+          scored = raced
+        }
       } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId)
         clearTimeout(timer)
       }
     }
@@ -209,10 +245,20 @@ export async function routeBatch(
  * @param input - 输入。
  * @returns 取结果的函数（同步、无副作用）。
  */
-export function startPreScore(router: Router, input: ScoringInput, guardContext: GuardContext = {}): () => RoutingDecision | undefined {
+export function startPreScore(
+  router: Router,
+  input: ScoringInput,
+  guardContext: GuardContext = {},
+  options: { readonly softBudgetMs?: number } = {},
+): () => RoutingDecision | undefined {
+  // 预评分路径的软预算：默认取**偏离登记**的值（800ms）。
+  // 它在防抖窗口（2–3 s）内跑完，所以宽松是安全的 —— 这正是 T14 的意义。
+  const budgetMs = options.softBudgetMs ?? defaultFor<number>('router.preScore.softBudgetMs')
   let settled: RoutingDecision | undefined
+  const started = Date.now()
   void router.route(input, guardContext).then((decision) => {
-    settled = decision
+    // 超过软预算的结果仍然可用（只是"没赶上窗口"），但要在日志里看出来
+    settled = Date.now() - started > budgetMs ? { ...decision, slowPreScore: true } : decision
   })
   return () => settled
 }
