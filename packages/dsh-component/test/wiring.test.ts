@@ -17,7 +17,7 @@ import { test } from 'node:test'
 
 import { activeRuntimes, apply, resolveDshHome } from '../src/index.ts'
 import { resolveConfig } from '../src/config.ts'
-import { L2_NAME, L3_NAME, L2_ORDER, L3_ORDER } from '../src/prompt.ts'
+import { L2_NAME, L3_NAME, L2_ORDER, L3_ORDER, P1_NAME, P2_NAME } from '../src/prompt.ts'
 import { MEMORY_TOOL_NAMES } from '../src/tools.ts'
 import * as panelPlugin from '../src/panel-plugin.ts'
 
@@ -104,13 +104,18 @@ test('接线：完整宿主下注册 2 个提示段 + 4 个工具 + 5 条面板�
     })
     await delay(30)
 
+    // 现在有四段：P1/P2 可编辑人设与风格（100/110）+ L2/L3 记忆（120/130）
     assert.deepEqual(
       recorded.sections.map((s) => s.name).sort(),
-      [L2_NAME, L3_NAME].sort(),
-      '必须注册 L2 / L3 两个提示段',
+      [L2_NAME, L3_NAME, P1_NAME, P2_NAME].sort(),
+      '必须注册四段：P1 系统提示词 / P2 回答风格 / L2 记忆手册 / L3 中期记忆',
     )
+    // 顺序契约（缓存命中的关键）：最稳的在前，变得最勤的记忆在最后
+    assert.equal(recorded.sections.find((s) => s.name === P1_NAME)?.order, 100, 'P1 在最前')
+    assert.equal(recorded.sections.find((s) => s.name === P2_NAME)?.order, 110)
     assert.equal(recorded.sections.find((s) => s.name === L2_NAME)?.order, L2_ORDER)
     assert.equal(recorded.sections.find((s) => s.name === L3_NAME)?.order, L3_ORDER)
+    assert.ok(L2_ORDER > 110 && L3_ORDER > L2_ORDER, '记忆段必须排在可编辑人设之后（记忆变得最勤）')
 
     assert.deepEqual(recorded.tools.sort(), [...MEMORY_TOOL_NAMES].sort(), '必须注册四个记忆工具')
 
@@ -252,4 +257,5 @@ test('面板插件：独立行注册 /api/forlife/* 路由（路径必须含 /ap
     await cleanup(dir)
   }
 })
+
 

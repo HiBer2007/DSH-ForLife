@@ -20,7 +20,8 @@ import { isAbsolute, join } from 'node:path'
 
 import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
-import { registerMemorySections, type SystemPromptLike } from './prompt.ts'
+import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
+import { seedDefaultPrompts } from './prompt-store.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -158,8 +159,12 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   // ② 提示段（L2 + L3）
   const systemPrompt = ctx.get('systemPrompt') as SystemPromptLike | undefined
   if (config.registerPromptSections && systemPrompt !== undefined) {
+    // 先播种默认提示词（幂等），再注册段：这样首次启动看到的不是空白框，而是真正生效的内容
+    const seeded = seedDefaultPrompts(runtime.db)
+    if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
+    disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
     disposers.push(registerMemorySections(systemPrompt, runtime))
-    log('已注册提示段 forlife:l2-index / forlife:l3-mid')
+    log('已注册提示段 forlife:p1-system(100) / forlife:p2-style(110) / forlife:l2-index(120) / forlife:l3-mid(130)')
   } else if (config.registerPromptSections) {
     always('⚠️ 未找到 systemPrompt 服务：记忆区不会进入系统提示词（只写库不生效）。')
   }
@@ -206,6 +211,8 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
+
 
 
 

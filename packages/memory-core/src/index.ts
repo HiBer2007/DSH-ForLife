@@ -29,3 +29,17 @@ export type {
   ParseDecisionResult,
   PushToMidEntry,
 } from './compaction.ts'
+
+export {
+  diffPromptLines,
+  estimatePromptTokens,
+  hashPromptText,
+  normalizePromptText,
+  PROMPT_VARIABLES,
+  promptVariable,
+  renderPromptPreview,
+  validatePromptText,
+  VARIABLE_NAME,
+} from './prompt-text.ts'
+export type { PromptDiffLine, PromptRenderResult, PromptValidation, PromptVariableSpec } from './prompt-text.ts'
+

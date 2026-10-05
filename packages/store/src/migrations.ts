@@ -500,6 +500,57 @@ CREATE INDEX IF NOT EXISTS idx_admin_chat_pending ON admin_chat (role, handled, 
 
 const m0008Checksum = createHash('sha256').update(m0008.sql).digest('hex')
 
+/**
+ * 迁移 9：提示词版本与覆盖（阶段 4）。
+ *
+ * 用户硬要求："**系统提示词、回答风格提示词必须可以编辑**"。
+ * 可编辑就必须可追溯、可回滚 —— 否则改坏一次就再也回不去，
+ * 而提示词是**影响模型行为最直接**的东西（比记忆改动影响更大）。
+ *
+ * 设计要点：
+ *  - `sha256` 存的是**规范化之后**的哈希（规范化规则见 memory-core/prompt-text.ts）。
+ *    存原始文本的哈希会让"只改了行尾空格"也算一版，回滚列表很快就没法看了。
+ *  - `active` 唯一：每个 slug 同时只有一版生效。用部分唯一索引保证（SQLite 支持）。
+ *  - `prompt_overrides` 做**按会话覆盖**，但注意它是给"尾部注入"用的：
+ *    写进稳定前缀会让多会话单窗口下每轮都换前缀（缓存全废）。
+ */
+const m0009 = {
+  version: 9,
+  name: '0009_prompt_revisions',
+  sql: `
+CREATE TABLE IF NOT EXISTS prompt_revisions (
+  id           TEXT PRIMARY KEY,
+  slug         TEXT NOT NULL,           -- p1-system | p2-style
+  text         TEXT NOT NULL,           -- 规范化后的文本
+  sha256       TEXT NOT NULL,           -- 规范化文本的哈希
+  token_count  INTEGER NOT NULL DEFAULT 0,
+  variables    TEXT NOT NULL DEFAULT '[]', -- 用到的变量（面板要显示）
+  note         TEXT,
+  created_by   TEXT NOT NULL DEFAULT 'admin', -- admin | model | system
+  created_at   TEXT NOT NULL,
+  active       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_revisions_slug ON prompt_revisions (slug, created_at DESC);
+-- 每个 slug 至多一版 active
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_revisions_active ON prompt_revisions (slug) WHERE active = 1;
+
+CREATE TABLE IF NOT EXISTS prompt_overrides (
+  scope       TEXT NOT NULL,            -- group:88888 / private:10001 / *
+  slug        TEXT NOT NULL,            -- 目前只允许覆盖 p2-style（P1 是全局人设，不该按会话分裂）
+  revision_id TEXT NOT NULL,
+  created_by  TEXT NOT NULL DEFAULT 'admin',
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (scope, slug)
+);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0009.sql)
+  },
+} as const
+
+const m0009Checksum = createHash('sha256').update(m0009.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -550,10 +601,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0008Checksum,
     up: m0008.up,
   },
+  {
+    version: m0009.version,
+    name: m0009.name,
+    checksum: m0009Checksum,
+    up: m0009.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

@@ -35,8 +35,15 @@ export interface ForlifeConfig {
   readonly recallMaxPerTurn: number
   /** 上下文上限（用于 §4.4 的"短期占比"分母）；0 = 用基线默认。 */
   readonly contextWindowTokens: number
-  /** 是否把 L2/L3 段注册进系统提示词。 */
+  /** 是否把可编辑提示词与记忆段注册进系统提示词。 */
   readonly registerPromptSections: boolean
+  /**
+   * 可编辑提示词里的变量取值（`{{persona_name}}` 这类）。
+   *
+   * 这些是**稳定变量**：改了它们等于改了前缀，会造成一次缓存未命中（低频、可接受）。
+   * 动态内容（时间、当前会话）不走这里 —— 它们只允许出现在尾部注入里。
+   */
+  readonly promptVariables: Readonly<Record<string, string>>
   /** 是否注册工具（关闭后模型看不到记忆工具，用于排障）。 */
   readonly registerTools: boolean
   /** 是否暴露 `/api/forlife/*` 面板接口。 */
@@ -96,7 +103,18 @@ export const Config = z.object({
     .default(0)
     .description('上下文上限（token）。用于压缩裁决里的"短期占比"；0 = 用默认 128k，宿主有 tokenMeter 时以它为准。')
     .volatile(),
-  registerPromptSections: z.boolean().default(true).description('是否把记忆区注册进系统提示词。'),
+  registerPromptSections: z.boolean().default(true).description('是否把可编辑提示词与记忆段注册进系统提示词。'),
+  promptVariables: z
+    .dict(z.string())
+    .default({
+      persona_name: defaultFor<string>('prompt.variables.personaName'),
+      owner_name: defaultFor<string>('prompt.variables.ownerName'),
+      language: defaultFor<string>('prompt.variables.language'),
+      persona_role: defaultFor<string>('prompt.variables.personaRole'),
+      style_notes: defaultFor<string>('prompt.variables.styleNotes'),
+    })
+    .description('可编辑提示词里的稳定变量取值（改动会导致一次缓存未命中）。')
+    .volatile(),
   registerTools: z.boolean().default(true).description('是否注册记忆工具（排障时可关闭）。'),
   exposePanelApi: z.boolean().default(true).description('是否暴露 /api/forlife/* 面板接口。'),
   verbose: z.boolean().default(false).description('打印详细诊断日志。'),
@@ -122,12 +140,21 @@ export const CONFIG_BASELINE_KEYS: readonly string[] = [
  * 结构判断与之等价。我们的字段全是标量，不存在"本来就有 get 方法"的误判风险。
  */
 function readConfigValue<T>(value: unknown, fallback: T): T {
-  if (value === undefined || value === null) return fallback
-  if (typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
-    const snapshot = (value as { get(): unknown }).get()
-    return (snapshot ?? fallback) as T
+  /** 解开 Volatile 引用；不是引用就原样返回。 */
+  const unwrap = (candidate: unknown): unknown => {
+    if (candidate === undefined || candidate === null) return undefined
+    if (typeof candidate === 'object' && typeof (candidate as { get?: unknown }).get === 'function') {
+      return (candidate as { get(): unknown }).get() ?? undefined
+    }
+    return candidate
   }
-  return value as T
+  const fromRaw = unwrap(value)
+  if (fromRaw !== undefined) return fromRaw as T
+  // **兜底值也必须解开**：`Config({})` 的结果里 volatile 字段同样是引用对象。
+  // 早期版本只解开了"显式传入"的那一路，于是"宿主没传值"时会把 Volatile 引用当数据用 ——
+  // 症状很隐蔽：标量字段看着像能用（碰巧），而 dict 字段会把 `get` 当成一个键
+  // （注册出一个名叫 `get` 的提示词变量，然后系统提示词装配直接抛错）。
+  return (unwrap(fallback) ?? fallback) as T
 }
 
 /**
@@ -149,9 +176,13 @@ export function resolveConfig(raw: Partial<ForlifeConfig>): ForlifeConfig {
     recallMaxPerTurn: readConfigValue(raw.recallMaxPerTurn, defaults.recallMaxPerTurn),
     contextWindowTokens: readConfigValue(raw.contextWindowTokens, defaults.contextWindowTokens),
     registerPromptSections: readConfigValue(raw.registerPromptSections, defaults.registerPromptSections),
+    promptVariables: readConfigValue(raw.promptVariables, defaults.promptVariables),
     registerTools: readConfigValue(raw.registerTools, defaults.registerTools),
     exposePanelApi: readConfigValue(raw.exposePanelApi, defaults.exposePanelApi),
     verbose: readConfigValue(raw.verbose, defaults.verbose),
   }
 }
+
+
+
 

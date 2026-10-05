@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
+import { activePrompt, type PromptSlug } from './prompt-store.ts'
 import {
   appendMidEntry,
   bumpEpoch,
@@ -384,6 +385,36 @@ export class MemoryRuntime {
   }
 
   /**
+   * 生效的提示词文本（P1/P2）。
+   *
+   * 走一层内存缓存：宿主的函数型 section **每次装配都会重算**，
+   * 每次装配都去查库 + 解析版本是没必要的开销。缓存键是"当前 active 版本 id"，
+   * 所以保存新版本后一次调用就会自然换新（不需要手工清缓存也能生效），
+   * `invalidatePromptCache()` 只是让"立刻生效"更确定。
+   *
+   * @param slug - 槽位。
+   * @returns 文本（没有则返回空串：宿主会丢弃空段）。
+   */
+  promptText(slug: PromptSlug): string {
+    const active = activePrompt(this.db, slug)
+    const key = `${slug}:${active?.id ?? ''}`
+    const cached = this.promptCache.get(key)
+    if (cached !== undefined) return cached
+    const text = active?.text ?? ''
+    // 只保留当前版本的缓存（版本会不断新增，不清会越攒越多）
+    for (const existing of [...this.promptCache.keys()]) {
+      if (existing.startsWith(`${slug}:`) && existing !== key) this.promptCache.delete(existing)
+    }
+    this.promptCache.set(key, text)
+    return text
+  }
+
+  /** 清掉提示词缓存（保存/回滚后调用，让"下一轮生效"更确定）。 */
+  invalidatePromptCache(): void {
+    this.promptCache.clear()
+  }
+
+  /**
    * 当前正在处理的 QQ 会话（若有）。
    *
    * 用途：**溯源标记**（§2.17.5）。模型调 `remember` 时不必自己填 scope ——
@@ -417,6 +448,9 @@ export class MemoryRuntime {
       lastOutboundAt: at(outbound.at),
     }
   }
+
+  /** 提示词文本缓存（键：`slug:revisionId`）。 */
+  private readonly promptCache = new Map<string, string>()
 
   /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
   resetCompactionAccounting(): void {
@@ -563,6 +597,8 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
+
 
 
 
