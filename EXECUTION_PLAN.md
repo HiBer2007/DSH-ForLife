@@ -1760,23 +1760,76 @@ model_routes(
 | **日志文件被旧进程占用导致读到旧输出** | 排查"改了代码但日志没变"花掉最久：`job_kill` 杀的是 pwsh 包装而非派生的 node，旧进程仍持有端口与日志句柄。教训：**每次用新日志文件名**，并按端口杀进程（`Get-NetTCPConnection`）。 |
 
 
-### 阶段 2 · 压缩与沉降（PLAN 阶段二，预计 8–12 天）
+### 阶段 2 · 压缩与沉降（PLAN 阶段二）✅ **已完成**
 
 **目标**：两段压缩解耦跑通，约束系统生效，全链路可审计。
 
-**交付物**
-1. **自定义 `CompactionEngine`**（`ctx.compaction`）：`compactIfNeeded` / `compactNow` / `compactRegion` 三入口；profile patch 里禁用 `compaction-basic` 行、挂载我们的实现。
-2. **结构化压缩决策**：覆写 `summarize()`（`BasicCompactionEngine` 明确它是"唯一子类定制钩子"）→ 一次 `ctx.llm.stream({ provider, model, reasoningEffort, purpose:'compaction', messages, system, tools, signal })`（推理强度取值 `'off'|'low'|'high'|'max'`）；输出 PLAN §4.2 的 JSON 并做 Schema 校验（`push_to_mid` / `keep_in_short` / `fragment_mid` / `reasoning`）；请求前缀复用对话自身的 system+tools+messages，避免额外打掉 KV cache。
-3. **约束与冷却裁决器**：PLAN §4.4 全部阈值 + 豁免 + 拒绝反馈 JSON；`request_compaction(reason)` 工具。
-4. **中期→长期沉降** + 碎片索引（四层长度限制、合并规则、淘汰规则、独立预算）。
-5. **压缩日志三写**：表 + session 事件 + effect ledger 记录；后台"压缩日志"一级页面（前后 token、产物、理由、批准/拒绝原因）。
-6. **崩溃一致性**：`compaction/start`/`compaction/end` 标记对 + 启动时按 epoch 校验回滚。
+> 勾选约定同前：`[x]` 已达成并附证据；`[~]` 部分达成并写明差在哪；`[ ]` 未开始。
 
-**验收标准**
-- [ ] 触发一次压缩后：L3 尾部出现新条目、L4 被替换为单个 summary 节点、`compaction_log` 有完整记录、缓存未命中**仅一次**（用前缀哈希次数证明）。
-- [ ] 冷却期内 `request_compaction` 被拒且返回字段与 PLAN §4.4 逐字段一致；`token ≥ 6000` 或占比 ≥75% 时豁免生效。
-- [ ] 压缩中途 kill：重启后 epoch 回到上一个完整状态，无半写条目（注入故障测试）。
-- [ ] 沉降后中期条目变为 `[F1→]` 碎片，`recall_longterm` 能取回全文。
+**交付物**（全部完成）
+
+1. ✅ **自定义 `CompactionEngine`**：`ForlifeCompactionEngine extends BasicCompactionEngine`，三个入口继承基类实现
+   （会话表面、工具配对平衡、续写重试、并发锁这些我们已经验证过不好惹的逻辑不重造），
+   只覆写宿主明确指定的唯一子类钩子 `summarize()`。
+   profile 三个（forlife / forlife-headless / forlife-web）都 `disabled: true` 掉 `compaction-basic` 行并挂 `forlife-memory/compaction`。
+   **真机证据**：`dsh --profile forlife-headless` 启动日志出现
+   `[forlife] 压缩引擎已挂载（ctx.compaction = ForlifeCompactionEngine）` —— 因为基类构造函数里写死了
+   `super(ctx, "compaction")`，子类被挂上那一刻该服务就是我们的。
+2. ✅ **结构化压缩决策**：覆写 `summarize()` → **一次** `ctx.llm.stream()`（`purpose:'compaction'`、
+   `tools` 原样复用、`toolHistory`、转发 `signal`）→ 解析 PLAN §4.2 的 JSON（`push_to_mid` / `keep_in_short` /
+   `fragment_mid` / `reasoning`）并做**结构校验**：不合规**直接抛错**交给宿主重试，绝不写半成品记忆。
+   - **前缀复用**：`SummarizationInput.messages` 已是"派生 system 头 + 被遮蔽区域"，我们**原样重放**它、
+     把压缩指令**追加为最后一条 user 消息** ⇒ 前缀与主对话逐字节对齐，只有尾部是新增输入。
+   - 压缩指令里带上 L3 渲染全文 + 条目化清单（PLAN §4.2 的第 2、3 块）—— 但放在**尾部**而不是轨迹之前，
+     因为插到前面会在那一点打断前缀、让暖缓存失效（§4.2 的块顺序 vs 交付物 2 明确要求的"别多打掉 KV cache"，
+     这里取后者，已记录为取舍）。
+   - 消息来源注册为 `forlife:compaction-instruction` —— 铁律：绝不发出 `source.kind === 'user'`。
+3. ✅ **约束与冷却裁决器 + `request_compaction` 工具**：`decideCompaction()` 实现 §4.4 的全部阈值、
+   两条豁免与拒绝反馈 JSON。工具被拒时返回 `{approved, reason, current:{tokens,turns,tool_calls}, required:{...}, hint}`
+   **逐字段一致**。裁决依据是**本次请求之前**的累积（工具不把自己算进去）。
+   - 批准后**入队**而非直接压缩：工具执行上下文里只有 `callId`/`signal`/`deferContext`，**没有 agent**，
+     而改会话表面必须要 agent。引擎覆写 `compactIfNeeded` 时消费队列，改用宿主自己的 `context-overflow` 语义强制执行
+     （该语义按文档就是"绕过常规阈值与保留尾部策略"）。
+4. ✅ **中期→长期沉降 + 碎片索引**：`runtime.settle()`（**不调模型**的维护任务，可按 90 天或占比触发）
+   + 压缩决策里的 `fragment_mid` 路径；四层长度限制（单条 hint ≤80 token、entities ≤5、总量 ≤50 条或 ≤20%、
+   合并/淘汰）全部落在 `memory-core/planFragmentation` 与 `makeFragmentHint`，**占比按"碎片化后 hint 的 token"算**
+   （按原大小算会让大条目永远无法碎片化 —— 这个错误被测试抓到过）。
+5. ✅ **压缩日志三写 + 后台视图**：
+   - ① `compaction_log`（PLAN §4.5 字段，测试逐字段断言）；
+   - ② 会话事件 `forlife.compaction.committed`（带 `ignorable: true`）；
+   - ③ **`effects` 影响审计**（迁移 0004，带 `affects_model` / `reported` 两列）——
+     为阶段 3 铁律"影响模型的操作必须报告"预置了 `listUnreportedEffects()` 取数接口。
+   - 后台：面板新增**压缩历史**区块（事务视角：状态 / epoch 变化 / UTC 时间 / 会话 / 回滚原因）。
+6. ✅ **崩溃一致性**：迁移 0003 `compaction_runs` —— **动手之前先把计划落盘**（要写哪些 id、要碎片化哪些 id、
+   要写哪些长期 id），成功改 `committed`，启动时 `recoverPendingCompactions()` 扫出残留的 `started` 按计划回滚。
+
+**验收标准（逐条勾选）**
+
+- [x] 触发一次压缩后：L3 尾部出现新条目、L4 被替换为单个 summary 节点、`compaction_log` 有完整记录、
+      **缓存未命中仅一次**（用前缀哈希次数证明）
+      证据：`acceptance-phase2.test.ts` 的「验收①」。用真 `dsh-system-prompt` 装配：无写入时连续两轮指纹相同
+      → 压缩后指纹变化一次 → 之后连续三轮指纹恒定；断言"整段会话只有一次由压缩引起的指纹变化"。
+      L4 被替换为**单个**摘要节点：`summarize` 返回的 summary 即 `keep_in_short` 的渲染，基类用 `frameSummary` 包成
+      一个 `user/message` 替换节点（`content: frameSummary(summaryResult.summary)`）。
+- [x] 冷却期内 `request_compaction` 被拒且返回字段与 PLAN §4.4 逐字段一致；`token ≥ 6000` 或占比 ≥75% 时豁免生效
+      证据：三条测试分别覆盖 —— 太薄（用 PLAN 示例的 1200/2/3，断言 `hint` 等于"再完成至少 1 轮对话或累积 800 token 后可再次请求"）、
+      冷却期（`too_frequent` 且 hint 说明三个维度各差多少）、两条豁免（`token_threshold` / `context_pressure`）。
+- [x] 压缩中途 kill：重启后 epoch 回到上一个完整状态，无半写条目（注入故障测试）
+      证据：`store/test/compaction-runs.test.ts` 三条真故障注入 —— 中途不调用任何收尾函数就丢弃状态（等价 kill -9）
+      → 重启发现 1 个未完成事务并按计划回滚（删新写条目、恢复碎片、epoch 退回）；
+      回滚幂等；"回滚到一半又崩"第二次仍收敛。另有引擎层注入写入故障 ⇒ 半写被回滚、事务标记 `aborted`。
+- [x] 沉降后中期条目变为 `[F1→]` 碎片，`recall_longterm` 能取回全文
+      证据：`acceptance-phase2.test.ts` 的「验收④」—— 渲染文本出现 `[F1→]` 且含 hint、不含全文；
+      `recall_longterm` 命中的条目 `content` 含全文；未超期的条目仍是活跃条目。
+
+**已知取舍与遗留（诚实标注）**
+
+| 项 | 状态 |
+| :--- | :--- |
+| 真模型跑一次完整压缩 | ⏳ **没跑过**：本机无 API key。引擎的装配、指令构造、解析、落库、回滚全部有测试；LLM 调用形状按宿主 `summarizeWithLlm` 的实测代码抄写，但"真模型返回的 JSON 是否合规"只能等有凭据时验。 |
+| `compactNow` / `compactRegion` 被外部直接调用 | ⏳ 未单独测：三入口都继承基类实现，我们只改 `summarize`；被测的是"经 `compactIfNeeded` 的路径"。 |
+| 排队请求的强制执行时机 | ⏳ 依赖宿主调用 `compactIfNeeded`（压力策略驱动）。阶段 3 网关接管轮次后会有更确定的触发点。 |
+| `reasoningEffort` / 强模型摘要 | ⏳ 当前跟随即有配置；"压缩用强模型 + 高推理强度"要等阶段 5 的模型路由与端点清单落地后接。 |
 
 ### 阶段 3 · QQ 集成（PLAN 阶段三，预计 8–12 天；含 U2 spike）
 
