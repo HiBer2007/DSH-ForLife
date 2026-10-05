@@ -179,6 +179,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/dsh-component
 
+  profiles/forlife-qq:
+    dependencies:
+      forlife-memory:
+        specifier: workspace:*
+        version: link:../../packages/dsh-component
+
   profiles/forlife-web:
     dependencies:
       forlife-memory:

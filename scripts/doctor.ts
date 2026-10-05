@@ -258,6 +258,37 @@ const icon: Record<Level, string> = { ok: '✅', warn: '⚠️ ', fail: '❌' }
 const pad = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - [...s].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0)))
 
 console.log('\nDSH-ForLife · forlife doctor\n' + '─'.repeat(72))
+// ── QQ 网关接线（阶段 3）──────────────────────────────────────────────────
+// 守两类"改一处忘一处"的错：包导出漏了 ⇒ profile 报 "failed to import"；
+// QQ profile 没挂网关行 ⇒ 网关根本没跑起来，而日志上什么都看不出来。
+{
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'packages', 'dsh-component', 'package.json'), 'utf8')) as {
+    exports?: Record<string, string>
+  }
+  const entries = manifest.exports ?? {}
+  const missing = ['./gateway', './compaction', './panel'].filter((key) => entries[key] === undefined)
+  const patchPath = join(REPO_ROOT, 'profiles', 'forlife-qq', 'cordis.patch.yml')
+  const hasProfile = existsSync(patchPath)
+  const patch = hasProfile ? readFileSync(patchPath, 'utf8') : ''
+  const wired = patch.includes('forlife-memory/gateway')
+  if (missing.length > 0) {
+    add({
+      level: 'fail',
+      title: 'QQ 网关接线',
+      detail: `包导出缺少 ${missing.join(', ')}`,
+      fix: '在 packages/dsh-component/package.json 的 exports 里补上（否则 profile 加载时报 failed to import）。',
+    })
+  } else if (!hasProfile || !wired) {
+    add({
+      level: 'fail',
+      title: 'QQ 网关接线',
+      detail: hasProfile ? 'profiles/forlife-qq 没有挂 forlife-memory/gateway' : '缺少 profiles/forlife-qq',
+      fix: '本地跑网关靠这个 profile（生产走 compose 的独立 gateway 容器）。',
+    })
+  } else {
+    add({ level: 'ok', title: 'QQ 网关接线', detail: 'forlife-memory/gateway 可解析；forlife-qq 已挂网关行（端口 3080）' })
+  }
+}
 for (const c of checks) {
   console.log(`${icon[c.level]} ${pad(c.title, 34)} ${c.detail}`)
   if (c.fix !== undefined) console.log(`   ${' '.repeat(34)} ↳ ${c.fix}`)
@@ -293,4 +324,6 @@ function readdirSafe(dir: string): string[] {
     return []
   }
 }
+
+
 

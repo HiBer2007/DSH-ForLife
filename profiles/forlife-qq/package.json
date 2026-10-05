@@ -1,0 +1,17 @@
+{
+  "name": "dsh-profile-forlife-qq",
+  "private": true,
+  "description": "本地开发用：记忆 + 结构化压缩 + QQ 网关（生产环境里网关是 compose 的独立容器，不走这个 profile）。",
+  "dependencies": {
+    "forlife-memory": "workspace:*"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-headless",
+        "forlife-memory"
+      ]
+    }
+  }
+}

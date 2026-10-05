@@ -1,0 +1,31 @@
+# 本地开发用 profile：一条命令把「记忆 + 压缩 + QQ 网关」都跑起来。
+#
+# 生产部署里网关是 deploy/docker-compose.yml 里的**独立容器**（与 dsh 共享数据卷，
+# 通过同一个 SQLite 交换发送任务）。这个 profile 只是让你在本地不用起 compose
+# 就能验网关挂载与反向 WS 监听；两者用的是同一份插件代码。
+- id: forlife-memory
+  name: forlife-memory
+  config:
+    storageRoot: ./forlife
+    verbose: true
+
+# 压缩引擎：禁用宿主的 compaction-basic，挂我们的结构化压缩实现
+# （`ctx.compaction` 是单实现服务，两个实现会互相覆盖）
+- id: compaction-basic
+  disabled: true
+
+- insert:
+    - id: forlife-compaction
+      name: 'forlife-memory/compaction'
+
+    # QQ 网关：OneBot v11 反向 WS 服务端。
+    # 端口默认 3080 —— 如果本机已被占用，改这里或起 compose 版本。
+    - id: forlife-gateway
+      name: 'forlife-memory/gateway'
+      config:
+        enabled: true
+        port: 3080
+        host: 127.0.0.1
+        driver: headless
+        driverProfile: forlife-headless
+        debounceMs: 3000

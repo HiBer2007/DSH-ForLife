@@ -14,7 +14,10 @@
     "./dsh-plugin.json": "./dsh-plugin.json",
     "./package.json": "./package.json",
     "./panel": "./src/panel-plugin.ts",
-    "./compaction": "./src/compaction-engine.ts"
+    "./compaction": "./src/compaction-engine.ts",
+    "./gateway": "./src/gateway-plugin.ts",
+    "./sources": "./src/sources.ts",
+    "./qq-tools": "./src/qq-tools.ts"
   },
   "files": [
     "src",
