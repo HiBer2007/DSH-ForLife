@@ -35,6 +35,7 @@ const CHECKS = [
   { name: 'RoutesPanel loading 分支用 jsx', needle: "正在读取模型与路由…" },
   { name: 'renderPanel 报错带路径', needle: '结构树里的节点不像元素' },
   { name: '预览结果读 ui.preview', needle: '(ui && ui.preview) || snapshot.preview' },
+  { name: '空元素不带 children（React #137 白屏）', needle: 'const VOID_TAGS = new Set(' },
 ]
 let failed = 0
 for (const check of CHECKS) {
@@ -42,6 +43,11 @@ for (const check of CHECKS) {
   if (!ok) failed += 1
   console.log(`  ${ok ? '✓' : '✖'} ${check.name}`)
 }
+// 否定检查：旧的"无条件写 children"必须已经不在了（它正是 #137 白屏的成因）
+const unconditional = source.includes('Object.assign({}, panel.props, { children:')
+console.log(`  ${unconditional ? '✖' : '✓'} 没有"无条件写 children"的旧写法`)
+if (unconditional) failed += 1
+
 // 裸描述符的 return 只允许出现在 describeRoutes 里（那是纯构造，组件负责包一层）
 const bare = source.split("return node('div', {}, children)").length - 1
 console.log(`  ${bare === 1 ? '✓' : '✖'} 裸描述符 return 只有 1 处（describeRoutes 内部），实际 ${bare} 处`)

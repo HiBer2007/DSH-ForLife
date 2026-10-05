@@ -2453,18 +2453,24 @@ memory.example.com {
 
 | # | 你看到的 | 真因 | 修复与护栏 | 状态 |
 | :-- | :--- | :--- | :--- | :--- |
-| P1 | 「模型与路由」整块空白（左侧导航有，右侧内容区空） | `RoutesPanel` 把 `node()` 造的**裸描述符**（`{type, props, children}` 纯数据）直接 `return` 给 React，漏了 `renderPanel(jsx, …)`；React 抛 "Objects are not valid as a React child"，被宿主 `SlotErrorBoundary` 吞成 `<div data-slot-error>`。**loading 分支同样漏了** | 两个分支都改走 `jsx()` / `renderPanel()`；新增 `test/panel-render.test.ts`：用**真服务端响应**把四个组件各渲染**两遍**，断言返回值必须是 `jsx()` 造的元素。**已验证**：撤回修复该测试立刻变红 | ✅ |
-| P2 | 点「预览」没反应（永远停在"点「预览」看看…"） | 预览结果在 React 状态 `ui.preview` 里，卡片却读 `snapshot.preview` —— 而 `fetchPromptSnapshot` **从不设置**该字段。旧测试把 `preview` 塞进了 snapshot，所以一直绿（典型的"测我构造了什么"） | 改为 `promptPreviewCard(ui.preview \|\| snapshot.preview)`；新增走真实路径的测试。**已验证**：撤回修复该测试变红 | ✅ |
-| P3 | 结构树出错时只剩一句无用的 `Cannot read properties of undefined (reading 'map')` | `renderPanel` 递归时没有位置信息，且宿主 ErrorBoundary 把异常吞掉，排查成本极高 | `renderPanel(h, panel, path)` 带上路径；遇到"不像元素的节点"直接报出 type 与位置 | ✅ |
+| **P1** | **「QQ 与后台」和「模型与路由」两块一起空白**（记忆、提示词正常） | **React #137**：`renderPanel` 无条件写 `children`，而 `node('input', {…})` 的 `children` 是 `[]`。React 判的是 `props.children != null` —— **空数组不是 null**，于是抛 "input is a void element tag and must neither have `children` nor use `dangerouslySetInnerHTML`"，被宿主 `SlotErrorBoundary` 吞成 `<div data-slot-error>`。**四个面板里只有这两块含 `<input>`**（QQ 的人类直发框、路由页的登记表单），所以恰好是这两块白屏 | `VOID_TAGS` 清单 + **没有子节点时绝不写 `children`**；字符串子节点在空元素上直接抛错（响亮失败）。`panel-render.test.ts` 的 jsx 替身**照抄 React 这条校验**。**已验证**：撤回修复 → QQ 与路由立刻复现同一条 #137，记忆/提示词不受影响（与浏览器现象逐块一致） | ✅ |
+| P2 | 「模型与路由」整块空白（**第二层原因**，P1 修好后才会显形） | `RoutesPanel` 把 `node()` 造的**裸描述符**直接 `return` 给 React（漏了 `renderPanel(jsx, …)`），抛 "Objects are not valid as a React child"。**loading 分支同样漏了** | 两个分支都改走 `jsx()` / `renderPanel()`。**已验证**：撤回修复该测试变红 | ✅ |
+| P3 | 点「预览」没反应（永远停在"点「预览」看看…"） | 预览结果在 React 状态 `ui.preview` 里，卡片却读 `snapshot.preview` —— 而 `fetchPromptSnapshot` **从不设置**该字段。旧测试把 `preview` 塞进了 snapshot，所以一直绿（典型的"测我构造了什么"） | 改为 `promptPreviewCard(ui.preview \|\| snapshot.preview)`；新增走真实路径的测试。**已验证**：撤回修复该测试变红 | ✅ |
+| P4 | 出错时只剩一句 `Cannot read properties of undefined (reading 'map')` | `renderPanel` 递归时没有位置信息，且宿主 ErrorBoundary 把异常吞掉，排查成本极高 | `renderPanel(h, panel, path)` 带上路径；遇到"不像元素的节点"报出 type 与位置 | ✅ |
 
 **验收标准**
 
 - [x] 四个设置区块在真实数据下都渲染出内容，且**第一遍（加载中）与第二遍（数据到达）都必须是 React 元素**（`panel-render.test.ts` 5 项）
 - [x] 面板测试的输入来自**真实服务端响应**（`packages/dsh-component/test/fixtures/panel-api.json`，密钥字段已脱敏），不是手写的假快照
 - [x] 每条修复都有"撤回即变红"的证据；另有**自检项**：故意让一个组件返回裸描述符，检查必须报错（防"永远不失败的检查"）
-- [x] 测试替身本身按 React 语义写（`{type, props}` 元素形状、子节点在 `props.children`、Hook 数量一致性）——替身写错会冤枉被测代码，我这次就被自己的替身绕了一圈
+- [x] 测试替身按 React 语义写全：`{type, props}` 元素形状、子节点在 `props.children`、Hook 数量一致性、**空元素不得带 children** —— 少最后一条时 P1 在测试里完全隐形（这就是它漏网的原因）
+- [x] 非法 DOM 属性审计：全部 `node()` 的 prop 名均是合法 React prop，受控组件都带 `onChange`
 - [x] 服务端**实际发出去**的客户端已核验含修复（不是只看本地文件）：`scripts/verify-served-client.mjs`
 - [ ] 你在浏览器里确认四个区块都有内容（M1 的浏览器那一跳；服务端已重启）
+
+> **这一节最大的教训**：P1 的替身保真度不够（不知道 React 会拒绝空元素带 children），
+> 于是"测试全绿 + 浏览器全白"能同时成立。**替身与真 React 的差异，就是测试的盲区** ——
+> 每次浏览器里出现测试抓不到的错，第一件事应该是问"我的替身少了哪条规矩"。
 
 
 | # | 开关 | 状态 | 建议 / 说明 |

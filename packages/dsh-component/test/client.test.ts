@@ -613,6 +613,31 @@ test('渲染内容：路由读取失败时如实报错（不装作没事）', ()
  *
  * 教训：**测"我构造了什么"不等于测"React 会渲染出什么"**。这个桩刻意不保留第三个参数。
  */
+test('渲染契约：空元素（void tag）绝不能带 children —— React #137，整块面板会被吞掉', () => {
+  const { exports } = loadClientModule()
+  const h = (type: unknown, props: unknown): unknown => ({ type, props })
+
+  // ① `node('input', {…})` 的 children 是 `[]`；React 判的是 `props.children != null`，
+  //    空数组**不是** null ⇒ 抛 "input is a void element tag…"（生产版 = Minified React error #137）。
+  //    真凶就是这里：「QQ 与后台」「模型与路由」各有一个 <input>，两块一起白屏。
+  const bare = exports.renderPanel(h as never, { type: 'input', props: { value: 'x' }, children: [] }) as {
+    props: Record<string, unknown>
+  }
+  assert.ok(!('children' in bare.props), 'input 的 props 里不能出现 children（空数组也算！）')
+
+  // ② 真给了子节点就必须响亮失败，而不是渲染出一块白屏
+  assert.throws(
+    () => exports.renderPanel(h as never, { type: 'input', props: {}, children: ['文字'] }),
+    /空元素 <input> 不能有子节点/,
+  )
+
+  // ③ 普通容器不受影响：有子节点照常进 props.children
+  const box = exports.renderPanel(h as never, { type: 'div', props: {}, children: ['文字'] }) as {
+    props: { children: unknown }
+  }
+  assert.equal(box.props.children, '文字')
+})
+
 test('渲染契约：子节点必须进 props.children（jsx 的第三参是 key，不是 children）', () => {
   const { exports } = loadClientModule()
   // 与 react/jsx-runtime 同签名：刻意忽略第三个参数

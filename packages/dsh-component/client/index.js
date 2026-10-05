@@ -229,6 +229,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * HTML 空元素（void element）：按规范它们**不能**有子节点，React 会为此抛错。
+     * 这份清单来自 HTML 规范里的 void elements 全集。
+     */
+    const VOID_TAGS = new Set([
+      'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+      'link', 'meta', 'param', 'source', 'track', 'wbr',
+    ])
+
+    /**
      * 结构树 → 宿主 React 元素。
      * @param {Function} h - 造元素函数（宿主传 `jsx`）。
      * @param {object} panel - `describePanel` 的产物。
@@ -260,7 +269,21 @@ window.__ModuleLoader__.load({
       // 不是子节点。我第一版写成了 `h(type, props, ...kids)` —— 所有子节点都被当成 key
       // 丢掉，渲染出来是一个**空的 div**，而面板自己的测试（读的是本文件构造的树）
       // 一直是绿的。所以下面还留了一条"必须走 React 的契约"的测试盯着这件事。
-      return h(panel.type, Object.assign({}, panel.props, { children: kids.length === 1 ? kids[0] : kids }))
+      //
+      // **但"没有子节点"时绝不能写 `children`**：`node('input', {…})` 的 `children` 是 `[]`，
+      // 而 React 判的是 `props.children != null` —— 空数组**不是** null，
+      // 于是抛 "input is a void element tag and must neither have `children` nor use
+      // `dangerouslySetInnerHTML`"（生产版显示为 Minified React error #137，args[]=input）。
+      // 后果：整块面板被宿主的 SlotErrorBoundary 吞成空 div，只有 console 里才有真相 ——
+      // 「QQ 与后台」「模型与路由」各有一个 `<input>`，所以这两块一起白屏。
+      const props = Object.assign({}, panel.props)
+      if (kids.length > 0) {
+        if (VOID_TAGS.has(panel.type)) {
+          throw new Error(`空元素 <${panel.type}> 不能有子节点（位置：${at}）—— React 会拒绝渲染整个区块`)
+        }
+        props.children = kids.length === 1 ? kids[0] : kids
+      }
+      return h(panel.type, props)
     }
 
     /** 结构树 → 纯文本（便于断言与肉眼对账）。 */

@@ -44,6 +44,15 @@ const FIXTURES = JSON.parse(
   readFileSync(new URL('./fixtures/panel-api.json', import.meta.url), 'utf8'),
 ) as Record<string, { status: number; payload: unknown }>
 
+/**
+ * HTML 空元素：React 不允许它们带 `children`（哪怕是个空数组）。
+ * 替身必须照抄这条规则，否则"面板在浏览器里白屏、测试却全绿"会重演。
+ */
+const VOID_TAGS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'link', 'meta', 'param', 'source', 'track', 'wbr',
+])
+
 // ── 一个"会二次渲染"的 React 替身 ──────────────────────────────────────────
 
 interface ReactRuntime {
@@ -168,7 +177,19 @@ function loadClientModule(runtime: ReactRuntime): { exports: PanelExports } {
       return {
         // 与 react/jsx-runtime 同签名：第三参是 key，刻意忽略（子节点只认 props.children）
         // 元素形状也必须同构：{type, props}，**不是**把 props 摊平到根上
-        jsx: (type: unknown, props: unknown): unknown => ({ type, props: Object.assign({}, props), __jsx: true }),
+        jsx: (type: unknown, props: unknown): unknown => {
+          // **忠实复刻 React 的空元素校验**。少了这一条，替身就会放过真 React 会拒绝的树：
+          // 「QQ 与后台」「模型与路由」白屏的真因就是 `node('input', {…})` 带着
+          // `children: []` 进了 React —— React 判的是 `props.children != null`，
+          // 空数组不是 null，于是抛 Minified React error #137（args[]=input）。
+          if (typeof type === 'string' && VOID_TAGS.has(type)) {
+            const children = props === null || typeof props !== 'object' ? undefined : (props as { children?: unknown }).children
+            if (children !== undefined && children !== null) {
+              throw new Error(`Minified React error #137：<${type}> 是空元素（void tag），不能有 children`)
+            }
+          }
+          return { type, props: Object.assign({}, props), __jsx: true }
+        },
       }
     }
     throw new Error(`未预期的 require：${id}`)
