@@ -166,7 +166,11 @@ importers:
         specifier: workspace:*
         version: link:../store
 
-  packages/router: {}
+  packages/router:
+    dependencies:
+      '@forlife/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/store: {}
 
