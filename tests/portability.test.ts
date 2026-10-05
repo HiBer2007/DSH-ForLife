@@ -56,10 +56,12 @@ test('可移植性：源码与脚本中没有向宿主主目录写入的调用',
   assert.deepEqual(offenders, [], `以下位置疑似向宿主主目录写入：\n${offenders.join('\n')}`)
 })
 
-test('安全边界：没有任何代码引用协议级危险动作', () => {
+test('安全边界：没有任何**实现代码**引用协议级危险动作', () => {
+  // 只扫实现代码，跳过 *.test.ts：红线测试必须能**合法地枚举**这些名字来断言它们不存在，
+  // 而测试文件也不进发布产物（package.json 的 files 不含 test）。守卫太宽会让人开始绕过它。
   const dangerous = ['send_packet', 'get_cookies', 'get_csrf_token', 'get_credentials', 'get_rkey', 'handle_quick_operation']
   const offenders: string[] = []
-  for (const rel of walkSources(['packages', 'scripts'])) {
+  for (const rel of walkSources(['packages', 'scripts'], { skipTests: true })) {
     for (const [index, line] of read(rel).split(/\r?\n/).entries()) {
       if (line.trim().startsWith('#') || line.trim().startsWith('*') || line.trim().startsWith('//')) continue
       for (const action of dangerous) {
@@ -117,8 +119,13 @@ function extractStorageRoots(patch: string): { key: string; value: string }[] {
   return out
 }
 
-/** 遍历源码文件（跳过 node_modules / research）。 */
-function walkSources(roots: readonly string[]): string[] {
+/**
+ * 遍历源码文件（跳过 node_modules / research）。
+ *
+ * @param roots - 起始目录。
+ * @param options - `skipTests` 跳过 `*.test.ts`（红线检查用：测试要能枚举禁用名来断言其不存在）。
+ */
+function walkSources(roots: readonly string[], options: { readonly skipTests?: boolean } = {}): string[] {
   const out: string[] = []
   const walk = (rel: string): void => {
     const abs = join(REPO_ROOT, rel)
@@ -127,9 +134,12 @@ function walkSources(roots: readonly string[]): string[] {
       if (entry.name === 'node_modules' || entry.name === 'research' || entry.name === '.git') continue
       const child = join(rel, entry.name)
       if (entry.isDirectory()) { walk(child); continue }
+      const isTest = /\.test\.(ts|mts|cts|js|mjs)$/.test(entry.name)
+      if (options.skipTests === true && isTest) continue
       if (/\.(ts|mts|cts|js|mjs)$/.test(entry.name)) out.push(relative(REPO_ROOT, join(REPO_ROOT, child)))
     }
   }
   for (const root of roots) walk(root)
   return out
 }
+
