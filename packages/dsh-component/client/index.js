@@ -575,6 +575,312 @@ window.__ModuleLoader__.load({
       return renderPanel(jsx, describePanel(snapshot))
     }
 
+    // ── 提示词（阶段 4）────────────────────────────────────────────────────
+    //
+    // 这一块的设计目标只有一个：让人**敢改**。
+    // 提示词是最容易改坏的东西（它直接决定模型怎么说话），所以界面上必须始终看得见
+    // 三件事：现在是什么、改完会变成什么、改坏了怎么回去。
+
+    /** 一个槽位的编辑器。 */
+    function promptEditor(title, slug, text, ui, meta) {
+      const onDraft = ui && ui.onDraft
+      const onPreview = ui && ui.onPreview
+      const onSave = ui && ui.onSave
+      const busy = ui && ui.busy
+      const dirty = ui && ui.dirty && ui.dirty[slug] === true
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.row }, [
+          node('div', { style: styles.metricLabel }, [title]),
+          node('span', {}, [slug === 'p1-system' ? node('span', { style: styles.muted }, ['（决定它是谁、边界在哪）']) : node('span', { style: styles.muted }, ['（决定它怎么说话）'])]),
+        ]),
+        node('div', { style: styles.row }, [
+          metric('当前 token', meta && meta.tokenCount),
+          metric('生效版本', meta && meta.revisions),
+          metric('未保存改动', dirty ? '有' : '无'),
+        ]),
+        node('textarea', {
+          style: Object.assign({}, styles.textarea, { minHeight: '220px' }),
+          value: text || '',
+          onChange: (event) => onDraft && onDraft(slug, event.target.value),
+          spellcheck: false,
+        }),
+        node('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [
+          node('button', { style: styles.button, disabled: busy, onClick: () => onPreview && onPreview(slug) }, ['预览']),
+          node('button', { style: Object.assign({}, styles.button, { fontWeight: 600 }), disabled: busy, onClick: () => onSave && onSave(slug) }, [busy ? '处理中…' : '保存并生效']),
+          dirty
+            ? node('span', { style: styles.warn }, ['有未保存改动 —— 保存将使**下一轮**前缀变化（一次缓存未命中），之后恢复稳定。'])
+            : node('span', { style: styles.muted }, ['当前内容已生效。']),
+        ]),
+      ])
+    }
+
+    /** 预览卡：最终拼装结果 + diff。 */
+    function promptPreviewCard(preview) {
+      if (!preview) {
+        return node('div', { style: styles.card }, [node('div', { style: styles.muted }, ['点「预览」看看最终拼装结果与改动差异。'])])
+      }
+      if (preview.error !== undefined) {
+        return node('div', { style: styles.card }, [node('div', { style: styles.err }, [`预览失败：${preview.error}`])])
+      }
+      const errors = (preview.errors || []).map((e) => node('div', { style: styles.err }, [`✗ ${e}`]))
+      const warnings = (preview.warnings || []).map((wn) => node('div', { style: styles.warn }, [`! ${wn}`]))
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, [
+          `预览（${preview.slug}）｜token ${preview.tokenCount}${preview.tokenDelta ? `（${preview.tokenDelta > 0 ? '+' : ''}${preview.tokenDelta}）` : ''}｜` +
+            (preview.willChange ? '会改变前缀 ⇒ 一次缓存未命中' : '与当前生效版本一致 ⇒ 不会造成未命中'),
+        ]),
+      ]
+        .concat(errors)
+        .concat(warnings)
+        .concat(
+          (preview.diff || []).length === 0
+            ? [node('div', { style: styles.muted }, ['没有差异。'])]
+            : [node('div', { style: { maxHeight: '220px', overflowY: 'auto', marginTop: '6px' } }, (preview.diff || []).map((line) =>
+                node('div', {
+                  style: Object.assign({}, styles.mono, {
+                    color: line.kind === 'added' ? '#16a34a' : line.kind === 'removed' ? '#dc2626' : undefined,
+                    opacity: line.kind === 'same' ? 0.75 : 1,
+                  }),
+                }, [`${line.kind === 'added' ? '+ ' : line.kind === 'removed' ? '- ' : '  '}${line.text}`]),
+              ))],
+        )
+        .concat([
+          node('div', { style: styles.metricLabel }, ['最终拼装结果（变量已替换）']),
+          node('div', { style: Object.assign({}, styles.mono, { whiteSpace: 'pre-wrap', maxHeight: '240px', overflowY: 'auto' }) }, [preview.rendered || '']),
+        ]))
+    }
+
+    /** 历史版本卡（带一键回滚）。 */
+    function promptHistoryCard(revisions, ui) {
+      if (!revisions || revisions.length === 0) {
+        return node('div', { style: styles.card }, [node('div', { style: styles.muted }, ['还没有历史版本。'])])
+      }
+      const onRollback = ui && ui.onRollback
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, [`历史版本（${revisions.length} 版，回滚同样会造成一次缓存未命中）`]),
+        node('table', { style: styles.table }, [
+          node('thead', {}, [node('tr', {}, ['状态', '时间', '改的人', 'token', '摘要', '操作'].map((t) => node('th', { style: styles.th }, [t])))]),
+          node('tbody', {}, revisions.map((r) =>
+            node('tr', {}, [
+              node('td', { style: styles.td }, [r.active ? statusBadge('生效中', 'good') : statusBadge('历史', undefined)]),
+              node('td', { style: styles.td }, [node('span', { style: styles.mono }, [String(r.createdAt || '').slice(0, 19).replace('T', ' ')])]),
+              node('td', { style: styles.td }, [r.createdBy || '—']),
+              node('td', { style: styles.td }, [String(r.tokenCount)]),
+              node('td', { style: styles.td }, [node('span', { style: styles.muted }, [String(r.excerpt || '')])]),
+              node('td', { style: styles.td }, [
+                r.active ? node('span', { style: styles.muted }, ['—']) : node('button', { style: styles.button, onClick: () => onRollback && onRollback(r.id) }, ['回滚到这版']),
+              ]),
+            ]),
+          )),
+        ]),
+      ])
+    }
+
+    /** 变量白名单卡（写提示词时对着看，避免写出未知变量）。 */
+    function promptVariablesCard(variables) {
+      const list = variables || []
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, ['可用变量（写 {{名字}} 会被替换成实际值）']),
+      ].concat(
+        list.map((v) =>
+          node('div', { style: styles.mono }, [
+            node('span', { style: Object.assign({}, styles.badge, { marginRight: '6px', color: v.dynamic ? '#d97706' : '#2563eb' }) }, [v.dynamic ? '动态' : '稳定']),
+            `{{${v.name}}} —— ${v.description}`,
+            v.dynamic ? node('span', { style: styles.warn }, ['（不能用在稳定前缀里：会让每轮前缀都变）']) : node('span', {}, []),
+          ]),
+        ),
+      ))
+    }
+
+    /**
+     * 把提示词快照描述成结构树。
+     * @param {object} snapshot - `{ prompts, revisions, variables, preview, drafts, dirty }`。
+     * @param {object} [ui] - 交互回调。
+     * @returns {object} 结构树。
+     */
+    function describePrompts(snapshot, ui) {
+      const slugs = snapshot.prompts || []
+      const find = (slug) => slugs.find((s) => s.slug === slug) || {}
+      const drafts = (ui && ui.drafts) || {}
+      const dirty = (ui && ui.dirty) || {}
+      const children = [
+        node('div', { style: styles.card }, [
+          node('div', { style: styles.row }, [
+            metric('P1 token', find('p1-system').tokenCount),
+            metric('P2 token', find('p2-style').tokenCount),
+            metric('覆盖数', (snapshot.overrides || []).length),
+            metric('历史版本', slugs.reduce((sum, s) => sum + (s.revisions || 0), 0)),
+          ]),
+          node('div', { style: styles.muted }, [
+            '提示词改动**下一轮生效**（无需重启）。未保存改动与已保存版本之间的差别，可以用「预览」看清。',
+          ]),
+        ]),
+      ]
+      if (snapshot.error !== undefined) {
+        children.push(node('div', { style: styles.err }, [`读取失败：${snapshot.error}`]))
+      }
+      if (ui && ui.notice) children.push(node('div', { style: styles.card }, [node('div', { style: styles.muted }, [ui.notice])]))
+
+      children.push(promptEditor('P1 系统提示词', 'p1-system', drafts['p1-system'], Object.assign({ dirty }, ui), find('p1-system')))
+      children.push(promptEditor('P2 回答风格', 'p2-style', drafts['p2-style'], Object.assign({ dirty }, ui), find('p2-style')))
+      children.push(promptPreviewCard(snapshot.preview))
+      children.push(promptHistoryCard(snapshot.revisions, ui))
+      children.push(promptVariablesCard(snapshot.variables))
+      return node('div', { style: styles.wrap }, children)
+    }
+    // ── 取数（提示词）──────────────────────────────────────────────────────
+
+    /**
+     * 取一份提示词快照（含两个槽位、历史版本、变量白名单）。
+     * @param {AbortSignal} [signal] - 取消信号。
+     * @returns {Promise<object>} 快照（失败时带 `error`，不抛）。
+     */
+    async function fetchPromptSnapshot(signal) {
+      const snapshot = {}
+      const get = async (path) => {
+        const response = await fetch(API_BASE + path, { signal })
+        if (!response.ok) throw new Error(`${path} → HTTP ${response.status}`)
+        return response.json()
+      }
+      try {
+        const [prompts, p1, p2] = await Promise.all([
+          get('/prompts'),
+          get('/prompts/revisions?slug=p1-system&limit=20'),
+          get('/prompts/revisions?slug=p2-style&limit=20'),
+        ])
+        snapshot.prompts = prompts.slugs || []
+        snapshot.variables = prompts.variables || []
+        snapshot.overrides = prompts.overrides || []
+        snapshot.revisions = [...(p1.revisions || []), ...(p2.revisions || [])].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        snapshot.activeText = Object.fromEntries((prompts.slugs || []).map((s) => [s.slug, s.text || '']))
+      } catch (error) {
+        snapshot.error = String(error && error.message ? error.message : error)
+      }
+      return snapshot
+    }
+
+    /**
+     * 预览一份提示词（返回最终拼装结果、diff、token 与缓存影响）。
+     * @param {string} slug - 槽位。
+     * @param {string} text - 文本。
+     * @returns {Promise<object>} 预览结果。
+     */
+    async function previewPrompt(slug, text) {
+      const response = await fetch(API_BASE + '/prompts/preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug, text }),
+      })
+      const body = await response.json()
+      return Object.assign({ slug }, body)
+    }
+
+    /**
+     * 保存一份提示词。
+     * @param {string} slug - 槽位。
+     * @param {string} text - 文本。
+     * @returns {Promise<object>} 接口返回。
+     */
+    async function savePrompt(slug, text) {
+      const response = await fetch(API_BASE + '/prompts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug, text }),
+      })
+      return response.json()
+    }
+
+    /**
+     * 回滚到一个历史版本。
+     * @param {string} revisionId - 版本 id。
+     * @returns {Promise<object>} 接口返回。
+     */
+    async function rollbackPromptRevision(revisionId) {
+      const response = await fetch(API_BASE + '/prompts/rollback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ revisionId }),
+      })
+      return response.json()
+    }
+    /** 提示词面板：编辑 P1/P2、预览、保存、回滚。 */
+    function PromptPanel() {
+      const [snapshot, setSnapshot] = React.useState({})
+      const [loading, setLoading] = React.useState(true)
+      const [drafts, setDrafts] = React.useState({})
+      const [dirty, setDirty] = React.useState({})
+      const [preview, setPreview] = React.useState(undefined)
+      const [busy, setBusy] = React.useState(false)
+      const [notice, setNotice] = React.useState('')
+
+      const load = React.useCallback(async () => {
+        const next = await fetchPromptSnapshot()
+        setSnapshot(next)
+        // 首次加载与保存后：草稿对齐到服务端的生效内容
+        const texts = next.activeText || {}
+        setDrafts((current) => {
+          const merged = Object.assign({}, current)
+          for (const slug of ['p1-system', 'p2-style']) {
+            if (merged[slug] === undefined && texts[slug] !== undefined) merged[slug] = texts[slug]
+          }
+          return merged
+        })
+        setLoading(false)
+        return next
+      }, [])
+
+      React.useEffect(() => {
+        void load()
+      }, [load])
+
+      const onDraft = React.useCallback((slug, text) => {
+        setDrafts((current) => Object.assign({}, current, { [slug]: text }))
+        setDirty((current) => Object.assign({}, current, { [slug]: true }))
+      }, [])
+
+      const onPreview = React.useCallback(async (slug) => {
+        setBusy(true)
+        try {
+          setPreview(await previewPrompt(slug, drafts[slug] || ''))
+        } finally {
+          setBusy(false)
+        }
+      }, [drafts])
+
+      const onSave = React.useCallback(async (slug) => {
+        setBusy(true)
+        try {
+          const result = await savePrompt(slug, drafts[slug] || '')
+          if (result.ok === false) {
+            setNotice(`保存被拒：${(result.errors || [result.error]).join('；')}`)
+            setPreview(Object.assign({ slug }, result, { errors: result.errors || [result.error] }))
+            return
+          }
+          setDirty((current) => Object.assign({}, current, { [slug]: false }))
+          setNotice(result.changed === false ? String(result.note || '内容未变，没有产生新版本。') : `${slug} 已保存，下一轮生效。${result.cacheNote || ''}`)
+          const next = await load()
+          setDrafts((current) => Object.assign({}, current, { [slug]: (next.activeText || {})[slug] || current[slug] }))
+        } finally {
+          setBusy(false)
+        }
+      }, [drafts, load])
+
+      const onRollback = React.useCallback(async (revisionId) => {
+        setBusy(true)
+        try {
+          const result = await rollbackPromptRevision(revisionId)
+          setNotice(result.ok === false ? `回滚失败：${result.error}` : `已回滚，下一轮生效。${result.cacheNote || ''}`)
+          const next = await load()
+          setDrafts({ 'p1-system': (next.activeText || {})['p1-system'] || '', 'p2-style': (next.activeText || {})['p2-style'] || '' })
+          setDirty({})
+        } finally {
+          setBusy(false)
+        }
+      }, [load])
+
+      if (loading) return jsx('div', { style: { opacity: 0.6 }, children: '正在读取提示词…' })
+      return renderPanel(jsx, describePrompts(snapshot, { drafts, dirty, preview, busy, notice, onDraft, onPreview, onSave, onRollback }))
+    }
     /** QQ 与后台面板：取数 + 交互（改规则、发消息）。 */
     function QqPanel() {
       const [snapshot, setSnapshot] = React.useState({})
@@ -652,6 +958,12 @@ window.__ModuleLoader__.load({
           QqPanel,
         ),
       )
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          { name: 'settings.section', id: 'forlife-prompts', order: 62, label: '提示词' },
+          PromptPanel,
+        ),
+      )
     }
 
     /**
@@ -675,8 +987,16 @@ window.__ModuleLoader__.load({
     exports.describeQq = describeQq
     exports.postAdminMessage = postAdminMessage
     exports.patchWakeRule = patchWakeRule
+    exports.PromptPanel = PromptPanel
+    exports.fetchPromptSnapshot = fetchPromptSnapshot
+    exports.describePrompts = describePrompts
+    exports.previewPrompt = previewPrompt
+    exports.savePrompt = savePrompt
+    exports.rollbackPromptRevision = rollbackPromptRevision
     return module.exports
   },
 })
+
+
 
 

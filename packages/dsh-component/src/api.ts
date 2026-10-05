@@ -23,7 +23,31 @@ import {
   setWakeRule,
   WAKE_CONDITIONS,
 } from '@forlife/gateway'
+import {
+  diffPromptLines,
+  estimatePromptTokens,
+  hashPromptText,
+  normalizePromptText,
+  PROMPT_VARIABLES,
+  renderPromptPreview,
+  validatePromptText,
+} from '@forlife/memory-core'
+import { defaultFor } from '@forlife/contracts'
+
 import type { MemoryRuntime } from './runtime.ts'
+import {
+  activePrompt,
+  listPromptOverrides,
+  listPromptRevisions,
+  promptRevisionById,
+  promptStatus,
+  PROMPT_SLUGS,
+  rollbackPrompt,
+  savePromptRevision,
+  setPromptOverride,
+  clearPromptOverride,
+  type PromptSlug,
+} from './prompt-store.ts'
 import { listCompactionRuns } from '@forlife/store'
 
 import { contractsSummary } from './diagnostics.ts'
@@ -330,7 +354,217 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
         }
       },
     },
+
+    // ── 阶段 4：提示词（可编辑、版本、diff、预览、回滚、按会话覆盖）──────────
+
+    // 两个槽位的当前状态 + 变量白名单
+    get('/api/forlife/prompts', () =>
+      json({
+        ok: true,
+        slugs: promptStatus(runtime.db),
+        variables: PROMPT_VARIABLES.map((v) => ({
+          name: v.name,
+          dynamic: v.dynamic,
+          description: v.description,
+          sample: v.sample,
+        })),
+        overrides: listPromptOverrides(runtime.db).map((o) => ({
+          scope: o.scope,
+          slug: o.slug,
+          revisionId: o.revision.id,
+          sha256: o.revision.sha256,
+        })),
+      }),
+    ),
+
+    // 历史版本（面板的"回滚"列表）
+    get('/api/forlife/prompts/revisions', (url) => {
+      const slug = (url.searchParams.get('slug') ?? 'p1-system') as PromptSlug
+      if (!PROMPT_SLUGS.includes(slug)) return json({ ok: false, error: `未知槽位：${slug}` }, 400)
+      const revisions = listPromptRevisions(runtime.db, slug, intParam(url, 'limit') ?? 30)
+      const active = activePrompt(runtime.db, slug)
+      return json({
+        ok: true,
+        slug,
+        activeId: active?.id ?? null,
+        count: revisions.length,
+        revisions: revisions.map((r) => ({
+          id: r.id,
+          sha256: r.sha256,
+          tokenCount: r.tokenCount,
+          variables: r.variables,
+          note: r.note,
+          createdBy: r.createdBy,
+          createdAt: r.createdAt,
+          active: r.active,
+          // 列表里带上首行摘要，人一眼能认出是哪版
+          excerpt: r.text.split('\n').slice(0, 2).join(' ').slice(0, 120),
+        })),
+      })
+    }),
+
+    // 试渲染 + diff（保存前预览"最终拼装结果"与"改了什么"）
+    {
+      path: '/api/forlife/prompts/preview',
+      methods: ['POST'],
+      fetch: async (request: Request): Promise<Response> => {
+        try {
+          const body = (await request.json()) as { slug?: unknown; text?: unknown; variables?: unknown }
+          const slug = String(body.slug ?? 'p1-system') as PromptSlug
+          if (!PROMPT_SLUGS.includes(slug)) return json({ ok: false, error: `未知槽位：${slug}` }, 400)
+          const text = typeof body.text === 'string' ? body.text : ''
+          const variables = {
+            ...defaultPromptVariables(),
+            ...(typeof body.variables === 'object' && body.variables !== null ? (body.variables as Record<string, string>) : {}),
+          }
+
+          const validation = validatePromptText(text, { scope: 'prefix' })
+          const preview = renderPromptPreview(text, variables)
+          const current = activePrompt(runtime.db, slug)
+          const normalized = normalizePromptText(text)
+          const diff = current === undefined ? [] : diffPromptLines(current.text, normalized)
+          return json({
+            ok: validation.ok && preview.ok,
+            errors: [...validation.errors, ...preview.errors],
+            warnings: validation.warnings,
+            variables: validation.variables,
+            normalized,
+            // 规范化后与当前生效版本是否不同 —— 这是"会不会造成一次缓存未命中"的唯一判据
+            willChange: current === undefined || current.sha256 !== hashPromptText(normalized),
+            currentSha256: current?.sha256 ?? null,
+            nextSha256: hashPromptText(normalized),
+            tokenCount: estimatePromptTokens(normalized),
+            tokenDelta: estimatePromptTokens(normalized) - (current?.tokenCount ?? 0),
+            rendered: preview.text,
+            diff: diff.map((line) => ({ kind: line.kind, text: line.text })),
+          })
+        } catch (error) {
+          return json({ ok: false, error: String(error) }, 400)
+        }
+      },
+    },
+
+    // 保存（先校验，后落库；返回 diff 与缓存影响提示）
+    {
+      path: '/api/forlife/prompts',
+      methods: ['POST'],
+      fetch: async (request: Request): Promise<Response> => {
+        try {
+          const body = (await request.json()) as { slug?: unknown; text?: unknown; note?: unknown }
+          const slug = String(body.slug ?? 'p1-system') as PromptSlug
+          if (!PROMPT_SLUGS.includes(slug)) return json({ ok: false, error: `未知槽位：${slug}` }, 400)
+          const text = typeof body.text === 'string' ? body.text : ''
+          const previous = activePrompt(runtime.db, slug)
+          const result = savePromptRevision(runtime.db, {
+            slug,
+            text,
+            createdBy: 'admin',
+            ...(typeof body.note === 'string' ? { note: body.note } : {}),
+          })
+          if (!result.ok) return json({ ok: false, errors: result.errors }, 400)
+          if (!result.changed) {
+            return json({ ok: true, changed: false, revision: result.revision, note: '内容与当前生效版本一致（规范化后），没有产生新版本。' })
+          }
+
+          // 铁律 1：改提示词**直接影响模型**（比改记忆更直接）⇒ 记审计，等合并报告
+          recordAdminAction(runtime.db, {
+            action: 'prompt.edit',
+            actor: 'admin',
+            subject: slug,
+            detail: { from: previous?.sha256 ?? null, to: result.revision.sha256, tokens: result.revision.tokenCount },
+          })
+          runtime.invalidatePromptCache()
+
+          const diff = previous === undefined ? [] : diffPromptLines(previous.text, result.revision.text)
+          return json({
+            ok: true,
+            changed: true,
+            revision: result.revision,
+            previousSha256: previous?.sha256 ?? null,
+            diff: diff.map((line) => ({ kind: line.kind, text: line.text })),
+            // 面板必须明说这件事：改动本身是"一次缓存未命中"，不是 bug
+            cacheNote: '此改动将导致**一次**缓存未命中（下一轮前缀变化），之后恢复稳定。',
+            effective: '下一轮生效（无需重启）。',
+          })
+        } catch (error) {
+          return json({ ok: false, error: String(error) }, 400)
+        }
+      },
+    },
+
+    // 一键回滚
+    {
+      path: '/api/forlife/prompts/rollback',
+      methods: ['POST'],
+      fetch: async (request: Request): Promise<Response> => {
+        try {
+          const body = (await request.json()) as { revisionId?: unknown }
+          const revisionId = String(body.revisionId ?? '')
+          const target = promptRevisionById(runtime.db, revisionId)
+          if (target === undefined) return json({ ok: false, error: '找不到该版本' }, 404)
+          const rolled = rollbackPrompt(runtime.db, revisionId)
+          if (rolled === undefined) return json({ ok: false, error: '回滚失败' }, 500)
+          recordAdminAction(runtime.db, {
+            action: 'prompt.edit',
+            actor: 'admin',
+            subject: rolled.slug,
+            detail: { rollbackTo: revisionId, sha256: rolled.sha256 },
+          })
+          runtime.invalidatePromptCache()
+          return json({ ok: true, revision: rolled, cacheNote: '回滚同样会造成一次缓存未命中。', effective: '下一轮生效。' })
+        } catch (error) {
+          return json({ ok: false, error: String(error) }, 400)
+        }
+      },
+    },
+
+    // 按会话覆盖 P2（作用域遮蔽）
+    {
+      path: '/api/forlife/prompts/overrides',
+      methods: ['POST'],
+      fetch: async (request: Request): Promise<Response> => {
+        try {
+          const body = (await request.json()) as { scope?: unknown; slug?: unknown; revisionId?: unknown; clear?: unknown }
+          const scope = String(body.scope ?? '')
+          if (scope === '') return json({ ok: false, error: '必须给作用域（例如 group:88888）' }, 400)
+          const slug = String(body.slug ?? 'p2-style') as PromptSlug
+
+          if (body.clear === true) {
+            const cleared = clearPromptOverride(runtime.db, scope, slug)
+            recordAdminAction(runtime.db, { action: 'prompt.edit', actor: 'admin', subject: `${scope}:${slug}`, detail: { cleared: true } })
+            runtime.invalidatePromptCache()
+            return json({ ok: true, cleared })
+          }
+
+          const revisionId = String(body.revisionId ?? '')
+          if (revisionId === '') return json({ ok: false, error: '必须给 revisionId' }, 400)
+          const done = setPromptOverride(runtime.db, { scope, slug, revisionId, createdBy: 'admin' })
+          if (!done) return json({ ok: false, error: '写入覆盖失败（版本不存在或槽位不匹配）' }, 400)
+          recordAdminAction(runtime.db, { action: 'prompt.edit', actor: 'admin', subject: `${scope}:${slug}`, detail: { revisionId } })
+          runtime.invalidatePromptCache()
+          return json({
+            ok: true,
+            note:
+              '已按会话覆盖回答风格。注意：多会话共用一个窗口时，覆盖值走**尾部注入**而不是写进稳定前缀 —— ' +
+              '写进前缀会让每轮都换前缀，缓存全废。',
+          })
+        } catch (error) {
+          return json({ ok: false, error: String(error) }, 400)
+        }
+      },
+    },
   ]
+}
+
+/** 提示词变量的当前取值（面板预览要用真实值）。 */
+function defaultPromptVariables(): Record<string, string> {
+  return {
+    persona_name: defaultFor<string>('prompt.variables.personaName'),
+    owner_name: defaultFor<string>('prompt.variables.ownerName'),
+    language: defaultFor<string>('prompt.variables.language'),
+    persona_role: defaultFor<string>('prompt.variables.personaRole'),
+    style_notes: defaultFor<string>('prompt.variables.styleNotes'),
+  }
 }
 
 /** QQ 侧统计（面板概览用）。 */
@@ -375,6 +609,7 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
 
 
 

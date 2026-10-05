@@ -142,3 +142,52 @@ export declare function describeQq(snapshot: QqSnapshot, ui?: QqPanelUi): PanelN
 export declare function postAdminMessage(text: string, actor?: string): Promise<Record<string, unknown>>
 /** 改一条唤醒规则。 */
 export declare function patchWakeRule(scope: string, condition: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>
+
+// ── 提示词（阶段 4）────────────────────────────────────────────────────────
+
+/** 一个提示词槽位的状态。 */
+export interface PromptSlugStatus {
+  readonly slug: 'p1-system' | 'p2-style'
+  readonly sha256: string
+  readonly tokenCount: number
+  readonly variables: readonly string[]
+  readonly updatedAt: string
+  readonly updatedBy: string
+  readonly revisions: number
+}
+
+/** 提示词快照（与 `/api/forlife/prompts*` 一致）。 */
+export interface PromptSnapshot {
+  readonly prompts?: readonly PromptSlugStatus[]
+  readonly variables?: readonly { readonly name: string; readonly dynamic: boolean; readonly description: string; readonly sample?: string }[]
+  readonly overrides?: readonly { readonly scope: string; readonly slug: string; readonly revisionId: string }[]
+  readonly revisions?: readonly Record<string, unknown>[]
+  readonly activeText?: Readonly<Record<string, string>>
+  readonly error?: string
+}
+
+/** 提示词面板交互回调。 */
+export interface PromptPanelUi {
+  readonly drafts?: Readonly<Record<string, string>>
+  readonly dirty?: Readonly<Record<string, boolean>>
+  readonly preview?: Record<string, unknown>
+  readonly busy?: boolean
+  readonly notice?: string
+  readonly onDraft?: (slug: string, text: string) => void
+  readonly onPreview?: (slug: string) => void
+  readonly onSave?: (slug: string) => void
+  readonly onRollback?: (revisionId: string) => void
+}
+
+/** 提示词面板容器组件。 */
+export declare function PromptPanel(): unknown
+/** 取一份提示词快照（失败不抛，落进 `error`）。 */
+export declare function fetchPromptSnapshot(signal?: AbortSignal): Promise<PromptSnapshot>
+/** 提示词数据 → 结构树（纯函数）。 */
+export declare function describePrompts(snapshot: PromptSnapshot, ui?: PromptPanelUi): PanelNode
+/** 预览一份提示词（最终拼装结果 + diff + token + 缓存影响）。 */
+export declare function previewPrompt(slug: string, text: string): Promise<Record<string, unknown>>
+/** 保存一份提示词。 */
+export declare function savePrompt(slug: string, text: string): Promise<Record<string, unknown>>
+/** 回滚到一个历史版本。 */
+export declare function rollbackPromptRevision(revisionId: string): Promise<Record<string, unknown>>

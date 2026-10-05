@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { after, before, test } from 'node:test'
 
 import { seedWakeRules } from '@forlife/gateway'
+import { seedDefaultPrompts } from '../src/prompt-store.ts'
 import { openDatabase } from '@forlife/store'
 
 import { buildPanelRoutes, type PanelRoute } from '../src/api.ts'
@@ -31,6 +32,8 @@ before(() => {
     dbPath: join(dir, 'forlife.sqlite'),
   })
   seedWakeRules(runtime.db)
+  // 插件 apply 时会播种默认提示词；这里对齐真实行为，否则提示词接口读到的是"没有生效版本"
+  seedDefaultPrompts(runtime.db)
   routes = buildPanelRoutes(runtime)
 })
 
@@ -58,6 +61,18 @@ async function get(path: string, query = ''): Promise<Record<string, unknown>> {
   const response = await route(path).fetch(new Request(`http://local${path}${query}`))
   assert.equal(response.status, 200, `${path} 应当返回 200`)
   return (await response.json()) as Record<string, unknown>
+}
+
+/**
+ * 取一次，但**不假定 200**（要测"应当被拒绝"的路径）。
+ *
+ * @param path - 路由路径。
+ * @param query - 查询串。
+ * @returns 状态码与响应体。
+ */
+async function getRaw(path: string, query = ''): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await route(path).fetch(new Request(`http://local${path}${query}`))
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> }
 }
 
 /** 发一个 POST。 */
@@ -248,5 +263,130 @@ test('待读池与判定留痕：面板能回答"为什么没唤醒"', async () 
   const pending = await get('/api/forlife/qq/pending')
   assert.ok((pending['items'] as Record<string, unknown>[]).some((i) => i['id'] === 'api_pend_1'))
   assert.ok(Number((pending['stats'] as Record<string, number>)['unread']) >= 1)
+})
+
+
+// ── 阶段 4：提示词接口 ──────────────────────────────────────────────────────
+
+test('提示词：读状态给出两个槽位 + 变量白名单（含动态变量标记）', async () => {
+  const body = await get('/api/forlife/prompts')
+  assert.equal(body['ok'], true)
+  const slugs = body['slugs'] as Record<string, unknown>[]
+  assert.deepEqual(slugs.map((s) => s['slug']).sort(), ['p1-system', 'p2-style'])
+  const p1 = slugs.find((s) => s['slug'] === 'p1-system')
+  assert.ok(String(p1?.['sha256']).length === 64, '要给出当前生效版本的哈希（面板显示"现在是什么"）')
+  assert.ok(Number(p1?.['tokenCount']) > 0)
+
+  const variables = body['variables'] as Record<string, unknown>[]
+  assert.ok(variables.some((v) => v['name'] === 'persona_name' && v['dynamic'] === false))
+  assert.ok(variables.some((v) => v['name'] === 'now' && v['dynamic'] === true), '动态变量要标出来（它们只允许用在尾部）')
+})
+
+test('提示词预览：给出最终拼装结果、token 数与"会不会造成缓存未命中"', async () => {
+  const current = await get('/api/forlife/prompts')
+  const p1 = (current['slugs'] as Record<string, unknown>[]).find((s) => s['slug'] === 'p1-system')
+
+  // ① 原样回传当前生效内容 ⇒ willChange=false（规范化后哈希相同，不算改动）
+  const currentText = runtime.db.prepare("SELECT text FROM prompt_revisions WHERE slug = 'p1-system' AND active = 1").get() as { text: string }
+  const same = await post('/api/forlife/prompts/preview', { slug: 'p1-system', text: currentText.text })
+  assert.equal(same.status, 200)
+  assert.equal(same.body['willChange'], false, '内容没变就不该说"会造成缓存未命中"')
+  assert.equal(p1?.['sha256'], same.body['currentSha256'], '预览里的 currentSha256 要与状态接口一致')
+
+  const changed = await post('/api/forlife/prompts/preview', {
+    slug: 'p2-style',
+    text: '## 新风格\n- 用{{language}}，叫对方{{owner_name}}。\n',
+  })
+  assert.equal(changed.status, 200)
+  assert.equal(changed.body['ok'], true)
+  assert.equal(changed.body['willChange'], true, '内容变了就要明说会造成一次缓存未命中')
+  assert.match(String(changed.body['rendered']), /叫对方主人/, '预览里变量必须已被替换（这才是"最终拼装结果"）')
+  assert.ok(Number(changed.body['tokenCount']) > 0)
+  const diff = changed.body['diff'] as Record<string, unknown>[]
+  assert.ok(diff.some((d) => d['kind'] === 'added') && diff.some((d) => d['kind'] === 'removed'), '要给出 diff')
+})
+
+test('提示词预览：未知变量与动态变量都被拦下并说明原因', async () => {
+  const unknown = await post('/api/forlife/prompts/preview', { slug: 'p1-system', text: '你是{{nobody}}' })
+  assert.equal(unknown.body['ok'], false)
+  assert.match(JSON.stringify(unknown.body['errors']), /未知变量/)
+
+  const dynamic = await post('/api/forlife/prompts/preview', { slug: 'p1-system', text: '现在是{{now}}' })
+  assert.equal(dynamic.body['ok'], false)
+  assert.match(JSON.stringify(dynamic.body['errors']), /动态变量/)
+  assert.match(JSON.stringify(dynamic.body['errors']), /缓存全废/)
+})
+
+test('提示词保存：真改才产生版本，且留痕（铁律 1）+ 返回两条提示', async () => {
+  const save = await post('/api/forlife/prompts', { slug: 'p2-style', text: '## 说话方式\n- 一句话说完。\n', note: '测试' })
+  assert.equal(save.status, 200)
+  assert.equal(save.body['changed'], true)
+  assert.match(String(save.body['cacheNote']), /一次\*\*缓存未命中|一次/, '必须明说会造成一次缓存未命中')
+  assert.match(String(save.body['effective']), /下一轮生效/)
+
+  const again = await post('/api/forlife/prompts', { slug: 'p2-style', text: '## 说话方式\n- 一句话说完。\n\n\n' })
+  assert.equal(again.body['changed'], false, '规范化后一样 ⇒ 不算改动')
+  assert.match(String(again.body['note']), /没有产生新版本/)
+
+  const audit = runtime.db
+    .prepare("SELECT * FROM effects WHERE kind = 'admin_action' AND detail LIKE '%prompt.edit%' ORDER BY rowid DESC LIMIT 1")
+    .get() as Record<string, unknown> | undefined
+  assert.ok(audit !== undefined, '改提示词必须留痕（它比改记忆更直接影响模型）')
+  assert.equal(audit['affects_model'], 1)
+
+  const bad = await post('/api/forlife/prompts', { slug: 'p2-style', text: '用{{nobody}}' })
+  assert.equal(bad.status, 400, '校验不过必须拒绝，不能写进库')
+})
+
+test('提示词历史与回滚：旧版本还在，回滚后哈希精确回到旧值', async () => {
+  const before = await get('/api/forlife/prompts')
+  const p2Before = (before['slugs'] as Record<string, unknown>[]).find((s) => s['slug'] === 'p2-style')
+  const oldSha = String(p2Before?.['sha256'])
+
+  await post('/api/forlife/prompts', { slug: 'p2-style', text: '## 又一版\n- 换个语气。\n' })
+  const after = await get('/api/forlife/prompts')
+  const p2After = (after['slugs'] as Record<string, unknown>[]).find((s) => s['slug'] === 'p2-style')
+  assert.notEqual(String(p2After?.['sha256']), oldSha, '改完哈希必须变')
+
+  const revisions = await get('/api/forlife/prompts/revisions', '?slug=p2-style')
+  const list = revisions['revisions'] as Record<string, unknown>[]
+  assert.ok(list.length >= 2, '历史版本都要留着')
+  assert.equal(list.filter((r) => r['active'] === true).length, 1, '同时只有一版生效')
+  const target = list.find((r) => r['sha256'] === oldSha)
+  assert.ok(target !== undefined, '旧版本要能在列表里找到（回滚的前提）')
+
+  const rolled = await post('/api/forlife/prompts/rollback', { revisionId: target['id'] })
+  assert.equal(rolled.status, 200)
+  assert.equal((rolled.body['revision'] as Record<string, unknown>)['sha256'], oldSha, '回滚后哈希必须精确回到旧值')
+
+  const missing = await post('/api/forlife/prompts/rollback', { revisionId: '不存在的版本' })
+  assert.equal(missing.status, 404)
+})
+
+test('提示词：未知槽位一律拒绝（不静默当成默认槽位）', async () => {
+  assert.equal((await getRaw('/api/forlife/prompts/revisions', '?slug=nope')).status, 400)
+  assert.equal((await post('/api/forlife/prompts', { slug: 'nope', text: 'x' })).status, 400)
+  assert.equal((await post('/api/forlife/prompts/preview', { slug: 'nope', text: 'x' })).status, 400)
+})
+
+test('提示词覆盖：只能覆盖 P2；写入与清除都留痕', async () => {
+  const revisions = await get('/api/forlife/prompts/revisions', '?slug=p2-style')
+  const target = (revisions['revisions'] as Record<string, unknown>[])[0]
+
+  const set = await post('/api/forlife/prompts/overrides', { scope: 'group:88888', slug: 'p2-style', revisionId: target?.['id'] })
+  assert.equal(set.status, 200)
+  assert.match(String(set.body['note']), /尾部注入/, '要说明为什么覆盖走尾部注入（否则有人会想把它写进前缀）')
+
+  const listed = await get('/api/forlife/prompts')
+  assert.ok((listed['overrides'] as Record<string, unknown>[]).some((o) => o['scope'] === 'group:88888'))
+
+  const bad = await post('/api/forlife/prompts/overrides', { scope: 'group:1', slug: 'p1-system', revisionId: target?.['id'] })
+  assert.equal(bad.status, 400, 'P1 是人设，不允许按会话分裂')
+
+  const cleared = await post('/api/forlife/prompts/overrides', { scope: 'group:88888', slug: 'p2-style', clear: true })
+  assert.equal(cleared.body['cleared'], true)
+
+  const noScope = await post('/api/forlife/prompts/overrides', { slug: 'p2-style', revisionId: target?.['id'] })
+  assert.equal(noScope.status, 400)
 })
 

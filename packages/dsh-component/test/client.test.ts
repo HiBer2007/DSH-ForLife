@@ -55,6 +55,12 @@ function loadClientModule(): {
     describeQq: (snapshot: unknown, ui?: unknown) => PanelNodeLike
     postAdminMessage: (text: string, actor?: string) => Promise<Record<string, unknown>>
     patchWakeRule: (scope: string, condition: string, patch: Record<string, unknown>) => Promise<Record<string, unknown>>
+    PromptPanel: () => unknown
+    fetchPromptSnapshot: (signal?: AbortSignal) => Promise<Record<string, unknown>>
+    describePrompts: (snapshot: unknown, ui?: unknown) => PanelNodeLike
+    previewPrompt: (slug: string, text: string) => Promise<Record<string, unknown>>
+    savePrompt: (slug: string, text: string) => Promise<Record<string, unknown>>
+    rollbackPromptRevision: (revisionId: string) => Promise<Record<string, unknown>>
   }
   jsxCalls: { type: string; props: unknown }[]
 } {
@@ -127,7 +133,7 @@ test('注册契约：先 slots.inject 等声明，再 register 到 settings.sect
   assert.deepEqual([...new Set(injected)], ['settings.section'], '必须用 inject 等槽位声明（直接 register 到未声明槽会抛错）')
   // 两个区块：「记忆」看记忆本体，「QQ 与后台」看网关与人类直发通道。
   // 刻意分别注册而不是塞进一个区块 —— 使用场景不同，混在一起两边都难用。
-  assert.equal(registered.length, 2, '应当注册两个设置区块')
+  assert.equal(registered.length, 3, '应当注册三个设置区块：记忆 / QQ 与后台 / 提示词')
   const byId = new Map(registered.map((entry) => [String(entry.options['id']), entry]))
   assert.deepEqual(byId.get('forlife-memory')?.options, {
     name: 'settings.section',
@@ -141,8 +147,81 @@ test('注册契约：先 slots.inject 等声明，再 register 到 settings.sect
     order: 61,
     label: 'QQ 与后台',
   })
+  assert.deepEqual(byId.get('forlife-prompts')?.options, {
+    name: 'settings.section',
+    id: 'forlife-prompts',
+    order: 62,
+    label: '提示词',
+  })
   assert.equal(byId.get('forlife-memory')?.component, exports.MemoryPanel, '注册的组件必须是面板本身')
   assert.equal(byId.get('forlife-qq')?.component, exports.QqPanel)
+  assert.equal(byId.get('forlife-prompts')?.component, exports.PromptPanel)
+})
+
+test('渲染内容：提示词面板画出编辑器、预览、历史与变量白名单', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describePrompts(
+    {
+      prompts: [
+        { slug: 'p1-system', tokenCount: 320, revisions: 3, sha256: 'a'.repeat(64) },
+        { slug: 'p2-style', tokenCount: 90, revisions: 2, sha256: 'b'.repeat(64) },
+      ],
+      revisions: [
+        { id: 'r2', slug: 'p2-style', active: true, createdAt: '2026-10-05T12:00:00.000Z', createdBy: 'admin', tokenCount: 90, excerpt: '## 说话方式' },
+        { id: 'r1', slug: 'p2-style', active: false, createdAt: '2026-10-05T11:00:00.000Z', createdBy: 'system', tokenCount: 88, excerpt: '## 旧风格' },
+      ],
+      variables: [
+        { name: 'persona_name', dynamic: false, description: '它的名字' },
+        { name: 'now', dynamic: true, description: '当前时间（禁止进前缀）' },
+      ],
+      overrides: [{ scope: 'group:88888', slug: 'p2-style' }],
+      preview: {
+        slug: 'p1-system',
+        ok: true,
+        errors: [],
+        warnings: ['文本里有落单的 `{{`'],
+        tokenCount: 330,
+        tokenDelta: 10,
+        willChange: true,
+        rendered: '你是团子，主人的伙伴。',
+        diff: [
+          { kind: 'same', text: '你是{{persona_name}}' },
+          { kind: 'removed', text: '旧的一行' },
+          { kind: 'added', text: '新的一行' },
+        ],
+      },
+    },
+    { drafts: { 'p1-system': '你是{{persona_name}}', 'p2-style': '## 说话方式' }, dirty: { 'p1-system': true } },
+  )
+  const all = texts(panel).join(' ')
+  for (const expected of [
+    'P1 系统提示词',
+    'P2 回答风格',
+    '未保存改动',
+    '有',
+    '预览（p1-system）',
+    '会改变前缀 ⇒ 一次缓存未命中',
+    '+10',
+    '最终拼装结果（变量已替换）',
+    '你是团子，主人的伙伴。',
+    '+ 新的一行',
+    '- 旧的一行',
+    '历史版本',
+    '回滚到这版',
+    '生效中',
+    '{{persona_name}}',
+    '不能用在稳定前缀里',
+    '文本里有落单',
+  ]) {
+    assert.ok(all.includes(expected), `提示词面板应显示「${expected}」，实际：${all.slice(0, 400)}`)
+  }
+  const types = new Set<string>()
+  const walk = (n: { type: string; children: unknown[] }): void => {
+    types.add(n.type)
+    for (const child of n.children) if (typeof child !== 'string') walk(child as { type: string; children: unknown[] })
+  }
+  walk(panel as unknown as { type: string; children: unknown[] })
+  assert.ok(types.has('textarea'), '两个槽位都要有编辑框')
 })
 
 test('渲染内容：QQ 与后台面板画出积压、轮次、规则与人类直发框', () => {
@@ -363,5 +442,6 @@ test('面板组件：加载中状态返回提示文本', () => {
   assert.equal(element.type, 'div')
   assert.match(element.props.children, /正在读取记忆状态/)
 })
+
 
 
