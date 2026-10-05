@@ -24,6 +24,7 @@ import { registerMemorySections, registerPromptSections, type SystemPromptLike }
 import { seedDefaultPrompts } from './prompt-store.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
+import { buildRouterTools } from './router-tools.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -186,7 +187,13 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         const dispose = tools.register(definition)
         disposers.push(dispose)
       }
-      log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks')
+      // 路由工具（阶段 5 §2.18）：switch_model / revert_model / router_status。
+      // **主代理才有** —— 子代理连工具都拿不到（第一道防线）
+      for (const definition of buildRouterTools(defineToolImpl, runtime)) {
+        const dispose = tools.register(definition)
+        disposers.push(dispose)
+      }
+      log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks / switch_model / revert_model / router_status')
     }
   }
 
@@ -246,6 +253,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
 
 
 

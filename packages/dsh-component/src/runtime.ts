@@ -17,6 +17,8 @@ import { dirname, isAbsolute, join } from 'node:path'
 
 import {
   getClockSuggestion,
+  listModelRoutes,
+  recordRoutingDecision,
   getConversationClock,
   listConversationClocks,
   setClockSuggestion,
@@ -78,6 +80,13 @@ export interface RecallResult {
   readonly note?: string
 }
 
+/** 手动档位覆盖（可撤销）。 */
+export interface TierOverride {
+  readonly tier: 'L1' | 'L2' | 'L3'
+  readonly reason: string
+  readonly at: string
+  readonly actor: string
+}
 /** 记忆运行时的构造参数。 */
 export interface MemoryRuntimeOptions {
   readonly config: ForlifeConfig
@@ -92,7 +101,7 @@ export class MemoryRuntime {
   readonly dbPath: string
   private readonly opened: OpenedDatabase
   private readonly config: ForlifeConfig
-  private readonly log: (message: string) => void
+  private readonly logger: (message: string) => void
   private cache: { readonly key: string; readonly view: RenderedView } | undefined
   /** 上下文上限（用于算"短期占比"）。配置优先，其次基线默认值。 */
   private get contextWindowTokens(): number {
@@ -106,7 +115,7 @@ export class MemoryRuntime {
 
   constructor(options: MemoryRuntimeOptions) {
     this.config = options.config
-    this.log = options.log ?? ((): void => {})
+    this.logger = options.log ?? ((): void => {})
     this.dbPath = options.dbPath
     mkdirSync(dirname(this.dbPath), { recursive: true })
     this.opened = openDatabase({ file: this.dbPath, log: this.log })
@@ -557,6 +566,63 @@ export class MemoryRuntime {
     return row?.session_id
   }
 
+  // ── 阶段 5：档位覆盖与路由观测 ──────────────────────────────────────────
+
+  /** 手动档位覆盖（可撤销）。进程内状态：重启后回到自动判定（那是安全方向）。 */
+  // eslint-disable-next-line @typescript-eslint/member-ordering
+  private tierOverrideValue: TierOverride | undefined
+
+  /**
+   * 写一行运行时日志（工具层要留痕：切换档位这种事必须能被看到）。
+   *
+   * **必须是箭头函数属性**：它会被当作回调传给 `openDatabase({ log })`，
+   * 普通方法那样传会丢掉 `this`（真机启动时报 "Cannot read properties of undefined"）。
+   * 刻意只暴露"写日志"而不是整个 logger：工具层不该能改日志配置。
+   */
+  readonly log = (message: string): void => {
+    this.logger(message)
+  }
+
+  /** 当前的手动档位覆盖。 */
+  tierOverride(): TierOverride | undefined {
+    return this.tierOverrideValue
+  }
+
+  /** 设置手动档位覆盖。 */
+  setTierOverride(override: TierOverride): void {
+    this.tierOverrideValue = override
+  }
+
+  /** 撤销手动档位覆盖（回到自动判定）。 */
+  clearTierOverride(): void {
+    this.tierOverrideValue = undefined
+  }
+
+  /** 最近的切换记录（冷却与预算的依据）。 */
+  recentSwitches(): readonly { readonly at: string }[] {
+    return this.db
+      .prepare("SELECT at FROM routing_log WHERE switched = 1 AND at >= ? ORDER BY at DESC")
+      .all(new Date(Date.now() - 3_600_000).toISOString()) as unknown as { at: string }[]
+  }
+
+  /** 近 24 小时的路由统计（面板与 router_status 共用）。 */
+  routingStats24h(): { readonly degraded: number; readonly total: number } {
+    const row = this.db
+      .prepare('SELECT count(*) AS total, coalesce(sum(degraded), 0) AS degraded FROM routing_log WHERE at >= ?')
+      .get(new Date(Date.now() - 24 * 3600_000).toISOString()) as { total: number; degraded: number }
+    return { total: row.total, degraded: row.degraded }
+  }
+
+  /** 记一条路由决策（工具与面板共用，保证字段一致）。 */
+  recordRoutingDecision(input: Parameters<typeof recordRoutingDecision>[1]): void {
+    recordRoutingDecision(this.db, input)
+  }
+
+  /** 列路由表。 */
+  listModelRoutes(role?: string): ReturnType<typeof listModelRoutes> {
+    return listModelRoutes(this.db, role)
+  }
+
   /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
   resetCompactionAccounting(): void {
     const now = new Date().toISOString()
@@ -702,6 +768,11 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
+
+
+
+
 
 
 

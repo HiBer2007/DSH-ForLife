@@ -41,6 +41,7 @@
     "@forlife/contracts": "workspace:*",
     "@forlife/store": "workspace:*",
     "@forlife/memory-core": "workspace:*",
-    "@forlife/gateway": "workspace:*"
+    "@forlife/gateway": "workspace:*",
+    "@forlife/router": "workspace:*"
   }
 }

@@ -134,6 +134,9 @@ importers:
       '@forlife/memory-core':
         specifier: workspace:*
         version: link:../memory-core
+      '@forlife/router':
+        specifier: workspace:*
+        version: link:../router
       '@forlife/store':
         specifier: workspace:*
         version: link:../store

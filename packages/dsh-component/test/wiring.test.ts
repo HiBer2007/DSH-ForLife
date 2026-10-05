@@ -100,10 +100,28 @@ test('接线：完整宿主下注册四个提示段 + 记忆与时间工具', as
   try {
     const base = activeRuntimes().length
     const { ctx, recorded } = fakeContext({ systemPrompt: true, tools: true, connection: true })
-    quiet(() => {
-      apply(ctx, resolveConfig({ storageRoot: dir, verbose: false }))
-    })
+    // 把 apply 里被吞掉的异常捞出来：否则它会表现为"段一个都没注册"，
+    // 让人完全看不出真正的原因（我就在这上面绕过一次弯路 —— 真机日志里才有原始报错）
+    const swallowed: unknown[] = []
+    const originalError = console.error
+    const originalWarn = console.warn
+    console.error = (...args: unknown[]): void => void swallowed.push(args)
+    console.warn = (...args: unknown[]): void => void swallowed.push(args)
+    try {
+      quiet(() => {
+        apply(ctx, resolveConfig({ storageRoot: dir, verbose: false }))
+      })
+    } finally {
+      console.error = originalError
+      console.warn = originalWarn
+    }
     await delay(30)
+
+    if (recorded.sections.length === 0) {
+      assert.fail(
+        `一个提示段都没注册 —— apply 里一定抛了异常。被吞掉的输出：\n${swallowed.map((item) => JSON.stringify(item)).join('\n')}`,
+      )
+    }
 
     // 现在有四段：P1/P2 可编辑人设与风格（100/110）+ L2/L3 记忆（120/130）
     assert.deepEqual(
