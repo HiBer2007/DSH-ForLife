@@ -45,6 +45,16 @@ export {
 export type { FakeScript, HeadlessDriverOptions, LongConnectionDriverOptions } from './driver.ts'
 export { buildTurnPrompt, defaultConditionOf, defaultScopeOf, TurnRunner } from './turns.ts'
 export type { TurnDriver, TurnOutcome, TurnRequest, TurnRunResult, TurnRunnerOptions } from './turns.ts'
+export {
+  clearSystemStatus,
+  currentStatus,
+  failurePresetText,
+  recordWakeAttempt,
+  setModelStatus,
+  setStatusPreset,
+  setSystemStatus,
+} from './status.ts'
+export type { CurrentStatus, SetStatusResult, StatusSource, StatusState } from './status.ts'
 export { conversationKey, parseConversationKey } from './transport.ts'
 export type {
   ConversationKind,
@@ -57,6 +67,7 @@ export type {
   TransportStatus,
 } from './transport.ts'
 export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, DebounceOptions } from './timing.ts'
+
 
 
 

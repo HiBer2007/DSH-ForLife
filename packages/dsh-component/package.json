@@ -37,6 +37,7 @@
   "dependencies": {
     "@forlife/contracts": "workspace:*",
     "@forlife/store": "workspace:*",
-    "@forlife/memory-core": "workspace:*"
+    "@forlife/memory-core": "workspace:*",
+    "@forlife/gateway": "workspace:*"
   }
 }
