@@ -26,6 +26,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { nowIso } from '@forlife/store'
 
+import { ADMIN_CHAT_KEY, appendModelReply, buildAdminPrompt, markHandled, takePendingHumanMessages } from './admin-chat.ts'
 import { claimPendingOutbound, confirmOutbound, failOutbound, reclaimStaleOutbound, type OutboxRow } from './outbox.ts'
 import { TurnScheduler } from './scheduler.ts'
 import { Debouncer, KeyedMutex } from './timing.ts'
@@ -46,6 +47,8 @@ export interface GatewayOptions {
   readonly log?: (message: string) => void
   /** 注入时钟（测试用）。 */
   readonly now?: () => number
+  /** 后台对话轮次用哪个"会话"（默认 panel:admin，与 QQ 会话区分开）。 */
+  readonly adminConversationKey?: string
 }
 
 /** 网关状态（面板用）。 */
@@ -84,6 +87,9 @@ export class Gateway {
   private unsubscribe: (() => void) | undefined
   private outboxTimer: ReturnType<typeof setInterval> | undefined
   private schedulerTimer: ReturnType<typeof setInterval> | undefined
+  private adminTimer: ReturnType<typeof setInterval> | undefined
+  /** 后台对话是否有一轮在跑（避免并发回答同一个人）。 */
+  private adminBusy = false
   private running = false
   private stats = { turnsHandled: 0, turnsFailed: 0, skipped: 0, outboundSent: 0, outboundFailed: 0, lastError: undefined as string | undefined }
 
@@ -107,6 +113,8 @@ export class Gateway {
     this.unsubscribe = this.options.transport.onEvent((event) => this.onEvent(event))
     this.outboxTimer = setInterval(() => void this.drainOutbox(), this.options.outboxPollMs)
     this.schedulerTimer = setInterval(() => void this.pumpScheduler(), Math.max(50, Math.floor(this.options.outboxPollMs / 2)))
+    // 后台对话：与 QQ 分开的循环 —— 它的消息来自运维本人，**不走唤醒判定**
+    this.adminTimer = setInterval(() => void this.consumeAdminChat(), Math.max(100, this.options.outboxPollMs))
     this.log('网关已启动')
   }
 
@@ -117,8 +125,10 @@ export class Gateway {
     this.unsubscribe = undefined
     if (this.outboxTimer !== undefined) clearInterval(this.outboxTimer)
     if (this.schedulerTimer !== undefined) clearInterval(this.schedulerTimer)
+    if (this.adminTimer !== undefined) clearInterval(this.adminTimer)
     this.outboxTimer = undefined
     this.schedulerTimer = undefined
+    this.adminTimer = undefined
     this.debouncer.flushAll()
     this.log('网关已停止')
   }
@@ -271,6 +281,47 @@ export class Gateway {
     }
   }
 
+  /**
+   * 消费后台对话（铁律 2 的唯一人类入口）。
+   *
+   * 刻意**不经过唤醒判定与调度器**：
+   *  - 唤醒矩阵管的是"QQ 上要不要吵醒它"，而面板里有人打字就是在直接跟它说话；
+   *  - 调度器的冷却/配额是为了防话痨群，不该让运维的提问排队。
+   */
+  private async consumeAdminChat(): Promise<void> {
+    if (!this.running || this.adminBusy) return
+    const pending = takePendingHumanMessages(this.options.db, 10)
+    if (pending.length === 0) return
+    this.adminBusy = true
+    const turnId = `turn_admin_${Math.random().toString(36).slice(2, 10)}`
+    try {
+      const conversation = { platform: 'panel', chatId: 'admin', kind: 'private' as const }
+      const outcome = await this.options.runner.runDirect({
+        turnId,
+        conversation,
+        prompt: buildAdminPrompt(pending),
+        conversationKey: this.options.adminConversationKey ?? ADMIN_CHAT_KEY,
+        messages: pending.map((m) => m.text),
+      })
+      if (outcome.error !== undefined) {
+        markHandled(this.options.db, pending.map((m) => m.id), { turnId, error: outcome.error })
+        appendModelReply(this.options.db, { text: `（这一轮没能回答：${outcome.error}）`, turnId, error: outcome.error })
+        this.stats.turnsFailed += 1
+      } else {
+        markHandled(this.options.db, pending.map((m) => m.id), { turnId })
+        const text = (outcome.segments ?? []).join('\n').trim()
+        appendModelReply(this.options.db, { text: text === '' ? '（模型没有输出文本）' : text, turnId })
+        this.stats.turnsHandled += 1
+      }
+    } catch (error) {
+      markHandled(this.options.db, pending.map((m) => m.id), { turnId, error: String(error) })
+      appendModelReply(this.options.db, { text: `（这一轮异常：${String(error)}）`, turnId, error: String(error) })
+      this.stats.turnsFailed += 1
+    } finally {
+      this.adminBusy = false
+    }
+  }
+
   /** 入站落库（先落库再处理：崩溃可恢复）。 */
   private persistInbound(message: InboundMessage): void {
     this.options.db
@@ -354,6 +405,7 @@ function parseConversationKeySafe(key: string, kind: 'group' | 'private' | 'temp
   const threadId = rest.join(':')
   return threadId === '' ? { platform, chatId, kind } : { platform, chatId, threadId, kind }
 }
+
 
 
 

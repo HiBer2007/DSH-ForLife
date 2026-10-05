@@ -69,6 +69,17 @@ export {
   runReportCycle,
 } from './reports.ts'
 export type { DeliveryDecision, ForlifeSource, ReportableEffect, ReportBatch } from './reports.ts'
+export {
+  ADMIN_CHAT_KEY,
+  appendModelReply,
+  buildAdminPrompt,
+  listAdminChat,
+  markHandled,
+  pendingAdminCount,
+  postHumanMessage,
+  takePendingHumanMessages,
+} from './admin-chat.ts'
+export type { AdminChatMessage } from './admin-chat.ts'
 export { Gateway } from './gateway.ts'
 export type { GatewayOptions, GatewayState } from './gateway.ts'
 export { CONDITION_PRIORITY, TurnScheduler } from './scheduler.ts'
@@ -85,6 +96,7 @@ export type {
   TransportStatus,
 } from './transport.ts'
 export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, DebounceOptions } from './timing.ts'
+
 
 
 

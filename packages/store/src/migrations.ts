@@ -462,6 +462,44 @@ const m0007 = {
 
 const m0007Checksum = createHash('sha256').update(m0007.sql).digest('hex')
 
+/**
+ * 迁移 8：后台「对话」通道（铁律 2 的另一半）。
+ *
+ * 用户原话："人类发送消息保留到后台的一个区域，**是唯一直接向模型发送人类消息的位置**。"
+ *
+ * 所以这张表就是那个唯一的入口：
+ *  - `role='human'` 的行只能由后台页面写入（来源 `forlife:admin`，带 actor）；
+ *  - `role='model'` 的行只能由网关在轮次结束后写入（模型的回复）；
+ *  - `handled` 标记该条人类消息是否已经被送进模型（网关消费后置 1）。
+ *
+ * 与 QQ 消息的区别不是"能说什么"，而是**可信度与审计要求**：面板里的人类消息
+ * 必须能回答"谁在什么时候说了什么、模型是什么时候看到的"。
+ */
+const m0008 = {
+  version: 8,
+  name: '0008_admin_chat',
+  sql: `
+CREATE TABLE IF NOT EXISTS admin_chat (
+  id         TEXT PRIMARY KEY,
+  role       TEXT NOT NULL,             -- human | model
+  actor      TEXT,                      -- human 时的管理员标识
+  text       TEXT NOT NULL,
+  at         TEXT NOT NULL,
+  handled    INTEGER NOT NULL DEFAULT 0,-- human 行：是否已送进模型
+  turn_id    TEXT,                      -- 关联的轮次（可追溯"这次回复对应哪次输入"）
+  error      TEXT                       -- 轮次失败时的原因（面板要看得见）
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_chat_at ON admin_chat (at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_chat_pending ON admin_chat (role, handled, at);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0008.sql)
+  },
+} as const
+
+const m0008Checksum = createHash('sha256').update(m0008.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -506,10 +544,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0007Checksum,
     up: m0007.up,
   },
+  {
+    version: m0008.version,
+    name: m0008.name,
+    checksum: m0008Checksum,
+    up: m0008.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

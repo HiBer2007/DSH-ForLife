@@ -266,6 +266,47 @@ export class TurnRunner {
     }
   }
 
+  /**
+   * 直接跑一轮（**不做唤醒判定**）。
+   *
+   * 用途：后台对话 —— 面板里有人打字就是在直接跟它说话，没有"要不要吵醒它"的问题。
+   * 仍然会落一条轮次记录（可追溯：这次回答对应哪条输入、花了多少 token）。
+   *
+   * @param request - 轮次输入（提示词由调用方组装）。
+   * @returns 轮次结果。
+   */
+  async runDirect(request: {
+    readonly turnId: string
+    readonly conversation: ConversationRef
+    readonly prompt: string
+    readonly conversationKey: string
+    readonly messages: readonly string[]
+  }): Promise<TurnOutcome> {
+    const startedAt = nowIso()
+    this.options.db
+      .prepare(
+        `INSERT INTO qq_turns (id, conversation_key, status, started_at, ended_at, session_id, model, input_ids, tokens_in, tokens_out, tool_calls, defer_reason, defer_until, error)
+         VALUES (?, ?, 'running', ?, NULL, NULL, NULL, ?, 0, 0, 0, NULL, NULL, NULL)`,
+      )
+      .run(request.turnId, request.conversationKey, startedAt, JSON.stringify([]))
+
+    try {
+      const outcome = await this.options.driver.run({
+        turnId: request.turnId,
+        conversation: request.conversation,
+        messages: [],
+        prompt: request.prompt,
+        signal: new AbortController().signal,
+      })
+      this.finishTurn(request.turnId, outcome)
+      return outcome
+    } catch (error) {
+      const message = String(error)
+      this.options.db.prepare("UPDATE qq_turns SET status = 'failed', ended_at = ?, error = ? WHERE id = ?").run(nowIso(), message, request.turnId)
+      return { error: message }
+    }
+  }
+
   /** 收尾：写状态与计量。 */
   private finishTurn(turnId: string, outcome: TurnOutcome): void {
     if (outcome.deferred !== undefined) {
@@ -320,4 +361,5 @@ export function defaultScopeOf(conversation: ConversationRef): string {
   if (conversation.kind === 'group') return `group:${conversation.chatId}`
   return `private:${conversation.chatId}`
 }
+
 
