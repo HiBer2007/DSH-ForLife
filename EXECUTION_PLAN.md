@@ -2000,8 +2000,10 @@ $ dsh --profile forlife-qq "ping"
    - [x] **profile 挂载** `dsh-time-context`（我们的配置，非 web-app 那行 disabled 的），
      作为**非 QQ 路径**（DSH 直接对话）的兜底，节流放宽到 30 分钟以免与我们的注入打架。
    - [x] `time_readings` 表（文本可回放、原因、token 成本）+ 面板「时间感知」卡。
-   - [~] **`time_drift` 自动抽取未接线**：表、统计与面板展示都在，但"从模型输出里抓时间表述
-     并与真实时间比对"的抽取器没写。差在：需要一个轻量解析器 + 在轮次收尾时调用。
+   - [x] **`time_drift` 遥测**：从模型输出里抓时间表述（完整日期 / 年份 / `14:23` / "下午三点" /
+     "三天前"），与真实读数比对，超阈值落库并按严重度分类（1 小时内 info、1 小时 warn、1 天 bad）。
+     证据：`time-drift.test.ts`（10 项，含"宁可漏报不可误报"的保守性用例）+ 网关接线用例。
+     **只记 warn 以上** —— info 级是正常口语精度，记了会淹没真正的问题。
 8. [x] **三层时区**：`systemTimezone`(UTC) / `conversationTimezone` / `displayTimezone`
    + `conversation_clock_settings` 表 + `get_clock`/`set_clock`/`list_clocks` 工具
    + 渲染双写（ISO 带偏移 + 人类可读）+ 12/24 制只影响表述。
@@ -2046,7 +2048,6 @@ $ dsh --profile forlife-qq "ping"
 
 | 项 | 去哪 | 为什么不在本阶段 |
 | :--- | :--- | :--- |
-| `time_drift` 的自动抽取器 | 阶段 9（运维面板） | 表与统计已就绪；抽取器要有真实输出样本才好调规则，否则误报会很多 |
 | 小模型时钟建议的**调用方** | 阶段 5（路由与多模型） | 建议通道已就绪（低置信度不生效）；小模型本身属于阶段 5 的模型池 |
 | 试渲染 token 与真实请求的 ±2% 对账 | 有凭据时 | 没有真实 usage 就无法对账 |
 | 真模型下的两组对比 | 有凭据时 | 同上 |
@@ -2392,4 +2393,5 @@ memory.example.com {
 | `research/dsh-std/`（已装 16 个 `@dsh-std/*` 包） | 兼容层 API 的**可查证据本体**：`.d.ts` 类型定义；`research/sqlite-probe.mjs` 是 SQLite 能力探针 |
 
 > 清理提示：`astr-src/AstrBot-master/` 是调研期的完整源码克隆，体积大且可重新获取，交付前删除（保留 `astrbot-admin-panel-research.md` 即可）。
+
 
