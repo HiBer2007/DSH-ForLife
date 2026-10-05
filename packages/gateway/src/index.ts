@@ -9,6 +9,19 @@
 export { classifyNoise, Debouncer, DEFAULT_NOISE_RULES, KeyedMutex } from './timing.ts'
 export { createOneBotTransport, OneBotTransport } from './onebot.ts'
 export type { OneBotTransportOptions } from './onebot.ts'
+export {
+  decideWake,
+  defaultWakeRules,
+  listWakeRules,
+  pendingStats,
+  readPending,
+  recordPending,
+  resolveWakeRule,
+  seedWakeRules,
+  setWakeRule,
+  WAKE_CONDITIONS,
+} from './wake.ts'
+export type { PendingItem, WakeCondition, WakeDecisionOptions, WakeReason, WakeRequest, WakeRule, WakeVerdict } from './wake.ts'
 export { conversationKey, parseConversationKey } from './transport.ts'
 export type {
   ConversationKind,
@@ -21,4 +34,5 @@ export type {
   TransportStatus,
 } from './transport.ts'
 export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, DebounceOptions } from './timing.ts'
+
 
