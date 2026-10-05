@@ -41,11 +41,22 @@ const systemPromptModule = (await import('@deepseek-ai/dsh-system-prompt')) as u
 }
 
 const ctx = new Context()
+/**
+ * 把插件装到指定上下文。
+ *
+ * cordis 的 `plugin()` 签名对插件对象要求很严（`Plugin<any>`），而我们从动态 import
+ * 拿到的是 `unknown`；这里收窄成一个显式的小助手，**不 bind**（bind 会锁死 this，
+ * 导致插件被装到另一个上下文）。
+ */
+function installPlugin(target: Context, pluginModule: unknown): void {
+  const install = target.plugin as unknown as (p: unknown) => unknown
+  install.call(target, pluginModule)
+}
 let runtime: MemoryRuntime
 let disposeSections: () => void
 
 before(async () => {
-  ctx.plugin(systemPromptModule.default, {})
+  installPlugin(ctx, systemPromptModule.default)
   await delay(120)
   runtime = new MemoryRuntime({ config: resolveConfig({ storageRoot: tempRoot, relativeAges: false }), dbPath })
   const systemPrompt = ctx.get('systemPrompt') as Parameters<typeof registerMemorySections>[0]
@@ -157,7 +168,7 @@ test('A3 崩溃后重启：新进程渲染出的系统提示词与崩溃前逐�
   }
   const bootContext = async (): Promise<Context> => {
     const fresh = new Context()
-    fresh.plugin(systemPromptModule.default, {})
+    installPlugin(fresh, systemPromptModule.default)
     await delay(100)
     return fresh
   }
@@ -186,14 +197,14 @@ test('A4 面板接口：能列条目并按 epoch 过滤', async () => {
   const routes = buildPanelRoutes(runtime)
   const names = routes.map((r) => r.path).sort()
   assert.deepEqual(names, [
-    '/forlife/compaction',
-    '/forlife/entries',
-    '/forlife/health',
-    '/forlife/spills',
-    '/forlife/state',
+    '/api/forlife/compaction',
+    '/api/forlife/entries',
+    '/api/forlife/health',
+    '/api/forlife/spills',
+    '/api/forlife/state',
   ])
 
-  const entriesRoute = routes.find((r) => r.path === '/forlife/entries')
+  const entriesRoute = routes.find((r) => r.path === '/api/forlife/entries')
   assert.ok(entriesRoute !== undefined)
 
   // 不过滤：应列出全部条目
@@ -221,7 +232,7 @@ test('A4 面板接口：能列条目并按 epoch 过滤', async () => {
   assert.ok(actives.entries.every((e) => e.status === 'active'))
 
   // 状态接口
-  const stateRoute = routes.find((r) => r.path === '/forlife/state')
+  const stateRoute = routes.find((r) => r.path === '/api/forlife/state')
   const state = (await (await stateRoute!.fetch(new Request('http://local/api/forlife/state'))).json()) as {
     revision: number
     renderedSha256: string
@@ -277,3 +288,7 @@ async function cleanup(dir: string): Promise<void> {
     }
   }
 }
+
+
+
+

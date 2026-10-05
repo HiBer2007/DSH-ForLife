@@ -19,6 +19,7 @@ import { activeRuntimes, apply, resolveDshHome } from '../src/index.ts'
 import { resolveConfig } from '../src/config.ts'
 import { L2_NAME, L3_NAME, L2_ORDER, L3_ORDER } from '../src/prompt.ts'
 import { MEMORY_TOOL_NAMES } from '../src/tools.ts'
+import * as panelPlugin from '../src/panel-plugin.ts'
 
 interface Recorded {
   readonly sections: { name: string; order: number; text: unknown }[];
@@ -113,14 +114,9 @@ test('接线：完整宿主下注册 2 个提示段 + 4 个工具 + 5 条面板�
 
     assert.deepEqual(recorded.tools.sort(), [...MEMORY_TOOL_NAMES].sort(), '必须注册四个记忆工具')
 
-    assert.deepEqual(
-      recorded.routes.map((r) => r.path).sort(),
-      ['/forlife/compaction', '/forlife/entries', '/forlife/health', '/forlife/spills', '/forlife/state'],
-    )
-    for (const route of recorded.routes) {
-      assert.deepEqual(route.methods, ['GET'])
-      assert.equal(route.requestBody, 'buffered', '面板接口是只读小响应，用 buffered')
-    }
+    // 面板接口**不在主插件里注册**：它需要 connection 服务，而那只由 dsh-web-app 提供
+    // （见 src/panel-plugin.ts）。主插件必须在任何宿主都能 apply —— 这是可移植性的硬要求。
+    assert.deepEqual(recorded.routes, [], '主插件不得注册面板路由（否则无 connection 的宿主会整个 apply 失败）')
 
     assert.equal(activeRuntimes().length, base + 1, '运行时必须登记（面板/诊断靠它取）')
 
@@ -205,3 +201,43 @@ async function cleanup(dir: string): Promise<void> {
 }
 
 
+
+
+test('面板插件：独立行注册 5 条 /api/forlife/* 路由（路径必须含 /api）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'forlife-panel-'))
+  const base = activeRuntimes().length
+  try {
+    // 先起主插件把运行时装进登记表
+    const { ctx } = fakeContext({})
+    quiet(() => apply(ctx, resolveConfig({ storageRoot: dir, exposePanelApi: false })))
+    await delay(20)
+    assert.equal(activeRuntimes().length, base + 1)
+
+    const routes: { path: string; methods: readonly string[]; requestBody: string }[] = []
+    const fakeCtx = {
+      connection: {
+        fetch: {
+          register(route: { path: string; methods: readonly string[]; requestBody: string }): () => Promise<void> {
+            routes.push(route)
+            return async (): Promise<void> => {}
+          },
+        },
+      },
+    }
+    quiet(() => panelPlugin.apply(fakeCtx as never))
+
+    assert.deepEqual(
+      routes.map((r) => r.path).sort(),
+      ['/api/forlife/compaction', '/api/forlife/entries', '/api/forlife/health', '/api/forlife/spills', '/api/forlife/state'],
+      '路径必须是含 /api 的完整绝对路径（否则被 invalid exact Fetch route 拒掉）',
+    )
+    for (const route of routes) {
+      assert.deepEqual(route.methods, ['GET'])
+      assert.equal(route.requestBody, 'buffered')
+    }
+    assert.equal(panelPlugin.name, 'forlife-memory-panel')
+    assert.deepEqual(panelPlugin.inject, ['connection'], '必须显式声明 connection 依赖')
+  } finally {
+    await cleanup(dir)
+  }
+})

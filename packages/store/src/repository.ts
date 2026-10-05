@@ -213,7 +213,7 @@ export function listRenderableMidEntries(db: DatabaseSync, epoch = currentEpoch(
         WHERE compaction_epoch = ? AND status IN ('active','fragmented')
         ORDER BY window_offset ASC`,
     )
-    .all(epoch) as MidEntryRow[]
+    .all(epoch) as unknown as MidEntryRow[]
 }
 
 /** 中期统计（用于碎片占比等约束判断）。 */
@@ -276,7 +276,7 @@ export function searchMidFts(db: DatabaseSync, query: string, limit: number): re
       `SELECT m.* FROM mid_memory_fts f JOIN mid_memory_entries m ON m.rowid = f.rowid
         WHERE mid_memory_fts MATCH ? ORDER BY bm25(mid_memory_fts) LIMIT ?`,
     )
-    .all(ftsQuery(query), limit) as MidEntryRow[]
+    .all(ftsQuery(query), limit) as unknown as MidEntryRow[]
 }
 
 // ── 长期记忆 ────────────────────────────────────────────────────────────────
@@ -360,7 +360,7 @@ export function listSettleCandidates(db: DatabaseSync, olderThanDays: number, li
         ORDER BY coalesce(last_accessed_at, created_at) ASC
         LIMIT ?`,
     )
-    .all(cutoff, limit) as LongEntryRow[]
+    .all(cutoff, limit) as unknown as LongEntryRow[]
 }
 
 /** 把长期条目标记为已沉降到 HDD（表内 content 置空，全文移入归档）。 */
@@ -384,7 +384,7 @@ export function searchLongFts(db: DatabaseSync, query: string, limit: number): r
       `SELECT l.* FROM long_memory_fts f JOIN long_memory_entries l ON l.rowid = f.rowid
         WHERE long_memory_fts MATCH ? ORDER BY bm25(long_memory_fts) LIMIT ?`,
     )
-    .all(ftsQuery(query), limit) as LongEntryRow[]
+    .all(ftsQuery(query), limit) as unknown as LongEntryRow[]
 }
 
 // ── 压缩日志 ────────────────────────────────────────────────────────────────
@@ -513,5 +513,6 @@ export function listSpills(db: DatabaseSync, sessionId: string, limit = 20): rea
     )
     .all(sessionId, limit) as Omit<SpillRow, 'content'>[]
 }
+
 
 

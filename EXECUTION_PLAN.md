@@ -1712,10 +1712,25 @@ model_routes(
    - `ctx.tools.register(defineTool(...))`：`remember`、`push_mid_memory`、`recall_longterm`（FTS5，含**中文按字切分 + 相邻短语匹配**）、`recall_full`；四个工具都有 `output.schema` + `render()`（纯投影，测试断言 render 不写库）；
    - `SessionEventMap` 声明合并（`forlife.mid_memory.appended` / `.fragmented` / `forlife.render.changed`），一律带 `ignorable: true` 追加 —— 未登记事件不带这个标记会被宿主拒绝；
    - 插件 `Config`（schemastery）承载存储根/时区/预算/阈值，**含两个 `.volatile()` 字段**（`storageRoot`、`l2IndexText`）⇒ 设置页会出现本条目。注意：volatile 字段在解析结果里是 cosmokit 的 `Volatile<T>` **引用对象**，必须经 `resolveConfig()` 取快照（这是真机才会踩的坑，已写测试）。
-4. ✅（接口层）／⏳（UI 页面）**记忆面板雏形**：`/api/forlife/{state,entries,compaction,spills,health}`，经 `ctx.connection.fetch.register({path,methods,requestBody,fetch})` 注册（真实契约来自 `dsh-client-connection/lib/types/rpc.d.ts:111-128`）。
-   - **UI 页面尚未做**，但**承接方已定**（U4 spike 结论）：用 `dsh-client-ui-slots` 的 slot 贡献挂一个记忆页（形状照抄 `dsh-client-ui-settings-models`）。
-   - 接口按 REST 定形，两种承接方式都不用改后端 —— UI 只是消费者。
+4. ✅（接口层 + 客户端）+ ⏳（浏览器实测）**记忆面板**：
+   - 接口：`/api/forlife/{state,entries,compaction,spills,health}`，经 `ctx.connection.fetch.register({path,methods,requestBody,fetch})` 注册。
+     **path 必须是含 `/api` 的完整路径**（实测：校验函数 `endpointFromPath('/api', path)`；第一方用 `/api/remote.mux`。文档里"below /api"的说法会让人写成 `/forlife/x` 然后被 `invalid exact Fetch route` 拒掉）。
+   - 客户端：`packages/dsh-component/client/index.js` —— **手写、零构建**，直接就是宿主加载器格式
+     `window.__ModuleLoader__.load({ id, factory: (require) => … })`，`require('react')` 由宿主解析（契约来自官方技能模板
+     `dsh-agent-preset/skills/cordis-plugin-development/templates/decoration/client.js`）。注册到 `settings.section`，
+     与 `dsh-client-ui-settings-models` 同一个位子。
+   - **怎么拆的**：面板注册**不在主插件里**，而是独立插件行 `forlife-memory/panel`（`inject: ['connection']`），
+     只有 web profile 挂它 —— 因为 `connection` 只由 `dsh-web-app` 提供（实测 base/headless 的 profile 里一行都没有）。
+     主插件保持 `inject: []`，在任何宿主都能 apply。
+   - **已验证**：真 `dsh --profile forlife-web` 启动后，客户端模块 `forlife-memory/client.js` 出现在页面模块清单里，
+     `/api/forlife/state` 与 `/health` 返回 **HTTP 200** 真实数据。
+   - ⏳ **未验证**：真实浏览器里的 React 渲染（本机无头环境跑不了浏览器）。已用 Node 测试覆盖"要发布的那份文件"的
+     加载契约、注册契约、渲染内容与取数降级（`client.test.ts` 8 项）。
 5. ✅ 单测：渲染纯度（同 revision 输出 SHA-256 恒定）、崩溃恢复（模拟中途 kill）、表↔窗口一致性 —— 见 `memory-core/test/{render,recovery}.test.ts`。
+6. ✅ **类型检查**（原计划外，用户要求补）：`pnpm typecheck` = `tsc -p tsconfig.json`，**0 错误**。开的是严格档
+   （`strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`）。首次接入就抓出 14 个真问题：
+   `node:sqlite` 的 `all()` 返回类型必须经 `unknown` 再断言、可选依赖的动态导入说明符、`ctx.plugin` 的插件类型、
+   以及若干"索引可能为 undefined"的真实假设。
 
 **验收标准（逐条勾选）**
 
@@ -1739,6 +1754,10 @@ model_routes(
 | **活动运行时登记表** | cordis 上下文对自定义属性**只读**（实测挂 `ctx.forlife` 失败），面板/doctor/测试改从模块级登记表取运行时，保证同一个库不被重复打开。 |
 | `defineTool` 顶层 await 动态导入 | 静态 import 会让"宿主没装 dsh-tools"变成"插件加载失败"，丧失可移植性；全部自研又会与宿主 schema 编译分叉。 |
 | 去掉 `peerDependencies` 声明 | pnpm 会解析 peer 及其传递依赖，导致 `pnpm install` 在无网/离线环境**退出码 1**（实测卡在 `@deepseek-ai/dsh-brand`）。宿主依赖关系改用文档 + `ctx` 探测表达。 |
+| **面板拆成独立插件行** | `ctx.inject(['connection'], cb)` 在这种控制器里**静默不触发**（回调既不执行也不报错，接口 404 而日志毫无线索）；而 `connection` 只由 `dsh-web-app` 提供，写进主插件 inject 又会让 base/headless 宿主整个 apply 失败。最终做成独立行 `forlife-memory/panel`，只在 web profile 挂载。 |
+| **fetch 路由路径必须含 `/api`** | 类型注释写的是"Absolute path below `/api`"，但校验函数 `endpointFromPath('/api', path)` 要求完整路径；写成 `/forlife/x` 会被 `invalid exact Fetch route` 拒掉。 |
+| **客户端模块的 `inject` 是服务名** | 模块导出的 `inject` 是**服务名**（官方模板 `['slots']`），而包级依赖写在 package.json 的 `dsh.client.inject`（包名）。两者写混会让 `apply` 永不被调用。 |
+| **日志文件被旧进程占用导致读到旧输出** | 排查"改了代码但日志没变"花掉最久：`job_kill` 杀的是 pwsh 包装而非派生的 node，旧进程仍持有端口与日志句柄。教训：**每次用新日志文件名**，并按端口杀进程（`Get-NetTCPConnection`）。 |
 
 
 ### 阶段 2 · 压缩与沉降（PLAN 阶段二，预计 8–12 天）

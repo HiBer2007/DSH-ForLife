@@ -23,7 +23,6 @@ import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, type SystemPromptLike } from './prompt.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
-import { registerPanelRoutes, type FetchRegistryLike } from './api.ts'
 import { emitForlifeEvent, type SessionLike } from './events.ts'
 
 /** Cordis 插件名（loader 诊断用）。 */
@@ -63,6 +62,7 @@ interface ContextLike {
   get(name: string): unknown
   inject?(names: string[], callback: (ctx: ContextLike) => void): unknown
   effect?(callback: () => void | (() => void)): unknown
+  plugin?(plugin: unknown): unknown
   on?(event: string, callback: (...args: never[]) => void): unknown
 }
 
@@ -95,6 +95,28 @@ export function activeRuntimes(): readonly MemoryRuntime[] {
 }
 
 /** 按数据库路径取运行时。 */
+/** 等待运行时就绪的回调（主插件与面板插件谁先 apply 不保证，用它对齐顺序）。 */
+const runtimeWaiters: ((runtime: MemoryRuntime) => void)[] = []
+
+/**
+ * 在记忆运行时就绪时回调（已就绪则同步立即回调）。
+ *
+ * @param callback - 收到运行时的回调。
+ * @returns 取消等待的函数。
+ */
+export function whenRuntimeReady(callback: (runtime: MemoryRuntime) => void): () => void {
+  const existing = activeRuntimes()[0]
+  if (existing !== undefined) {
+    callback(existing)
+    return () => {}
+  }
+  runtimeWaiters.push(callback)
+  return () => {
+    const index = runtimeWaiters.indexOf(callback)
+    if (index >= 0) runtimeWaiters.splice(index, 1)
+  }
+}
+
 export function runtimeFor(dbPath: string): MemoryRuntime | undefined {
   return runtimeRegistry.get(dbPath)
 }
@@ -128,6 +150,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   }
 
   runtimeRegistry.set(dbPath, runtime)
+  for (const waiter of runtimeWaiters.splice(0)) waiter(runtime)
   const disposers: (() => void | Promise<void>)[] = []
 
   // ② 提示段（L2 + L3）
@@ -153,20 +176,9 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     }
   }
 
-  // ④ 面板接口（可选服务：没有 connection 就跳过，不影响其它能力）
-  if (config.exposePanelApi && ctx.inject !== undefined) {
-    ctx.inject(['connection'], (scoped) => {
-      const connection = scoped.get('connection') as { fetch?: FetchRegistryLike } | undefined
-      const registry = connection?.fetch
-      if (registry === undefined) {
-        log('connection 服务存在但没有 fetch 注册表：跳过面板接口')
-        return
-      }
-      const dispose = registerPanelRoutes(registry, runtime)
-      disposers.push(dispose)
-      log('已注册面板接口 /api/forlife/{state,entries,compaction,spills,health}')
-    })
-  }
+  // ④ 面板接口**不在这里注册** —— 它需要 `connection` 服务，而该服务只由 `dsh-web-app` 提供。
+  //    见 `./panel-plugin.ts`：那是独立的一行插件，由 web profile 显式挂载。
+  //    这样主插件在 base / headless 宿主里照样能 apply（记忆本体不受影响）。
 
   // ⑤ 生命周期收尾：反注册 + 关库（checkpoint）
   const cleanup = (): void => {
@@ -192,6 +204,8 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
+
 
 
 

@@ -125,8 +125,11 @@ try {
       if (inRoots) {
         const m = /^(\s+)([A-Za-z]+):\s*(\S+)\s*$/.exec(line)
         if (m === null) { if (line.trim() !== '' && !line.startsWith(' ')) inRoots = false; continue }
-        if (m[1].length <= 6) { inRoots = false; continue } // 回到同级键，说明 storageRoots 结束
-        if (!m[3].startsWith('./')) badRoots.push(`${m[2]}=${m[3]}`)
+        const indent = m[1] ?? ''
+        const key = m[2] ?? ''
+        const value = m[3] ?? ''
+        if (indent.length <= 6) { inRoots = false; continue } // 回到同级键，说明 storageRoots 结束
+        if (!value.startsWith('./')) badRoots.push(`${key}=${value}`)
       }
     }
     add(

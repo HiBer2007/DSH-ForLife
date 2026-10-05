@@ -76,7 +76,7 @@ test('协议：便携清单是一份合法的 Community v0.15 manifest', () => {
   assert.equal(typeof manifest.id, 'string')
   const facets = manifest.facets as { host?: { entry?: string; apiVersion?: string } } | undefined
   assert.ok(facets?.host?.entry?.startsWith('./'), 'facets.host.entry 必须是相对路径')
-  assert.equal(facets.host.apiVersion, 'lifecycle.dsh/v1alpha1', 'facet 激活走 lifecycle FacetModule 契约')
+  assert.equal(facets?.host?.apiVersion, 'lifecycle.dsh/v1alpha1', 'facet 激活走 lifecycle FacetModule 契约')
   const permissions = manifest.permissions as { name: string; scope: string }[] | undefined
   assert.ok(Array.isArray(permissions) && permissions.length > 0, '必须声明权限（dsh-std 默认 deny）')
   assert.ok(permissions.every((p) => p.scope === 'forlife'), '权限 scope 必须限定在 forlife 命名空间')
@@ -106,12 +106,12 @@ function extractStorageRoots(patch: string): { key: string; value: string }[] {
   for (const line of patch.split(/\r?\n/)) {
     if (line.trim().startsWith('#')) continue
     const m = /^(\s*)storageRoots:\s*$/.exec(line)
-    if (m !== null) { inside = true; blockIndent = m[1].length; continue }
+    if (m !== null) { inside = true; blockIndent = (m[1] ?? '').length; continue }
     if (!inside) continue
     if (line.trim() === '') continue
     const kv = /^(\s*)([A-Za-z][\w-]*):\s*(\S+)\s*$/.exec(line)
     if (kv === null) { inside = false; continue }
-    if (kv[1].length <= blockIndent) { inside = false; continue }
+    if ((kv[1] ?? '').length <= blockIndent) { inside = false; continue }
     out.push({ key: kv[2] as string, value: kv[3] as string })
   }
   return out

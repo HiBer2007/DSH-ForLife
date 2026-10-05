@@ -68,10 +68,10 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
 
   return [
     // 概览：epoch / revision / 条目数 / 渲染指纹 / 约束违反
-    get('/forlife/state', () => json({ ok: true, ...runtime.stats(), dbPath: runtime.dbPath })),
+    get('/api/forlife/state', () => json({ ok: true, ...runtime.stats(), dbPath: runtime.dbPath })),
 
     // 条目列表（可按 epoch 与 status 过滤）—— 阶段 1 验收项之一
-    get('/forlife/entries', (url) => {
+    get('/api/forlife/entries', (url) => {
       const epoch = intParam(url, 'epoch')
       const status = url.searchParams.getAll('status').filter((s) => s !== '')
       const entries = runtime.listEntries({
@@ -100,18 +100,18 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
     }),
 
     // 压缩日志（阶段 2 起有数据）
-    get('/forlife/compaction', (url) =>
+    get('/api/forlife/compaction', (url) =>
       json({ ok: true, log: runtime.compactionLog(intParam(url, 'limit') ?? 20) }),
     ),
 
     // 溢出记录（大结果被截断后的全文索引）
-    get('/forlife/spills', (url) => {
+    get('/api/forlife/spills', (url) => {
       const session = url.searchParams.get('session') ?? ''
       return json({ ok: true, session, spills: runtime.listSpill(session, intParam(url, 'limit') ?? 20) })
     }),
 
     // 健康与契约信息（面板首页用）
-    get('/forlife/health', () => json({ ok: true, contracts: contractsSummary(), dbPath: runtime.dbPath })),
+    get('/api/forlife/health', () => json({ ok: true, contracts: contractsSummary(), dbPath: runtime.dbPath })),
   ]
 }
 
@@ -135,3 +135,4 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+

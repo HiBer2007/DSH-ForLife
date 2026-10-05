@@ -56,7 +56,9 @@ export async function activate(context: ActivationContextLike): Promise<void> {
 
   // 探测 dsh-std SDK 是否可用（不可用则整体降级，但不阻断宿主）
   try {
-    await import('@dsh-std/sdk')
+    // 用变量说明符：TS 不会强解，宿主没装这个包时也不会在编译期炸
+    const sdkSpecifier = '@dsh-std/sdk'
+    await import(sdkSpecifier)
   } catch {
     degraded = {
       code: 'DSH_STD_SDK_MISSING',
@@ -87,3 +89,4 @@ export function deactivate(reason: string): void {
 /** dsh-std 约定：默认导出 FacetModule。 */
 const facetModule = { activate, deactivate, snapshot }
 export default facetModule
+

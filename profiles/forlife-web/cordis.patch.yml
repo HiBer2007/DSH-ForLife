@@ -1,0 +1,23 @@
+# DSH Web + ForLife 组件。
+# 规则同前：`- id:` 定向 patch 会替换整行 config，每个键都要重述。
+
+- id: forlife-memory
+  name: forlife-memory
+  config:
+    storageRoot: ./forlife
+    relativeAges: true
+    verbose: true
+
+# 时钟插件：web bundle 里它默认 disabled:true，不显式挂就拿不到时间上下文。
+- insert:
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        timeZone: Asia/Shanghai
+        refreshIntervalMs: 0
+
+# 面板接口插件：单独的插件行（它 inject: ['connection']，而该服务只由 dsh-web-app 提供，
+# 所以只能在 web profile 里挂 —— 见 packages/dsh-component/src/panel-plugin.ts 的说明）。
+- insert:
+    - id: forlife-memory-panel
+      name: 'forlife-memory/panel'

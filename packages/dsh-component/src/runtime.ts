@@ -257,7 +257,7 @@ export class MemoryRuntime {
     const epoch = options.epoch ?? this.epoch()
     const rows = this.db
       .prepare('SELECT * FROM mid_memory_entries WHERE compaction_epoch = ? ORDER BY window_offset ASC')
-      .all(epoch) as MidEntryRow[]
+      .all(epoch) as unknown as MidEntryRow[]
     const wanted = options.status
     if (wanted === undefined || wanted.length === 0) return rows
     const normalized = new Set(wanted.map((s) => (s === 'fragment' ? 'fragmented' : s)))
@@ -309,4 +309,5 @@ export function resolveDbPath(config: ForlifeConfig, dshHome: string): string {
   const root = isAbsolute(config.storageRoot) ? config.storageRoot : join(dshHome, config.storageRoot)
   return join(root, config.dbFile)
 }
+
 

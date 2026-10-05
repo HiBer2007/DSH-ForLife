@@ -24,9 +24,11 @@
 pwsh -File scripts/setup-dev.ps1                  # 一键就位（junction + 工作区链接 + DSH_HOME 隔离）
 $env:DSH_HOME = "D:\DSH-ForLife\.runtime\dsh"     # DSH 的家目录隔离在仓库内
 node scripts/doctor.ts                            # 诊断：12 项检查
-node --test "packages/**/test/*.test.ts" "tests/*.test.ts"   # 48 项测试
+pnpm typecheck                                    # 类型检查（严格档，0 错误）
+node --test "packages/**/test/*.test.ts" "tests/*.test.ts"   # 56 项测试
 dsh --profile forlife --dump-config               # profile 组合（95 条目 / 0 告警）
 dsh --profile forlife-headless "你好"              # 真实加载：看插件被挂载的日志
+dsh --profile forlife-web --no-open              # 启动带记忆面板的 Web（:3080）
 ```
 
 阶段 1 交付的能力：
@@ -81,3 +83,15 @@ research/          # 调研报告与素材（不作为运行时依赖）
 - 可选：Docker（部署端验证）、DSH CLI（profile 组合验证）
 
 `node scripts/doctor.ts` 会把缺什么、怎么修直接打出来。
+
+## 记忆面板
+
+`dsh --profile forlife-web --no-open` 启动后，**设置 → 记忆** 里能看到：
+
+- epoch / 修订号 / 活跃条目 / 碎片数 / token 占用
+- **提示词前缀指纹（sha256）** —— 一眼看出"这一轮的稳定前缀有没有变"
+- 约束违反清单（渲染方只报告、不擅自改数据）
+- 条目表：位置、类型（活跃/碎片）、摘要或碎片提示、token、来源范围、UTC 创建时间
+
+前端是 `packages/dsh-component/client/index.js`：**手写、零构建**，直接就是宿主加载器的模块格式，`react` 由宿主提供。
+它注册进 `settings.section` 槽位（与官方设置页同一个位子），数据来自 `/api/forlife/*`。
