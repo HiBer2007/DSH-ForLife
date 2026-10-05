@@ -17,3 +17,31 @@ export type { HttpScorerOptions, ScoreResult, ScoringInput, ScoringPrompt, TierS
 
 export { deescalate, describeDecision, escalate, routeBatch, Router, startPreScore } from './pipeline.ts'
 export type { RouterOptions, RoutingDecision } from './pipeline.ts'
+
+export {
+  assertNotSubagentSwitch,
+  assertTierForTurn,
+  decideSwitch,
+  defaultRouteEntries,
+  defaultSwitchPolicy,
+  emptyFallbackState,
+  lockTierForTurn,
+  recordRouteFailure,
+  recordRouteSuccess,
+  ROUTE_ROLES,
+  selectRoute,
+} from './routes.ts'
+export type {
+  FallbackState,
+  RouteEntry,
+  RouteRole,
+  RouteSelection,
+  SelectionContext,
+  SwitchPolicy,
+  SwitchVerdict,
+  TurnRouteState,
+} from './routes.ts'
+
+export { reviewCases, summarizeReview } from './review.ts'
+export type { ReviewCase, SuggestionKind, TuningSuggestion } from './review.ts'
+

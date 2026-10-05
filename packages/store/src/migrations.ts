@@ -683,6 +683,84 @@ CREATE TABLE IF NOT EXISTS clock_suggestions (
 
 const m0012Checksum = createHash('sha256').update(m0012.sql).digest('hex')
 
+/**
+ * 迁移 13：路由表、路由日志与不确定案例（阶段 5 交付物 5/10）。
+ *
+ * - `model_routes`：**有序**候选表。排序不是装饰：它是"自动降级"的唯一依据
+ *   （主选没额度/挂了就按 rank 往后走），所以 `(role, rank)` 唯一。
+ * - `routing_log`：每次决策一行，含"谁判的、置信度、是否升档、是否降级、落在哪条路由"。
+ *   复盘时才能回答"为什么这次用了弱模型"。
+ * - `uncertain_cases`：低置信度且**新出现**的案例（模型路由.MD §6.2）。
+ *   刻意**不实时调用 L3 复盘** —— 那会破坏"极致快速"的目标，所以只落库、定期批处理。
+ */
+const m0013 = {
+  version: 13,
+  name: '0013_routing',
+  sql: `
+CREATE TABLE IF NOT EXISTS model_routes (
+  id               TEXT PRIMARY KEY,
+  role             TEXT NOT NULL,        -- L1 | L2 | L3 | vision | embedding | scorer | subagent
+  rank             INTEGER NOT NULL,     -- 同一 role 内越小越优先
+  provider         TEXT NOT NULL,
+  model            TEXT NOT NULL,
+  reasoning_effort TEXT,                 -- low | medium | high
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  note             TEXT,
+  updated_by       TEXT NOT NULL DEFAULT 'system',
+  updated_at       TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_routes_role_rank ON model_routes (role, rank);
+
+CREATE TABLE IF NOT EXISTS routing_log (
+  id              TEXT PRIMARY KEY,
+  at              TEXT NOT NULL,
+  session_id      TEXT,
+  turn_id         TEXT,
+  tier            TEXT NOT NULL,
+  source          TEXT NOT NULL,         -- guard | scorer | heuristic
+  rule            TEXT,                  -- 守卫规则名
+  backend         TEXT,                  -- 评分后端
+  confidence      REAL NOT NULL DEFAULT 1,
+  escalated       INTEGER NOT NULL DEFAULT 0,
+  degraded        INTEGER NOT NULL DEFAULT 0,
+  degrade_reason  TEXT,
+  latency_ms      INTEGER NOT NULL DEFAULT 0,
+  provider        TEXT,
+  model           TEXT,
+  reasoning_effort TEXT,
+  route_rank      INTEGER,
+  skipped         TEXT,                  -- JSON：被跳过的候选与原因
+  switched        INTEGER NOT NULL DEFAULT 0,
+  switch_reason   TEXT,
+  note            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_routing_log_at ON routing_log (at DESC);
+CREATE INDEX IF NOT EXISTS idx_routing_log_tier ON routing_log (tier, at DESC);
+
+CREATE TABLE IF NOT EXISTS uncertain_cases (
+  id            TEXT PRIMARY KEY,
+  at            TEXT NOT NULL,
+  text_excerpt  TEXT NOT NULL,
+  tier          TEXT NOT NULL,
+  confidence    REAL NOT NULL,
+  backend       TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending',  -- pending | reviewed
+  review_note   TEXT,
+  suggestion    TEXT,
+  reviewed_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_uncertain_status ON uncertain_cases (status, at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0013.sql)
+  },
+} as const
+
+const m0013Checksum = createHash('sha256').update(m0013.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -757,10 +835,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0012Checksum,
     up: m0012.up,
   },
+  {
+    version: m0013.version,
+    name: m0013.name,
+    checksum: m0013Checksum,
+    up: m0013.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

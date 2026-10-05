@@ -605,6 +605,26 @@
     "clock.hostRefreshIntervalMs": {
       "v": 1800000,
       "src": "EXECUTION_PLAN §2.15.2 P0（宿主插件作非 QQ 路径的兜底，节流放宽到 30 分钟以免与我们的注入打架）"
+    },
+    "router.fallback.failuresBeforeSwitch": {
+      "v": 3,
+      "src": "EXECUTION_PLAN §2.18（连续失败阈值：到阈值就换路由）"
+    },
+    "router.switch.cooldownMs": {
+      "v": 120000,
+      "src": "EXECUTION_PLAN §2.18（切换冷却：默认 2 分钟）"
+    },
+    "router.switch.perHour": {
+      "v": 6,
+      "src": "EXECUTION_PLAN §2.18（切换预算：每小时最多 6 次）"
+    },
+    "router.uncertain.minConfidence": {
+      "v": 0.6,
+      "src": "模型路由.MD §6.2（低置信度案例进 uncertain_cases）"
+    },
+    "router.review.intervalHours": {
+      "v": 24,
+      "src": "模型路由.MD §6.2（T15：定期用 L3 复盘，不实时调用）"
     }
   },
   "timings": [

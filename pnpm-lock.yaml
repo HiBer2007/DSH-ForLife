@@ -171,6 +171,9 @@ importers:
       '@forlife/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@forlife/store':
+        specifier: workspace:*
+        version: link:../store
 
   packages/store: {}
 

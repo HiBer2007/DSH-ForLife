@@ -105,3 +105,18 @@ export {
 } from './conversation-clocks.ts'
 export type { ClockSuggestion, ConversationClock, TimezoneSource } from './conversation-clocks.ts'
 
+
+export {
+  deleteModelRoute,
+  listModelRoutes,
+  listRoutingLog,
+  markCaseReviewed,
+  pendingUncertainCases,
+  recordRoutingDecision,
+  recordUncertainCase,
+  routingStats,
+  uncertainStats,
+  upsertModelRoute,
+} from './routing.ts'
+export type { ModelRouteRow } from './routing.ts'
+
