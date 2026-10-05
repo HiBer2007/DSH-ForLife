@@ -123,7 +123,8 @@ export function buildQqTools(
 
       const outboxId = enqueueOutbound(runtime.db, {
         conversationKey: target.key,
-        kind: target.kind === 'group' && (a.at ?? []).length > 0 ? 'text' : 'text',
+        conversationKind: target.kind,
+        kind: 'text',
         payload: { segments },
         source: 'model',
       })
@@ -170,6 +171,7 @@ export function buildQqTools(
       if (!target.ok) return { ok: false, confirmed: false, outboxId: '' }
       const outboxId = enqueueOutbound(runtime.db, {
         conversationKey: target.key,
+        conversationKind: target.kind,
         kind: 'reaction',
         payload: { messageId: a.message_id, emoji: a.emoji },
       })
@@ -212,7 +214,12 @@ export function buildQqTools(
         // 如实告知：群聊没有这个能力（不假装成功）
         return { ok: false, supported: false, note: '群聊没有"正在输入"能力（协议层仅私聊支持），所以没有发送。' }
       }
-      const outboxId = enqueueOutbound(runtime.db, { conversationKey: target.key, kind: 'input_status', payload: { typing: a.on } })
+      const outboxId = enqueueOutbound(runtime.db, {
+        conversationKey: target.key,
+        conversationKind: target.kind,
+        kind: 'input_status',
+        payload: { typing: a.on },
+      })
       const result = await waitForConfirmation(runtime.db, outboxId, { timeoutMs: confirmTimeoutMs })
       return { ok: result.confirmed, supported: true }
     },
@@ -532,3 +539,4 @@ export function buildQqTools(
 
   return [qqReply, qqReact, qqTyping, deferTurn, readPendingTool, listWakeRulesTool, setWakeRuleTool, setStatusTool, clearSystemStatusTool]
 }
+

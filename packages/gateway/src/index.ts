@@ -69,6 +69,10 @@ export {
   runReportCycle,
 } from './reports.ts'
 export type { DeliveryDecision, ForlifeSource, ReportableEffect, ReportBatch } from './reports.ts'
+export { Gateway } from './gateway.ts'
+export type { GatewayOptions, GatewayState } from './gateway.ts'
+export { CONDITION_PRIORITY, TurnScheduler } from './scheduler.ts'
+export type { ScheduleEnqueue, ScheduleItem, SchedulerOptions, SchedulerSnapshot } from './scheduler.ts'
 export { conversationKey, parseConversationKey } from './transport.ts'
 export type {
   ConversationKind,
@@ -81,6 +85,8 @@ export type {
   TransportStatus,
 } from './transport.ts'
 export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, DebounceOptions } from './timing.ts'
+
+
 
 
 

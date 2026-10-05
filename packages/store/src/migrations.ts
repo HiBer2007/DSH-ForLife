@@ -436,6 +436,32 @@ const m0006 = {
 
 const m0006Checksum = createHash('sha256').update(m0006.sql).digest('hex')
 
+/**
+ * 迁移 7：`qq_outbox` 记住**会话类型**。
+ *
+ * §8.4 的会话键是 `platform:chat_id[:thread_id]`，**不含 kind**。于是出站时无法从键本身
+ * 判断该用 `send_group_msg` 还是 `send_private_msg` —— 早期版本在这里猜了个默认值，
+ * 结果群消息被当成私聊发出去（真实世界里就是"群里没人收到、某个人莫名收到一条"）。
+ * 所以 kind 必须作为一等属性存下来。
+ */
+const m0007 = {
+  version: 7,
+  name: '0007_outbox_conversation_kind',
+  sql: `
+-- ALTER 由 up() 守卫执行（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+`,
+  up(db: DatabaseSync): void {
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(qq_outbox)').all() as unknown as { name: string }[]).map((c) => c.name),
+    )
+    if (!columns.has('conversation_kind')) {
+      db.exec("ALTER TABLE qq_outbox ADD COLUMN conversation_kind TEXT NOT NULL DEFAULT 'private'")
+    }
+  },
+} as const
+
+const m0007Checksum = createHash('sha256').update(m0007.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -474,10 +500,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0006Checksum,
     up: m0006.up,
   },
+  {
+    version: m0007.version,
+    name: m0007.name,
+    checksum: m0007Checksum,
+    up: m0007.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

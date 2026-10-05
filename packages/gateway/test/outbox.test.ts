@@ -49,7 +49,7 @@ after(async () => {
 })
 
 test('入队：状态为 pending，可被取回', () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:88888', kind: 'text', payload: { segments: [{ kind: 'text', text: '你好' }] } })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:88888', conversationKind: 'private', kind: 'text', payload: { segments: [{ kind: 'text', text: '你好' }] } })
   const row = getOutbound(db, id)
   assert.equal(row?.status, 'pending')
   assert.equal(row?.attempt, 0)
@@ -60,7 +60,7 @@ test('入队：状态为 pending，可被取回', () => {
 })
 
 test('认领：原子且不重复（两个消费者抢不到同一条）', () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:1', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:1', conversationKind: 'private', kind: 'text', payload: {} })
   const first = claimPendingOutbound(db, { limit: 50 })
   assert.ok(first.some((r) => r.id === id), '第一次应当认领到')
   assert.equal(getOutbound(db, id)?.status, 'sending')
@@ -72,7 +72,7 @@ test('认领：原子且不重复（两个消费者抢不到同一条）', () =>
 })
 
 test('确认：写入平台消息 id 且状态变 sent', () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:2', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:2', conversationKind: 'private', kind: 'text', payload: {} })
   claimPendingOutbound(db, { limit: 50 })
   confirmOutbound(db, id, '12345')
   const row = getOutbound(db, id)
@@ -84,13 +84,13 @@ test('确认：写入平台消息 id 且状态变 sent', () => {
 })
 
 test('失败：不可重试直接 failed，可重试退回 pending', () => {
-  const fatal = enqueueOutbound(db, { conversationKey: 'onebot11:3', kind: 'text', payload: {} })
+  const fatal = enqueueOutbound(db, { conversationKey: 'onebot11:3', conversationKind: 'private', kind: 'text', payload: {} })
   claimPendingOutbound(db, { limit: 50 })
   failOutbound(db, fatal, 'retcode=1400 风控拒绝')
   assert.equal(getOutbound(db, fatal)?.status, 'failed')
   assert.match(getOutbound(db, fatal)?.error ?? '', /风控/)
 
-  const transient = enqueueOutbound(db, { conversationKey: 'onebot11:4', kind: 'text', payload: {} })
+  const transient = enqueueOutbound(db, { conversationKey: 'onebot11:4', conversationKind: 'private', kind: 'text', payload: {} })
   claimPendingOutbound(db, { limit: 50 })
   failOutbound(db, transient, '连接断了', { retryable: true })
   assert.equal(getOutbound(db, transient)?.status, 'pending', '可重试的应当退回队列')
@@ -98,7 +98,7 @@ test('失败：不可重试直接 failed，可重试退回 pending', () => {
 })
 
 test('重试上限：超过 maxAttempt 的动作不再被认领', () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:5', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:5', conversationKind: 'private', kind: 'text', payload: {} })
   for (let i = 0; i < 3; i++) {
     claimPendingOutbound(db, { limit: 50 })
     failOutbound(db, id, '一直失败', { retryable: true })
@@ -109,7 +109,7 @@ test('重试上限：超过 maxAttempt 的动作不再被认领', () => {
 })
 
 test('崩溃自愈：卡在 sending 太久的动作被退回 pending', () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:6', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:6', conversationKind: 'private', kind: 'text', payload: {} })
   claimPendingOutbound(db, { limit: 50 })
   assert.equal(getOutbound(db, id)?.status, 'sending')
 
@@ -125,7 +125,7 @@ test('崩溃自愈：卡在 sending 太久的动作被退回 pending', () => {
 })
 
 test('送达确认：成功路径带回 messageId', async () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:7', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:7', conversationKind: 'private', kind: 'text', payload: {} })
   const waiting = waitForConfirmation(db, id, { timeoutMs: 1000, pollMs: 20 })
   claimPendingOutbound(db, { limit: 50 })
   confirmOutbound(db, id, '999')
@@ -135,7 +135,7 @@ test('送达确认：成功路径带回 messageId', async () => {
 })
 
 test('送达确认：超时**不是错误**，而是"未确认 + 自助提示"', async () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:8', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:8', conversationKind: 'private', kind: 'text', payload: {} })
   const result = await waitForConfirmation(db, id, { timeoutMs: 120, pollMs: 20 })
   assert.equal(result.confirmed, false, '没人确认 ⇒ 不能谎报成功')
   assert.equal(result.status, 'pending', '状态要如实回报（还是 pending，说明网关没认领）')
@@ -144,7 +144,7 @@ test('送达确认：超时**不是错误**，而是"未确认 + 自助提示"',
 })
 
 test('送达确认：失败路径把原因带回来', async () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:9', kind: 'text', payload: {} })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:9', conversationKind: 'private', kind: 'text', payload: {} })
   const waiting = waitForConfirmation(db, id, { timeoutMs: 1000, pollMs: 20 })
   claimPendingOutbound(db, { limit: 50 })
   failOutbound(db, id, '群被解散了')
@@ -171,12 +171,13 @@ test('统计与列表：面板要看得到积压', () => {
 })
 
 test('顺序：先入队的先被认领（FIFO，保证回复不乱序）', () => {
-  const a = enqueueOutbound(db, { conversationKey: 'onebot11:20', kind: 'text', payload: { n: 1 } })
-  const b = enqueueOutbound(db, { conversationKey: 'onebot11:20', kind: 'text', payload: { n: 2 } })
+  const a = enqueueOutbound(db, { conversationKey: 'onebot11:20', conversationKind: 'private', kind: 'text', payload: { n: 1 } })
+  const b = enqueueOutbound(db, { conversationKey: 'onebot11:20', conversationKind: 'private', kind: 'text', payload: { n: 2 } })
   const claimed = claimPendingOutbound(db, { limit: 100 })
   const indexA = claimed.findIndex((r) => r.id === a)
   const indexB = claimed.findIndex((r) => r.id === b)
   assert.ok(indexA >= 0 && indexB >= 0)
   assert.ok(indexA < indexB, '同会话的消息必须按入队顺序发送（模型分段的顺序就是用户看到的顺序）')
 })
+
 

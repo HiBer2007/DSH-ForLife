@@ -98,6 +98,7 @@ test('端到端：私聊消息 → 唤醒 → 轮次（假驱动扮演模型）�
   const driver = new FakeTurnDriver((request) => {
     const outId = enqueueOutbound(db, {
       conversationKey: conversationKey(request.conversation),
+      conversationKind: request.conversation.kind,
       kind: 'text',
       payload: { segments: [{ kind: 'text', text: '在的，我是团子' }] },
     })
@@ -219,7 +220,7 @@ test('时序串联：防抖把连发 5 条合成一批 → 一轮 → 一条回�
 
   const driver = new FakeTurnDriver((request) => {
     flushed = [...request.messages]
-    enqueueOutbound(db, { conversationKey: conversationKey(request.conversation), kind: 'text', payload: { segments: [{ kind: 'text', text: '收到' }] } })
+    enqueueOutbound(db, { conversationKey: conversationKey(request.conversation), conversationKind: request.conversation.kind, kind: 'text', payload: { segments: [{ kind: 'text', text: '收到' }] } })
     return { segments: ['收到'], toolCalls: 1 }
   })
   const runner = new TurnRunner({ db, driver, scopeOf: defaultScopeOf, conditionOf: defaultConditionOf, random: () => 0.1, log: () => {} })
@@ -345,10 +346,11 @@ test('噪音过滤关掉时可放行（排障用）', async () => {
 })
 
 test('出站队列：网关未认领前动作一直留在队列（不丢）', () => {
-  const id = enqueueOutbound(db, { conversationKey: 'onebot11:10006', kind: 'text', payload: { segments: [{ kind: 'text', text: '排队中' }] } })
+  const id = enqueueOutbound(db, { conversationKey: 'onebot11:10006', conversationKind: 'private', kind: 'text', payload: { segments: [{ kind: 'text', text: '排队中' }] } })
   assert.equal(getOutbound(db, id)?.status, 'pending')
   assert.equal(getOutbound(db, id)?.platform_msg_id, null)
 })
+
 
 
 

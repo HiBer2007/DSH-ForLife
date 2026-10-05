@@ -33,6 +33,7 @@ export type OutboundKind = 'text' | 'image' | 'file' | 'sticker' | 'notice' | 'm
 export interface OutboxRow {
   readonly id: string
   readonly conversation_key: string
+  readonly conversation_kind: 'group' | 'private' | 'temp'
   readonly kind: OutboundKind
   readonly payload: string
   readonly status: 'pending' | 'sending' | 'sent' | 'failed'
@@ -49,6 +50,12 @@ export interface OutboxRow {
 /** 入队参数。 */
 export interface EnqueueInput {
   readonly conversationKey: string
+  /**
+   * 会话类型（群/私聊/临时）。
+   *
+   * **必须显式给**：会话键里没有 kind，猜错会把群消息发成私聊。
+   */
+  readonly conversationKind: 'group' | 'private' | 'temp'
   readonly kind: OutboundKind
   readonly payload: unknown
   readonly source?: 'model' | 'system' | 'admin'
@@ -64,9 +71,17 @@ export interface EnqueueInput {
 export function enqueueOutbound(db: DatabaseSync, input: EnqueueInput): string {
   const id = `out_${randomUUID()}`
   db.prepare(
-    `INSERT INTO qq_outbox (id, conversation_key, platform_msg_id, kind, payload, sent_at, confirmed, confirmed_at, error, status, claimed_at, attempt, source)
-     VALUES (?, ?, NULL, ?, ?, ?, 0, NULL, NULL, 'pending', NULL, 0, ?)`,
-  ).run(id, input.conversationKey, input.kind, JSON.stringify(input.payload ?? {}), nowIso(), input.source ?? 'model')
+    `INSERT INTO qq_outbox (id, conversation_key, platform_msg_id, kind, payload, sent_at, confirmed, confirmed_at, error, status, claimed_at, attempt, source, conversation_kind)
+     VALUES (?, ?, NULL, ?, ?, ?, 0, NULL, NULL, 'pending', NULL, 0, ?, ?)`,
+  ).run(
+    id,
+    input.conversationKey,
+    input.kind,
+    JSON.stringify(input.payload ?? {}),
+    nowIso(),
+    input.source ?? 'model',
+    input.conversationKind,
+  )
   return id
 }
 
@@ -207,3 +222,4 @@ export function outboxStats(db: DatabaseSync): {
 export function listOutbound(db: DatabaseSync, limit = 50): readonly OutboxRow[] {
   return db.prepare('SELECT * FROM qq_outbox ORDER BY sent_at DESC LIMIT ?').all(limit) as unknown as OutboxRow[]
 }
+
