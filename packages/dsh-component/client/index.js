@@ -207,6 +207,14 @@ window.__ModuleLoader__.load({
       if (snapshot.error !== undefined) {
         children.push(node('div', { style: styles.err }, [`读取失败：${snapshot.error}`]))
       }
+      // 部分接口失败要**看得见**：否则用户只会觉得"这一块怎么没数据"
+      if (Array.isArray(snapshot.errors) && snapshot.errors.length > 0) {
+        children.push(
+          node('div', { style: styles.warn }, [
+            `部分数据读取失败（其余照常显示）：${snapshot.errors.join('；')}`,
+          ]),
+        )
+      }
       if (violations.length > 0) {
         children.push(
           node('div', { style: styles.card }, [
@@ -331,6 +339,11 @@ window.__ModuleLoader__.load({
             rule.enabled === false ? statusBadge('关闭', 'warn') : statusBadge(`${rule.probability}%`, rule.probability >= 100 ? 'good' : undefined),
           ]),
           node('td', { style: styles.td }, [
+            node('span', { style: rule.overridden ? styles.badge : styles.muted }, [
+              (rule.scope || '*') === '*' ? '全局默认' : rule.overridden ? '该会话单独设置' : '继承默认',
+            ]),
+          ]),
+          node('td', { style: styles.td }, [
             node(
               'button',
               {
@@ -350,10 +363,98 @@ window.__ModuleLoader__.load({
         ]),
       )
       return node('div', { style: styles.card }, [
-        node('div', { style: styles.metricLabel }, ['唤醒规则（每个条件互相独立；改动会留痕并报告给模型）']),
+        node('div', { style: styles.metricLabel }, ['唤醒规则明细（每个条件互相独立；改动会留痕并报告给模型）']),
         node('table', { style: styles.table }, [
-          node('thead', {}, [node('tr', {}, ['条件', '当前', '调整', '限额', '最后修改'].map((t) => node('th', { style: styles.th }, [t])))]),
+          node('thead', {}, [node('tr', {}, ['条件', '当前', '来源', '调整', '限额', '最后修改'].map((t) => node('th', { style: styles.th }, [t])))]),
           node('tbody', {}, body),
+        ]),
+      ])
+    }
+
+    /**
+     * 会话作用域选择：`*` 是全局默认，其它是**针对某个群/某个人单独设的**。
+     *
+     * 这一块是"不同会话唤醒等级不同"的入口 —— 没有它，面板只能改全局默认值，
+     * 而用户真正想调的是"这个群别老叫我"。
+     */
+    function wakeScopePicker(snapshot, ui) {
+      const scope = snapshot.scope || '*'
+      const scopes = snapshot.scopes || ['*']
+      const overrideCounts = new Map(((snapshot.wakeOverview || {}).overrideCounts || []).map((item) => [item.scope, item.n]))
+      const buttons = scopes.map((item) =>
+        node(
+          'button',
+          {
+            style: Object.assign({}, styles.button, item === scope ? { fontWeight: 700, borderColor: 'currentColor' } : {}, { marginRight: '6px', marginBottom: '4px' }),
+            onClick: () => ui && ui.onScope && ui.onScope(item),
+          },
+          [`${item === '*' ? '* （全局默认）' : item}${overrideCounts.has(item) ? `（${overrideCounts.get(item)} 条单独设置）` : ''}`],
+        ),
+      )
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, ['看哪个会话的唤醒规则']),
+        node('div', { style: styles.muted }, [
+          '不同会话的唤醒等级本来就是分开的：私聊、临时会话、@我、@全体、群里普通消息抽样各有独立开关与概率。下面是**当前这个作用域**的生效值（已合并全局默认）。',
+        ]),
+        node('div', { style: { marginTop: '8px' } }, buttons),
+        node('div', { style: styles.row }, [
+          node('input', {
+            style: Object.assign({}, styles.input, { minWidth: '220px' }),
+            placeholder: '要看/要改的会话，例如 group:88888 或 private:10001',
+            value: (ui && ui.scopeDraft) || '',
+            onChange: (event) => ui && ui.onScopeDraft && ui.onScopeDraft(event.target.value),
+          }),
+          node('button', { style: styles.button, onClick: () => ui && ui.onScope && ui.onScope(((ui.scopeDraft || '').trim() || '*')) }, ['查看/编辑这个会话']),
+        ]),
+        node('div', { style: styles.muted }, [
+          scope === '*'
+            ? '当前编辑的是**全局默认值**（对所有会话生效，除非某个会话单独设过）。'
+            : `当前编辑的是 **${scope}** 的单独设置：改了就只影响这个会话，其余会话仍用全局默认。`,
+        ]),
+      ])
+    }
+
+    /**
+     * 会话类型总览：一眼看出"不同会话等级不同"，以及哪些会话被单独调过。
+     *
+     * 刻意做成**对比表**（默认 vs 当前）：只显示一批数字读者无法判断"这个群是不是被我调过"。
+     */
+    function wakeGroupOverview(snapshot) {
+      const groups = snapshot.groups || []
+      if (groups.length === 0) return node('div', {}, [])
+      const defaults = new Map((snapshot.defaultRules || []).map((rule) => [rule.condition, rule]))
+      const current = new Map((snapshot.rules || []).map((rule) => [rule.condition, rule]))
+      const scope = snapshot.scope || '*'
+      const describe = (rule) => (rule === undefined ? '—' : rule.enabled === false ? '关闭' : `${rule.probability}%`)
+
+      const rows = []
+      for (const group of groups) {
+        for (const condition of group.conditions) {
+          const own = current.get(condition)
+          const fallback = defaults.get(condition)
+          const source =
+            scope === '*'
+              ? '全局默认'
+              : own && own.overridden
+                ? '该会话单独设置'
+                : '继承全局默认'
+          rows.push(
+            node('tr', {}, [
+              node('td', { style: styles.td }, [group.kind]),
+              node('td', { style: styles.td }, [condition]),
+              node('td', { style: styles.td }, [describe(fallback)]),
+              node('td', { style: styles.td }, [describe(own)]),
+              node('td', { style: styles.td }, [node('span', { style: own && own.overridden && scope !== '*' ? styles.badge : styles.muted }, [source])]),
+            ]),
+          )
+        }
+      }
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, [`按会话类型看：默认 vs ${scope === '*' ? '当前（就是默认）' : scope}`]),
+        node('div', {}, groups.map((group) => node('div', { style: styles.muted }, [`${group.kind}：${group.note}`]))),
+        node('table', { style: styles.table }, [
+          node('thead', {}, [node('tr', {}, ['会话类型', '条件', '全局默认', '当前生效', '来源'].map((t) => node('th', { style: styles.th }, [t])))]),
+          node('tbody', {}, rows),
         ]),
       ])
     }
@@ -445,6 +546,8 @@ window.__ModuleLoader__.load({
       children.push(adminChatBox(snapshot.chat || [], ui))
       children.push(queueTable(snapshot.queue || [], snapshot.queueStats))
       children.push(turnsTable(snapshot.turns || []))
+      children.push(wakeScopePicker(snapshot, ui))
+      children.push(wakeGroupOverview(snapshot))
       children.push(wakeRulesTable(snapshot.rules || [], ui && ui.onPatchRule))
       children.push(pendingTable(snapshot.pending || [], snapshot.pendingStats))
       return node('div', { style: styles.wrap }, children)
@@ -489,35 +592,57 @@ window.__ModuleLoader__.load({
      * @param {AbortSignal} [signal] - 取消信号。
      * @returns {Promise<object>} 快照（失败时带 `error`，不抛）。
      */
-    async function fetchQqSnapshot(signal) {
+    async function fetchQqSnapshot(signal, scope) {
       const snapshot = {}
+      const activeScope = scope || '*'
       const get = async (path) => {
         const response = await fetch(API_BASE + path, { signal })
         if (!response.ok) throw new Error(`${path} → HTTP ${response.status}`)
         return response.json()
       }
-      try {
-        const [qq, queue, turns, rules, pending, chat, time] = await Promise.all([
-          get('/qq/state'),
-          get('/qq/queue?limit=30'),
-          get('/qq/turns?limit=30'),
-          get('/qq/wake-rules?scope=*'),
-          get('/qq/pending?limit=20'),
-          get('/admin/chat?limit=50'),
-          get('/time'),
-        ])
-        snapshot.time = time
-        snapshot.qq = qq
-        snapshot.queue = queue.rows || []
-        snapshot.queueStats = queue.stats || {}
-        snapshot.turns = turns.turns || []
-        snapshot.rules = rules.rules || []
-        snapshot.pending = pending.items || []
-        snapshot.pendingStats = pending.stats || {}
-        snapshot.chat = chat.messages || []
-      } catch (error) {
-        snapshot.error = String(error && error.message ? error.message : error)
+      // **每个接口各自容错**：用 allSettled 而不是 all。
+      // 原先一处失败（例如某个接口还没部署）会让**整块面板**变成"读取失败"，
+      // 连本来能看的队列、轮次、唤醒规则都没了 —— 一个可选卡片的故障不该拖垮整页。
+      const paths = [
+        '/qq/state',
+        '/qq/queue?limit=30',
+        '/qq/turns?limit=30',
+        // 看的是**当前选中 scope** 的生效值（默认 *，可切到某个群/某个人）
+        '/qq/wake-rules?scope=' + encodeURIComponent(activeScope),
+        '/qq/pending?limit=20',
+        '/admin/chat?limit=50',
+        '/time',
+        // 各会话的等级总览：没有它就没法画"默认 vs 这个群"的对比
+        '/qq/wake-overview',
+      ]
+      const settled = await Promise.allSettled(paths.map((path) => get(path)))
+      const value = (index) => (settled[index] && settled[index].status === 'fulfilled' ? settled[index].value : undefined)
+      const failures = settled
+        .map((item, index) => (item.status === 'rejected' ? `${paths[index]}：${String(item.reason && item.reason.message ? item.reason.message : item.reason)}` : undefined))
+        .filter((item) => item !== undefined)
+      if (failures.length > 0) snapshot.errors = failures
+
+      const [qq, queue, turns, rules, pending, chat, time, overview] = [0, 1, 2, 3, 4, 5, 6, 7].map(value)
+      if (rules === undefined && overview === undefined && qq === undefined) {
+        // 连最基本的都拿不到 ⇒ 如实报错（这一条才是真的"整页不可用"）
+        snapshot.error = failures.join('；') || '未知错误'
+        return snapshot
       }
+      snapshot.scope = (rules && rules.scope) || activeScope
+      snapshot.scopes = (rules && rules.scopes) || []
+      snapshot.groups = (rules && rules.groups) || []
+      snapshot.wakeOverview = overview || {}
+      const defaults = ((overview || {}).effective || []).find((item) => item.scope === '*')
+      snapshot.defaultRules = defaults ? defaults.rules || [] : []
+      snapshot.time = time || {}
+      if (qq !== undefined) snapshot.qq = qq
+      snapshot.queue = (queue && queue.rows) || []
+      snapshot.queueStats = (queue && queue.stats) || {}
+      snapshot.turns = (turns && turns.turns) || []
+      snapshot.rules = (rules && rules.rules) || []
+      snapshot.pending = (pending && pending.items) || []
+      snapshot.pendingStats = (pending && pending.stats) || {}
+      snapshot.chat = (chat && chat.messages) || []
       return snapshot
     }
 
@@ -1009,12 +1134,133 @@ window.__ModuleLoader__.load({
       return response.json()
     }
     /** 提示词面板：编辑 P1/P2、预览、保存、回滚。 */
+
+    /**
+     * 登记端点的最简表单。
+     *
+     * 为什么必须有：面板原先只会说"还没有登记任何推理端点 —— 可以先登记一个外挂自建"，
+     * 却**没有任何登记入口** —— 一页只能看不能改的设置页等于没有。
+     */
+    function endpointForm(ui) {
+      const state = (ui && ui.endpoint) || {}
+      const set = (patch) => ui && ui.onEndpoint && ui.onEndpoint(Object.assign({}, state, patch))
+      const field = (label, element) =>
+        node('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' } }, [
+          node('span', { style: Object.assign({}, styles.muted, { minWidth: '120px' }) }, [label]),
+          element,
+        ])
+      const input = (key, placeholder) =>
+        node('input', {
+          style: Object.assign({}, styles.input, { minWidth: '260px' }),
+          placeholder,
+          value: state[key] === undefined ? '' : String(state[key]),
+          onChange: (event) => set({ [key]: event.target.value }),
+        })
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, ['登记一个推理端点（评分器 / 视觉 / 嵌入都要它）']),
+        node('div', { style: styles.muted }, [
+          '不需要本地部署也能开始：先把外挂那台机器的 OpenAI 兼容地址填进来即可（来源选 remote-selfhost、模式选 remote-api）。',
+        ]),
+        field('id', input('id', '例如 scorer-endpoint')),
+        field(
+          '来源',
+          node(
+            'select',
+            { style: styles.input, value: state.type || 'remote-selfhost', onChange: (event) => set({ type: event.target.value }) },
+            ['local', 'remote-selfhost', 'cloud-api', 'host-native'].map((option) => node('option', { value: option }, [option])),
+          ),
+        ),
+        field(
+          '运行模式',
+          node(
+            'select',
+            { style: styles.input, value: state.mode || 'remote-api', onChange: (event) => set({ mode: event.target.value }) },
+            ['resident', 'on-demand', 'remote-api', 'host-native'].map((option) => node('option', { value: option }, [option])),
+          ),
+        ),
+        field(
+          '加速后端',
+          node(
+            'select',
+            { style: styles.input, value: state.backend || 'cpu', onChange: (event) => set({ backend: event.target.value }) },
+            ['cpu', 'cuda', 'rocm', 'vulkan', 'sycl'].map((option) => node('option', { value: option }, [option])),
+          ),
+        ),
+        field('baseUrl', input('baseUrl', 'http://10.0.0.5:8080/v1')),
+        field('模型 id', input('modelId', '例如 Qwen2.5-0.5B-Instruct（留空表示先不登记模型）')),
+        field('上下文长度', input('contextLength', '32000')),
+        field('嵌入维度', input('embeddingDimensions', '只有嵌入模型需要，例如 1024')),
+        node('div', { style: styles.row }, [
+          node('label', { style: Object.assign({}, styles.muted, { display: 'flex', gap: '6px', alignItems: 'center' }) }, [
+            node('input', { type: 'checkbox', checked: state.image === true, onChange: (event) => set({ image: event.target.checked }) }),
+            '这个模型支持图片（选为视觉角色时必须勾）',
+          ]),
+        ]),
+        node('div', { style: styles.row }, [
+          node('button', { style: styles.button, onClick: () => ui && ui.onRegisterEndpoint && ui.onRegisterEndpoint() }, ['登记 / 更新']),
+          node('span', { style: styles.muted }, [(ui && ui.endpointNotice) || '']),
+        ]),
+      ])
+    }
+
+    /** 加一行角色候选（有序表：序号小的先用，失败就往后走）。 */
+    function roleCandidateForm(ui) {
+      const state = (ui && ui.candidate) || {}
+      const set = (patch) => ui && ui.onCandidate && ui.onCandidate(Object.assign({}, state, patch))
+      const field = (label, element) =>
+        node('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' } }, [
+          node('span', { style: Object.assign({}, styles.muted, { minWidth: '120px' }) }, [label]),
+          element,
+        ])
+      const input = (key, placeholder) =>
+        node('input', {
+          style: Object.assign({}, styles.input, { minWidth: '220px' }),
+          placeholder,
+          value: state[key] === undefined ? '' : String(state[key]),
+          onChange: (event) => set({ [key]: event.target.value }),
+        })
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, ['给角色加一行候选模型']),
+        node('div', { style: styles.muted }, [
+          '同一个角色可以有多行：序号 0 是主选，失败或没额度时按序号往后降级（这条链就是"自动降级"的全部依据）。',
+        ]),
+        field(
+          '角色',
+          node(
+            'select',
+            { style: styles.input, value: state.role || 'L3', onChange: (event) => set({ role: event.target.value }) },
+            ['L1', 'L2', 'L3', 'vision', 'embedding', 'scorer', 'subagent'].map((option) => node('option', { value: option }, [option])),
+          ),
+        ),
+        field('序号', input('rank', '0')),
+        field('provider', input('provider', 'deepseek-official')),
+        field('model', input('model', 'deepseek-flash')),
+        field(
+          '推理强度',
+          node(
+            'select',
+            { style: styles.input, value: state.effort || '', onChange: (event) => set({ effort: event.target.value }) },
+            ['', 'low', 'medium', 'high'].map((option) => node('option', { value: option }, [option === '' ? '（不指定）' : option])),
+          ),
+        ),
+        node('div', { style: styles.row }, [
+          node('button', { style: styles.button, onClick: () => ui && ui.onSaveCandidate && ui.onSaveCandidate() }, ['保存这一行']),
+          node('span', { style: styles.muted }, [(ui && ui.candidateNotice) || '']),
+        ]),
+      ])
+    }
+
     /** 「模型与路由」页组件：只做展示与"发意图"，判断都在服务端。 */
     function RoutesPanel() {
       const [snapshot, setSnapshot] = React.useState({})
       const [loading, setLoading] = React.useState(true)
       const [busy, setBusy] = React.useState('')
       const [notice, setNotice] = React.useState('')
+      // 两个最简表单的状态（登记端点 / 加一行角色候选）
+      const [endpoint, setEndpoint] = React.useState({})
+      const [candidate, setCandidate] = React.useState({ role: 'L3', rank: '0' })
+      const [endpointNotice, setEndpointNotice] = React.useState('')
+      const [candidateNotice, setCandidateNotice] = React.useState('')
 
       const load = React.useCallback(async () => {
         setLoading(true)
@@ -1039,8 +1285,11 @@ window.__ModuleLoader__.load({
             const result = await response.json()
             setNotice(result && result.ok ? '完成' : `未完成：${(result && (result.error || result.note)) || '未知原因'}`)
             await load()
+            // 把结果**返回**给调用方：表单要靠它填自己的提示（只读全局 notice 会串台）
+            return result
           } catch (error) {
             setNotice(`请求失败：${String(error)}`)
+            return { ok: false, error: String(error) }
           } finally {
             setBusy('')
           }
@@ -1052,6 +1301,32 @@ window.__ModuleLoader__.load({
 
       const children = [describeRoutes(snapshot)]
       if (notice) children.push(node('div', { style: styles.muted }, [notice]))
+
+      // 表单放在最后：先看现状，再动手改
+      children.push(endpointForm({
+        endpoint,
+        onEndpoint: setEndpoint,
+        endpointNotice,
+        onRegisterEndpoint: async () => {
+          setEndpointNotice('提交中…')
+          const payload = Object.assign({}, endpoint, {
+            contextLength: endpoint.contextLength ? Number(endpoint.contextLength) : undefined,
+            embeddingDimensions: endpoint.embeddingDimensions ? Number(endpoint.embeddingDimensions) : undefined,
+          })
+          const result = await send('/endpoints', payload)
+          setEndpointNotice(result && result.ok ? `已登记 ${endpoint.id || ''}` : `未登记：${(result && (result.error || result.note)) || '未知原因'}`)
+        },
+      }))
+      children.push(roleCandidateForm({
+        candidate,
+        onCandidate: setCandidate,
+        candidateNotice,
+        onSaveCandidate: async () => {
+          setCandidateNotice('提交中…')
+          const result = await send('/routes', Object.assign({}, candidate, { rank: candidate.rank ? Number(candidate.rank) : 0 }))
+          setCandidateNotice(result && result.ok ? '已保存' : `未保存：${(result && (result.error || result.note)) || '未知原因'}`)
+        },
+      }))
 
       const endpoints = snapshot.endpoints || []
       if (endpoints.length > 0) {
@@ -1180,17 +1455,20 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(true)
       const [draft, setDraft] = React.useState('')
       const [busy, setBusy] = React.useState(false)
+      // 看哪个会话的唤醒规则（默认 * = 全局默认值；可切到某个群/某个人）
+      const [scope, setScope] = React.useState('*')
+      const [scopeDraft, setScopeDraft] = React.useState('')
 
       const reload = React.useCallback(async () => {
-        const next = await fetchQqSnapshot()
+        const next = await fetchQqSnapshot(undefined, scope)
         setSnapshot(next)
         setLoading(false)
-      }, [])
+      }, [scope])
 
       React.useEffect(() => {
         let alive = true
         const load = async () => {
-          const next = await fetchQqSnapshot()
+          const next = await fetchQqSnapshot(undefined, scope)
           if (alive) {
             setSnapshot(next)
             setLoading(false)
@@ -1202,7 +1480,7 @@ window.__ModuleLoader__.load({
           alive = false
           clearInterval(timer)
         }
-      }, [])
+      }, [scope])
 
       const send = React.useCallback(async () => {
         const text = draft.trim()
@@ -1226,7 +1504,20 @@ window.__ModuleLoader__.load({
       )
 
       if (loading) return jsx('div', { style: { opacity: 0.6 }, children: '正在读取 QQ 网关状态…' })
-      return renderPanel(jsx, describeQq(snapshot, { draft, onDraft: setDraft, onSend: send, busy, onPatchRule }))
+      return renderPanel(
+        jsx,
+        describeQq(snapshot, {
+          draft,
+          onDraft: setDraft,
+          onSend: send,
+          busy,
+          onPatchRule,
+          scope,
+          scopeDraft,
+          onScope: setScope,
+          onScopeDraft: setScopeDraft,
+        }),
+      )
     }
 
     /**
@@ -1298,6 +1589,7 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
 
 
 

@@ -21,6 +21,7 @@ import {
   postHumanMessage,
   recordAdminAction,
   setWakeRule,
+  WAKE_CONDITION_GROUPS,
   WAKE_CONDITIONS,
 } from '@forlife/gateway'
 import {
@@ -34,8 +35,8 @@ import {
 } from '@forlife/memory-core'
 import { defaultFor } from '@forlife/contracts'
 import { cacheCurve, expectedMisses, judgeCache, summarizeCache } from '@forlife/memory-core'
-import { ROUTE_ROLES, ROLE_PURPOSE, RUN_MODES, validateEndpoint } from '@forlife/router'
-import { deleteModelRoute, endpointOverview, getEndpoint, listEndpoints, listModelRoutes, routingStats, uncertainStats, upsertModelRoute } from '@forlife/store'
+import { ACCELERATOR_BACKENDS, ENDPOINT_TYPES, ROUTE_ROLES, ROLE_PURPOSE, RUN_MODES, validateEndpoint } from '@forlife/router'
+import { deleteEndpoint, deleteModelRoute, endpointOverview, getEndpoint, listEndpoints, listModelRoutes, routingStats, uncertainStats, upsertEndpoint, upsertModelRoute } from '@forlife/store'
 import { lastCacheUsageAt, listCacheUsage, listTimeDrift, listTimeReadings, timeDriftStats, timeReadingStats, timeReadingTokens } from '@forlife/store'
 
 import { roleGapSeverity } from './route-seed.ts'
@@ -474,6 +475,84 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
         },
       },
 
+      // 登记/更新一个推理端点（面板的"登记端点"表单走这里）。
+      // 校验在**保存时**做：视觉必须声明 image、嵌入必须给维度、后端要在目标机上真的可用 ——
+      // 这些错误在运行期才发现的话，表现是"模型答非所问"或"启动即崩"，都很难查。
+      {
+        path: '/api/forlife/endpoints',
+        methods: ['POST'],
+        fetch: async (request: Request): Promise<Response> => {
+          try {
+            const body = (await request.json()) as Record<string, unknown>
+            const id = typeof body.id === 'string' ? body.id.trim() : ''
+            const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : ''
+            if (id === '' || baseUrl === '') return json({ ok: false, error: 'id 与 baseUrl 必填' }, 400)
+            const type = typeof body.type === 'string' ? body.type : 'remote-selfhost'
+            const mode = typeof body.mode === 'string' ? body.mode : 'remote-api'
+            const backend = typeof body.backend === 'string' ? body.backend : 'cpu'
+            if (!(ENDPOINT_TYPES as readonly string[]).includes(type)) return json({ ok: false, error: `type 必须是 ${ENDPOINT_TYPES.join(' / ')}` }, 400)
+            if (!(RUN_MODES as readonly string[]).includes(mode)) return json({ ok: false, error: `mode 必须是 ${RUN_MODES.join(' / ')}` }, 400)
+            if (!(ACCELERATOR_BACKENDS as readonly string[]).includes(backend)) {
+              return json({ ok: false, error: `backend 必须是 ${ACCELERATOR_BACKENDS.join(' / ')}` }, 400)
+            }
+
+            const modelId = typeof body.modelId === 'string' ? body.modelId.trim() : ''
+            const models =
+              modelId === ''
+                ? []
+                : [
+                    {
+                      id: modelId,
+                      image: body.image === true,
+                      contextLength: typeof body.contextLength === 'number' ? body.contextLength : 32_000,
+                      ...(typeof body.embeddingDimensions === 'number' ? { embeddingDimensions: body.embeddingDimensions } : {}),
+                    },
+                  ]
+
+            const devices = runtime.deviceProbe()
+            const issues = validateEndpoint(
+              { id, type: type as never, mode: mode as never, backend: backend as never, baseUrl, models },
+              { devices },
+            )
+            const errors = issues.filter((issue) => issue.severity === 'error')
+            if (errors.length > 0) {
+              return json({ ok: false, error: errors.map((issue) => issue.message).join('；'), issues }, 400)
+            }
+            upsertEndpoint(runtime.db, {
+              id,
+              type,
+              mode,
+              backend,
+              baseUrl,
+              arch: typeof body.arch === 'string' ? body.arch : null,
+              deployTarget: typeof body.deployTarget === 'string' ? body.deployTarget : null,
+              deployHost: typeof body.deployHost === 'string' ? body.deployHost : null,
+              models,
+            })
+            return json({ ok: true, id, issues })
+          } catch (error) {
+            return json({ ok: false, error: String(error) }, 400)
+          }
+        },
+      },
+
+      // 删端点
+      {
+        path: '/api/forlife/endpoints/delete',
+        methods: ['POST'],
+        fetch: async (request: Request): Promise<Response> => {
+          try {
+            const body = (await request.json()) as { id?: unknown }
+            const id = typeof body.id === 'string' ? body.id : ''
+            if (id === '') return json({ ok: false, error: '缺少 id' }, 400)
+            const removed = deleteEndpoint(runtime.db, id)
+            return removed ? json({ ok: true }) : json({ ok: false, error: '没有这个端点' }, 404)
+          } catch (error) {
+            return json({ ok: false, error: String(error) }, 400)
+          }
+        },
+      },
+
       // 运行模式切换（排水 + 回滚在 runtime 里做；这里只暴露意图与结果）
       {
         path: '/api/forlife/routes/mode',
@@ -578,13 +657,27 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
     // 唤醒规则（每个条件独立；面板可直接编辑）
     get('/api/forlife/qq/wake-rules', (url) => {
       const scope = url.searchParams.get('scope') ?? '*'
+      // 该 scope 自己写过的条件 —— 面板靠它区分"全局默认"与"这个会话单独设的"。
+      // 没有这个标记，面板就无法回答"这条是默认值还是我调过"
+      const own = new Set(
+        (runtime.db.prepare('SELECT condition FROM wake_rules WHERE scope = ?').all(scope) as unknown as { condition: string }[]).map(
+          (row) => row.condition,
+        ),
+      )
+      const scopes = (
+        runtime.db.prepare('SELECT DISTINCT scope FROM wake_rules ORDER BY scope').all() as unknown as { scope: string }[]
+      ).map((row) => row.scope)
       return json({
         ok: true,
         scope,
+        // 按会话类型分组（QQ 语义在网关里定义，面板只负责展示）
+        groups: WAKE_CONDITION_GROUPS.map((group) => ({ kind: group.kind, note: group.note, conditions: [...group.conditions] })),
+        scopes,
         conditions: [...WAKE_CONDITIONS],
         rules: listWakeRules(runtime.db, scope).map((rule) => ({
           scope: rule.scope,
           condition: rule.condition,
+          overridden: own.has(rule.condition),
           enabled: rule.enabled,
           probability: rule.probability,
           dailyLimit: rule.dailyLimit,
@@ -593,6 +686,33 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
           updatedBy: rule.updatedBy,
           updatedAt: rule.updatedAt,
         })),
+      })
+    }),
+
+    // 各会话的唤醒等级总览（面板要能一眼对比"默认 vs 某个群"）
+    get('/api/forlife/qq/wake-overview', () => {
+      const scopes = (
+        runtime.db.prepare('SELECT DISTINCT scope FROM wake_rules ORDER BY scope').all() as unknown as { scope: string }[]
+      ).map((row) => row.scope)
+      return json({
+        ok: true,
+        scopes,
+        // 每个 scope 的生效规则（已合并继承）⇒ 面板据此画出"哪些会话被单独调过"
+        effective: scopes.map((scope) => ({
+          scope,
+          rules: listWakeRules(runtime.db, scope).map((rule) => ({
+            condition: rule.condition,
+            enabled: rule.enabled,
+            probability: rule.probability,
+          })),
+        })),
+        overrideCounts: (
+          runtime.db.prepare('SELECT scope, count(*) AS n FROM wake_rules WHERE scope != ? GROUP BY scope ORDER BY scope').all('*') as unknown as {
+            scope: string
+            n: number
+          }[]
+        ),
+        groups: WAKE_CONDITION_GROUPS.map((group) => ({ kind: group.kind, note: group.note, conditions: [...group.conditions] })),
       })
     }),
 

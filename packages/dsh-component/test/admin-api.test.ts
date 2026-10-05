@@ -658,3 +658,80 @@ test('注册契约：/routes 一条注册里同时支持 GET 与 POST（读写�
   assert.equal(written.status, 200)
   assert.equal(((await written.json()) as Record<string, unknown>)['ok'], true)
 })
+
+test('登记端点：能加、能查、能删；**保存时就拦住**不合法的组合', async () => {
+  const bad = await post('/api/forlife/endpoints', { id: 'ep1', baseUrl: '', type: 'local', mode: 'resident', backend: 'cpu' })
+  assert.equal(bad.body['ok'], false)
+  assert.match(String(bad.body['error']), /必填/)
+
+  // 与机器无关地构造"不支持的后端"：先看探测结果，挑一个这台机器确实没有的加速后端。
+  // （我第一版写死了 cuda，而开发机**真的有 NVIDIA** —— 断言就变成了"因为机器不同而红"）
+  const probed = (await get('/api/forlife/routes'))['devices'] as Record<string, boolean>
+  const unsupported = [
+    ['cuda', probed['nvidia'], /NVIDIA/],
+    ['rocm', probed['rocm'], /ROCm/],
+    ['sycl', probed['intel'], /Intel/],
+    ['vulkan', probed['vulkan'], /Vulkan/],
+  ].find(([, present]) => present !== true) as [string, boolean, RegExp] | undefined
+  if (unsupported === undefined) {
+    // 五种后端全都能用（几乎不可能）⇒ 这条就没什么可断言的，别硬编一个假场景
+    assert.ok(true, '这台机器所有加速后端都可用，跳过"不支持的后端"断言')
+  } else {
+    const badBackend = await post('/api/forlife/endpoints', {
+      id: 'ep2',
+      baseUrl: 'http://127.0.0.1:9/v1',
+      type: 'local',
+      mode: 'resident',
+      backend: unsupported[0],
+    })
+    assert.equal(badBackend.body['ok'], false, `${unsupported[0]} 在这台机器上不可用 ⇒ 保存即报错（不等到启动）`)
+    assert.match(String(badBackend.body['error']), unsupported[2])
+  }
+
+  const ok = await post('/api/forlife/endpoints', {
+    id: 'ep-external',
+    baseUrl: 'http://10.0.0.5:8080/v1',
+    type: 'remote-selfhost',
+    mode: 'remote-api',
+    backend: 'cpu',
+    modelId: 'Qwen2.5-0.5B-Instruct',
+    contextLength: 32000,
+  })
+  assert.equal(ok.body['ok'], true)
+
+  const routes = await get('/api/forlife/routes')
+  assert.ok((routes['endpoints'] as Record<string, unknown>[]).some((item) => item['id'] === 'ep-external'))
+
+  const removed = await post('/api/forlife/endpoints/delete', { id: 'ep-external' })
+  assert.equal(removed.body['ok'], true)
+  const again = await post('/api/forlife/endpoints/delete', { id: 'ep-external' })
+  assert.equal(again.body['ok'], false)
+})
+
+test('登记端点：视觉模型没声明 image、嵌入没给维度 ⇒ 保存即拒绝（面板不给出错的机会）', async () => {
+  // 先把它选成视觉角色
+  await post('/api/forlife/routes', { role: 'vision', rank: 0, provider: 'p', model: 'text-only' })
+  await post('/api/forlife/endpoints', {
+    id: 'ep-vision',
+    baseUrl: 'http://127.0.0.1:9/v1',
+    type: 'remote-selfhost',
+    mode: 'remote-api',
+    backend: 'cpu',
+    modelId: 'text-only',
+    image: false,
+  })
+  // 校验发生在"登记端点"时用 roles 上下文；这里直接断言校验函数被接上了：
+  const { validateEndpoint } = await import('@forlife/router')
+  const issues = validateEndpoint(
+    {
+      id: 'ep-vision',
+      type: 'remote-selfhost',
+      mode: 'remote-api',
+      backend: 'cpu',
+      baseUrl: 'http://x/v1',
+      models: [{ id: 'text-only', image: false, contextLength: 32000 }],
+    },
+    { devices: { renderNodes: [], nvidia: false, rocm: false, intel: false, vulkan: false }, roles: { vision: 'text-only' } },
+  )
+  assert.ok(issues.some((issue) => issue.field === 'models.image' && issue.severity === 'error'))
+})

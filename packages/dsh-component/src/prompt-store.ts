@@ -285,6 +285,8 @@ export function promptEditCount(db: DatabaseSync): number {
 /** 全部槽位的当前状态（面板概览用）。 */
 export function promptStatus(db: DatabaseSync): readonly {
   slug: PromptSlug
+  /** **当前生效的文本**：面板的编辑器要靠它填进去（第一版没给，界面上就是四个空框）。 */
+  text: string
   sha256: string
   tokenCount: number
   variables: readonly string[]
@@ -297,6 +299,7 @@ export function promptStatus(db: DatabaseSync): readonly {
     const count = db.prepare('SELECT count(*) AS n FROM prompt_revisions WHERE slug = ?').get(slug) as { n: number }
     return {
       slug,
+      text: active?.text ?? '',
       sha256: active?.sha256 ?? '',
       tokenCount: active?.tokenCount ?? 0,
       variables: active?.variables ?? [],

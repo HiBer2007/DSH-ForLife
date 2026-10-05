@@ -109,6 +109,41 @@ export interface WakeDecisionOptions {
 }
 
 /** 从保真度基线取默认规则（保证与文档一比一）。 */
+/**
+ * 唤醒条件的**会话类型分组**（面板按它展示，人才能一眼看出"不同会话等级不同"）。
+ *
+ * 为什么要在这里（而不是面板里）定义：这是 **QQ 语义**，不是展示偏好 ——
+ * `peer_input_status` 只有 C2C 有（群聊没有 typing 接口），
+ * `temp_message` 是临时会话（陌生人第一条），群聊那四个各管一类触发。
+ * 放在网关里保证"判定用哪些条件"与"面板展示哪些条件"是同一份事实。
+ */
+export const WAKE_CONDITION_GROUPS: readonly {
+  readonly kind: string
+  readonly note: string
+  readonly conditions: readonly WakeCondition[]
+}[] = [
+  {
+    kind: '私聊',
+    note: '好友/单向好友的直接消息',
+    conditions: ['private_message', 'peer_input_status'],
+  },
+  {
+    kind: '临时会话',
+    note: '非好友（群临时会话）的第一条消息 —— 默认只给很低概率，避免被陌生人刷屏',
+    conditions: ['temp_message'],
+  },
+  {
+    kind: '群聊',
+    note: '四个触发各管一类：@我 / @全体 / 普通消息抽样 / 拍一拍',
+    conditions: ['group_mention', 'group_mention_all', 'group_message_any', 'group_poke'],
+  },
+  {
+    kind: '不分会话类型',
+    note: '这些条件与"在哪说的"无关（回复我、媒体、撤回、机器人掉线等）',
+    conditions: ['reply_to_me', 'media_received', 'file_received', 'message_recalled', 'bot_offline', 'external_request', 'peer_status_change', 'self_message_sent'],
+  },
+]
+
 export function defaultWakeRules(): readonly Omit<WakeRule, 'scope' | 'quietUntil' | 'updatedAt'>[] {
   const read = (name: WakeCondition): { enabled: boolean; probability: number } => {
     const key = `wake.rules.${camel(name)}`
