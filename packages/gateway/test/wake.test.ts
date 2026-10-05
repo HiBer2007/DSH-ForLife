@@ -250,3 +250,4 @@ test('播种幂等：重复 seed 不覆盖已有规则', () => {
   assert.equal(listWakeRules(db, scope).find((r) => r.condition === 'group_mention')?.probability, 33, '播种不能覆盖用户的调整')
 })
 
+
