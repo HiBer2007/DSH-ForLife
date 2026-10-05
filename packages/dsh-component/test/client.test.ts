@@ -287,6 +287,46 @@ test('渲染内容：QQ 与后台面板画出积压、轮次、规则与人类�
   assert.ok(types.has('button'), '规则要有可点的调整按钮')
 })
 
+test('渲染内容：时间感知卡（最新读数年龄/注入成本/漂移/按会话时区）', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describeQq({
+    qq: {},
+    time: {
+      settings: { systemTimezone: 'UTC', conversationTimezone: 'Asia/Shanghai', displayTimezone: 'Asia/Shanghai', hour24: true },
+      latest: { at: '2026-10-05T12:00:00.000Z', reason: 'after-compaction', timezone: 'Asia/Shanghai', ageMs: 12_000, fresh: true },
+      freshThresholdMs: 30_000,
+      byReason: [{ reason: 'turn-first', count: 3 }],
+      tokenCost: 480,
+      readings: [{ at: '2026-10-05T12:00:00.000Z', reason: 'after-compaction', timezone: 'Asia/Shanghai', tokenCount: 160 }],
+      clocks: [{ scope: 'group:88888', timezone: 'Asia/Tokyo', source: 'model_note' }],
+      drift: { count: 2, avgMs: 120_000, maxMs: 900_000 },
+      recentDrift: [],
+    },
+  })
+  const all = texts(panel).join(' ')
+  for (const expected of ['时间感知', '新鲜', '12 秒', '注入 token', '480', '记录 UTC', '会话 Asia/Shanghai', 'after-compaction', 'group:88888=Asia/Tokyo(model_note)', '时间漂移 2 次']) {
+    assert.ok(all.includes(expected), `时间卡应显示「${expected}」，实际：${all.slice(0, 300)}`)
+  }
+})
+
+test('渲染内容：读数偏旧时明确警告（不让人以为它是新鲜的）', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describeQq({
+    qq: {},
+    time: {
+      settings: { systemTimezone: 'UTC', conversationTimezone: 'Asia/Shanghai', displayTimezone: 'Asia/Shanghai', hour24: true },
+      latest: { at: '2026-10-05T10:00:00.000Z', reason: 'turn-first', timezone: 'Asia/Shanghai', ageMs: 7_200_000, fresh: false },
+      tokenCost: 0,
+      readings: [],
+      clocks: [],
+      drift: { count: 0, avgMs: null, maxMs: null },
+    },
+  })
+  const all = texts(panel).join(' ')
+  assert.ok(all.includes('偏旧'), '过期的读数要说它旧')
+  assert.ok(all.includes('可能拿到的是陈旧读数'), '要说清后果')
+})
+
 test('渲染内容：QQ 端久无往来时明确警告（不装作正常）', () => {
   const { exports } = loadClientModule()
   const panel = exports.describeQq({ qq: { transport: { connectedEvidence: false } } })
@@ -442,6 +482,7 @@ test('面板组件：加载中状态返回提示文本', () => {
   assert.equal(element.type, 'div')
   assert.match(element.props.children, /正在读取记忆状态/)
 })
+
 
 
 

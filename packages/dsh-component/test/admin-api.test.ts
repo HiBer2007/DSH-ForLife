@@ -443,3 +443,67 @@ test('缓存：命中率、期望未命中数与结论都算得出来', async ()
 
 
 
+
+// ── 阶段 4：时间感知接口 ────────────────────────────────────────────────────
+
+test('时间：没有读数时如实说"还没有"，并给出三层时区设置', async () => {
+  const body = await get('/api/forlife/time')
+  assert.equal(body['ok'], true)
+  const settings = body['settings'] as Record<string, unknown>
+  assert.equal(settings['systemTimezone'], 'UTC', '记录一律 UTC（用户拍板）')
+  assert.equal(settings['conversationTimezone'], 'Asia/Shanghai')
+  assert.ok(['fresh', 'null'].includes(body['latest'] === null ? 'null' : 'fresh'), '没有读数时 latest 必须是 null')
+})
+
+test('时间：有读数时给出年龄与新鲜度判定（验收项）', async () => {
+  const { recordTimeReading } = await import('@forlife/store')
+  recordTimeReading(runtime.db, {
+    at: new Date(Date.now() - 5_000).toISOString(),
+    reason: 'after-compaction',
+    timezone: 'Asia/Shanghai',
+    text: '【时间读数】…',
+    tokenCount: 160,
+    conversationKey: 'onebot11:88888',
+  })
+
+  const body = await get('/api/forlife/time')
+  const latest = body['latest'] as Record<string, unknown>
+  assert.equal(latest['reason'], 'after-compaction')
+  assert.equal(latest['fresh'], true, '5 秒前的读数必须判定为新鲜（阈值 30 秒）')
+  assert.ok(Number(latest['ageMs']) >= 4_000 && Number(latest['ageMs']) < 30_000)
+  assert.equal(body['freshThresholdMs'], 30_000)
+
+  const byReason = body['byReason'] as Record<string, unknown>[]
+  assert.ok(byReason.some((r) => r['reason'] === 'after-compaction' && Number(r['count']) >= 1))
+  assert.ok(Number(body['tokenCost']) >= 160, '注入的 token 成本要能被看见')
+
+  // 老旧读数要被判成不新鲜。
+  // 注意：判据是"**最新**那一条"够不够新，所以必须先把表清空 ——
+  // 否则刚插进去的那条 5 秒前的读数仍然是最新的，测的就不是陈旧路径了。
+  runtime.db.exec('DELETE FROM time_readings')
+  recordTimeReading(runtime.db, { at: new Date(Date.now() - 3_600_000).toISOString(), reason: 'turn-first', timezone: 'UTC', text: 'x', tokenCount: 10 })
+  const older = await get('/api/forlife/time')
+  assert.equal((older['latest'] as Record<string, unknown>)['fresh'], false, '一小时前的读数必须判为不新鲜')
+})
+
+test('时间：按会话时区与漂移统计都要能看到', async () => {
+  const { setConversationClock, recordTimeDrift } = await import('@forlife/store')
+  setConversationClock(runtime.db, { scope: 'group:88888', timezone: 'Asia/Tokyo', source: 'model_note', reason: '用户说在东京' })
+  recordTimeDrift(runtime.db, {
+    claimed: '现在是下午三点',
+    actualAt: new Date().toISOString(),
+    driftMs: 7_200_000,
+    severity: 'bad',
+    excerpt: '…现在是下午三点…',
+  })
+
+  const body = await get('/api/forlife/time')
+  const clocks = body['clocks'] as Record<string, unknown>[]
+  assert.ok(clocks.some((c) => c['scope'] === 'group:88888' && c['timezone'] === 'Asia/Tokyo' && c['source'] === 'model_note'))
+
+  const drift = body['drift'] as Record<string, unknown>
+  assert.equal(drift['count'], 1)
+  assert.equal(drift['maxMs'], 7_200_000)
+  assert.ok((body['recentDrift'] as Record<string, unknown>[]).some((d) => d['severity'] === 'bad'))
+})
+

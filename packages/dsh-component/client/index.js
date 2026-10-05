@@ -437,6 +437,7 @@ window.__ModuleLoader__.load({
       if (snapshot.error !== undefined) {
         children.push(node('div', { style: styles.err }, [`读取失败：${snapshot.error}`]))
       }
+      children.push(timeCard(snapshot.time))
       children.push(adminChatBox(snapshot.chat || [], ui))
       children.push(queueTable(snapshot.queue || [], snapshot.queueStats))
       children.push(turnsTable(snapshot.turns || []))
@@ -492,14 +493,16 @@ window.__ModuleLoader__.load({
         return response.json()
       }
       try {
-        const [qq, queue, turns, rules, pending, chat] = await Promise.all([
+        const [qq, queue, turns, rules, pending, chat, time] = await Promise.all([
           get('/qq/state'),
           get('/qq/queue?limit=30'),
           get('/qq/turns?limit=30'),
           get('/qq/wake-rules?scope=*'),
           get('/qq/pending?limit=20'),
           get('/admin/chat?limit=50'),
+          get('/time'),
         ])
+        snapshot.time = time
         snapshot.qq = qq
         snapshot.queue = queue.rows || []
         snapshot.queueStats = queue.stats || {}
@@ -581,6 +584,53 @@ window.__ModuleLoader__.load({
     // 提示词是最容易改坏的东西（它直接决定模型怎么说话），所以界面上必须始终看得见
     // 三件事：现在是什么、改完会变成什么、改坏了怎么回去。
 
+    /** 时间感知卡（阶段 4）：最新读数年龄、注入成本、漂移。 */
+    function timeCard(time) {
+      if (!time) return node('div', {}, [])
+      const latest = time.latest
+      const settings = time.settings || {}
+      const drift = time.drift || {}
+      const children = [
+        node('div', { style: styles.metricLabel }, ['时间感知']),
+        node('div', { style: styles.row }, [
+          metric('最新读数', latest ? (latest.fresh ? '新鲜' : '偏旧') : '无'),
+          metric('年龄', latest ? `${Math.round((latest.ageMs || 0) / 1000)} 秒` : '—'),
+          metric('注入次数', (time.readings || []).length ? time.readings.length : (time.byReason || []).reduce((n, r) => n + (r.count || 0), 0)),
+          metric('注入 token', time.tokenCost),
+          metric('时间漂移', drift.count ? `${drift.count} 次` : '0 次'),
+        ]),
+        node('div', { style: styles.muted }, [
+          `时区：记录 ${settings.systemTimezone}｜会话 ${settings.conversationTimezone}｜展示 ${settings.displayTimezone}（${settings.hour24 ? '24' : '12'} 小时制）`,
+        ]),
+      ]
+      if (latest) {
+        children.push(
+          node('div', { style: styles.mono }, [
+            `最近一次读数：${String(latest.at).slice(11, 19)} UTC｜原因 ${latest.reason}｜时区 ${latest.timezone}`,
+          ]),
+        )
+        if (!latest.fresh) {
+          children.push(node('div', { style: styles.warn }, ['⚠️ 最新读数已偏旧 —— 若模型刚回答过时间问题，可能拿到的是陈旧读数。']))
+        }
+      } else {
+        children.push(node('div', { style: styles.muted }, ['还没有时间读数（跑过一轮真实对话后才有）。']))
+      }
+      if (drift.count) {
+        children.push(
+          node('div', { style: drift.maxMs && drift.maxMs > 3_600_000 ? styles.err : styles.warn }, [
+            `时间漂移 ${drift.count} 次，平均 ${Math.round((drift.avgMs || 0) / 1000)} 秒、最大 ${Math.round((drift.maxMs || 0) / 1000)} 秒`,
+          ]),
+        )
+      }
+      if ((time.clocks || []).length > 0) {
+        children.push(
+          node('div', { style: styles.mono }, [
+            `按会话时区：${(time.clocks || []).map((c) => `${c.scope}=${c.timezone}(${c.source})`).join('，')}`,
+          ]),
+        )
+      }
+      return node('div', { style: styles.card }, children)
+    }
     /** 一个槽位的编辑器。 */
     function promptEditor(title, slug, text, ui, meta) {
       const onDraft = ui && ui.onDraft
@@ -996,6 +1046,7 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
 
 
 

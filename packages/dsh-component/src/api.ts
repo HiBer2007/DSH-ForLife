@@ -34,7 +34,7 @@ import {
 } from '@forlife/memory-core'
 import { defaultFor } from '@forlife/contracts'
 import { cacheCurve, expectedMisses, judgeCache, summarizeCache } from '@forlife/memory-core'
-import { lastCacheUsageAt, listCacheUsage } from '@forlife/store'
+import { lastCacheUsageAt, listCacheUsage, listTimeDrift, listTimeReadings, timeDriftStats, timeReadingStats, timeReadingTokens } from '@forlife/store'
 
 import type { MemoryRuntime } from './runtime.ts'
 import {
@@ -207,6 +207,61 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
           output: row.output_tokens,
           reason: row.miss_reason,
           source: row.source,
+        })),
+      })
+    }),
+    // ── 阶段 4：时间感知与三层时区 ──────────────────────────────────────────
+
+    // 时间感知指标：最新读数年龄、注入次数与 token 成本、漂移统计、时钟设置
+    get('/api/forlife/time', () => {
+      const readings = listTimeReadings(runtime.db, 30)
+      const latest = readings[0]
+      const now = Date.now()
+      const settings = runtime.clockSettings()
+      const freshMs = 30_000
+      const ageMs = latest === undefined ? null : Math.max(0, now - Date.parse(latest.at))
+      return json({
+        ok: true,
+        // 验收项："压缩后/唤醒后/长空闲后都存在一条新鲜读数" —— 面板要能直接看出新鲜度
+        settings,
+        latest:
+          latest === undefined
+            ? null
+            : {
+                at: latest.at,
+                reason: latest.reason,
+                timezone: latest.timezone,
+                ageMs,
+                fresh: ageMs !== null && ageMs <= freshMs,
+                text: latest.text,
+              },
+        freshThresholdMs: freshMs,
+        byReason: timeReadingStats(runtime.db),
+        tokenCost: timeReadingTokens(runtime.db),
+        readings: readings.slice(0, 10).map((row) => ({
+          at: row.at,
+          reason: row.reason,
+          timezone: row.timezone,
+          tokenCount: row.token_count,
+          conversation: row.conversation_key,
+        })),
+        // 三层时区：按会话覆盖 + 待确认建议（建议不生效，要显眼）
+        clocks: runtime.listConversationClocks().map((clock) => ({
+          scope: clock.scope,
+          timezone: clock.timezone,
+          hour24: clock.hour24,
+          source: clock.source,
+          reason: clock.reason,
+          updatedAt: clock.updatedAt,
+        })),
+        drift: timeDriftStats(runtime.db),
+        recentDrift: listTimeDrift(runtime.db, 10).map((row) => ({
+          at: row['at'],
+          claimed: row['claimed'],
+          actualAt: row['actual_at'],
+          driftMs: row['drift_ms'],
+          severity: row['severity'],
+          excerpt: row['excerpt'],
         })),
       })
     }),
@@ -655,6 +710,7 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
 
 
 
