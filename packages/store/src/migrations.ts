@@ -162,6 +162,43 @@ CREATE INDEX IF NOT EXISTS idx_spill_call ON spill_entries (tool_call_id);
 
 const m0002Checksum = createHash('sha256').update(m0002.sql).digest('hex')
 
+/**
+ * 迁移 3：压缩事务（崩溃一致性）。
+ *
+ * 出处：EXECUTION_PLAN 阶段 2 交付物 6 —— "`compaction/start`/`compaction/end` 标记对
+ * + 启动时按 epoch 校验回滚"。DSH 侧那对标记写在**会话日志**里（log-only），
+ * 而我们的表改动（追加条目 / 碎片化 / epoch 推进）需要自己的可回滚记录：
+ * 先写 `started` 行并带上**计划**，成功改 `committed`；启动时发现残留的 `started`
+ * 就按计划回滚 —— 这就是"无半写条目"的实现方式。
+ */
+const m0003 = {
+  version: 3,
+  name: '0003_compaction_runs',
+  sql: `
+CREATE TABLE IF NOT EXISTS compaction_runs (
+  id             TEXT PRIMARY KEY,
+  compaction_id  TEXT,                 -- DSH 会话侧的 CompactionId（对账用）
+  session_id     TEXT,
+  phase          TEXT NOT NULL,        -- started | committed | aborted
+  epoch_from     INTEGER NOT NULL,
+  epoch_to       INTEGER,
+  plan           TEXT NOT NULL,        -- JSON：本次要做的全部改动（回滚依据）
+  detail         TEXT,                 -- JSON：实际结果
+  error          TEXT,
+  started_at     TEXT NOT NULL,
+  ended_at       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_phase ON compaction_runs (phase, started_at);
+CREATE INDEX IF NOT EXISTS idx_runs_session ON compaction_runs (session_id, started_at);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0003.sql)
+  },
+} as const
+
+const m0003Checksum = createHash('sha256').update(m0003.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -175,6 +212,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0002.name,
     checksum: m0002Checksum,
     up: m0002.up,
+  },
+  {
+    version: m0003.version,
+    name: m0003.name,
+    checksum: m0003Checksum,
+    up: m0003.up,
   },
 ]
 

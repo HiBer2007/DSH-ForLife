@@ -201,23 +201,28 @@ export function getMidEntry(db: DatabaseSync, id: string): MidEntryRow | undefin
 }
 
 /**
- * 列出某 epoch 下参与渲染的条目。
+ * 列出参与渲染的中期记忆条目。
  *
- * 渲染视图定义（PLAN §2.2）：`compaction_epoch = current AND status IN ('active','fragmented')`，
- * 按 `window_offset` 升序。
+ * **渲染视图定义（阶段 2 修正后的语义）**：`status IN ('active','fragmented')`，
+ * 按 `window_offset` 升序 —— **不按 epoch 过滤**。
+ *
+ * 为什么改：L3 是**跨压缩累积**的（PLAN §4.2 Step 4："push_to_mid 条目追加到中期表，
+ * compaction_epoch += 1，渲染到 L3 尾部"）。`compaction_epoch` 记录的是条目
+ * **产生于哪次压缩**（溯源 + "本次压缩产出了什么"），不是"参不参与渲染"。
+ * 阶段 1 我写成按 epoch 过滤，那样第一次压缩之后整个 L3 就会变空。
  */
-export function listRenderableMidEntries(db: DatabaseSync, epoch = currentEpoch(db)): readonly MidEntryRow[] {
+export function listRenderableMidEntries(db: DatabaseSync): readonly MidEntryRow[] {
   return db
     .prepare(
       `SELECT * FROM mid_memory_entries
-        WHERE compaction_epoch = ? AND status IN ('active','fragmented')
+        WHERE status IN ('active','fragmented')
         ORDER BY window_offset ASC`,
     )
-    .all(epoch) as unknown as MidEntryRow[]
+    .all() as unknown as MidEntryRow[]
 }
 
-/** 中期统计（用于碎片占比等约束判断）。 */
-export function midStats(db: DatabaseSync, epoch = currentEpoch(db)): MidStats {
+/** 中期统计（碎片占比等约束判断用）。同样**不按 epoch 过滤**：预算说的是 L3 窗口整体。 */
+export function midStats(db: DatabaseSync): MidStats {
   const row = db
     .prepare(
       `SELECT
@@ -225,9 +230,9 @@ export function midStats(db: DatabaseSync, epoch = currentEpoch(db)): MidStats {
          sum(CASE WHEN status = 'fragmented' THEN 1 ELSE 0 END) AS fragmentCount,
          coalesce(sum(CASE WHEN status = 'active'    THEN token_count ELSE 0 END), 0) AS activeTokens,
          coalesce(sum(CASE WHEN status = 'fragmented' THEN token_count ELSE 0 END), 0) AS fragmentTokens
-       FROM mid_memory_entries WHERE compaction_epoch = ?`,
+       FROM mid_memory_entries`,
     )
-    .get(epoch) as { activeCount: number | null; fragmentCount: number | null; activeTokens: number; fragmentTokens: number }
+    .get() as { activeCount: number | null; fragmentCount: number | null; activeTokens: number; fragmentTokens: number }
   return {
     activeCount: row.activeCount ?? 0,
     fragmentCount: row.fragmentCount ?? 0,

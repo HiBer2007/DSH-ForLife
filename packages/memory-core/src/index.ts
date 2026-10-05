@@ -9,3 +9,23 @@
 export { DEFAULT_HEADER, formatAge, renderMidMemory } from './render.ts'
 export type { RenderOptions, RenderedView } from './render.ts'
 export { estimateTokens } from './tokens.ts'
+export {
+  decideCompaction,
+  defaultCompactionThresholds,
+  extractJsonObject,
+  makeFragmentHint,
+  parseCompactionDecision,
+  planFragmentation,
+  renderKeepInShort,
+} from './compaction.ts'
+export type {
+  CompactionDecision,
+  CompactionRejectionReason,
+  CompactionStats,
+  CompactionThresholds,
+  CompactionVerdict,
+  FragmentCandidate,
+  FragmentationPlan,
+  ParseDecisionResult,
+  PushToMidEntry,
+} from './compaction.ts'

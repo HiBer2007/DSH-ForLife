@@ -9,6 +9,17 @@
 export { DEFAULT_DB_FILENAME, SCHEMA_VERSION, backupDatabase, currentVersion, migrationList, openDatabase } from './db.ts'
 export type { OpenOptions, OpenedDatabase } from './db.ts'
 export { LATEST_SCHEMA_VERSION, MIGRATIONS } from './migrations.ts'
+export {
+  abortCompactionRun,
+  beginCompactionRun,
+  commitCompactionRun,
+  getCompactionRun,
+  listCompactionRuns,
+  pendingCompactionRuns,
+  recoverPendingCompactions,
+  rollbackCompactionRun,
+} from './compaction-runs.ts'
+export type { CompactionPlan, CompactionRunRow, RollbackResult } from './compaction-runs.ts'
 export type { Migration } from './migrations.ts'
 export {
   appendMidEntry,
@@ -46,5 +57,6 @@ export type {
   MidStats,
   SpillRow,
 } from './repository.ts'
+
 
 
