@@ -1842,77 +1842,77 @@ model_routes(
 
 **交付物**
 
-1. `[~]` **U7 残余 spike**：以官方镜像起 NapCat 容器实测（内存/冷启动/登录→收发）。
+1. [~] **U7 残余 spike**：以官方镜像起 NapCat 容器实测（内存/冷启动/登录→收发）。
    **差在**：需要真实 QQ 账号扫码，只能你来（脚本与 compose 已就绪，见交付物 2）。
-2. `[~]` **QQ 客户端容器化**：`deploy/docker-compose.yml` 的 `qq` 服务 + 登录态卷挂载 + 健康检查（心跳事件 + `get_login_info` 探活）已写好。
+2. [~] **QQ 客户端容器化**：`deploy/docker-compose.yml` 的 `qq` 服务 + 登录态卷挂载 + 健康检查（心跳事件 + `get_login_info` 探活）已写好。
    **差在**：镜像拉取与扫码登录需在你的环境执行。
    - ✅ 适配器侧的证据齐了：`get_login_info` 探活、连接/断开状态、重连替换旧连接都有测试。
-3. `[x]` **`packages/gateway`**：`QqTransport` 接口 + OneBot v11 反向 WS 适配器；`qq_inbox`/`qq_sessions`/`qq_turns`/`qq_outbox` 表；防抖窗口；per-key mutex；崩溃恢复扫描。
+3. [x] **`packages/gateway`**：`QqTransport` 接口 + OneBot v11 反向 WS 适配器；`qq_inbox`/`qq_sessions`/`qq_turns`/`qq_outbox` 表；防抖窗口；per-key mutex；崩溃恢复扫描。
    证据：`onebot.test.ts`（16 项，**真 WebSocket**）、`timing.test.ts`（11 项，假时钟）、`outbox.test.ts`（12 项，含 `reclaimStaleOutbound` 自愈）。
-4. `[x]` **轮次驱动器**：`headless --json`（默认，NDJSON 解析）与长连接双实现 + 配置切换（`driver.kind`）。
+4. [x] **轮次驱动器**：`headless --json`（默认，NDJSON 解析）与长连接双实现 + 配置切换（`driver.kind`）。
    证据：`driver.ts`；三种驱动（headless / longconnection / fake）共用 `TurnDriver` 接口。
-5. `[x]` **QQ 工具**：`qq_reply`（分段、引用、@）、`qq_react`、`qq_typing`、`defer_turn`，外加 `read_pending` / `set_wake_rule` / `list_wake_rules` / `set_status` / `clear_system_status`（共 9 个）。
+5. [x] **QQ 工具**：`qq_reply`（分段、引用、@）、`qq_react`、`qq_typing`、`defer_turn`，外加 `read_pending` / `set_wake_rule` / `list_wake_rules` / `set_status` / `clear_system_status`（共 9 个）。
    证据：`qq-tools.test.ts`（16 项）；群聊 `qq_typing` **如实返回不支持**（协议层仅 C2C 有效）。
-6. `[~]` **后台 `/admin`**：会话队列/积压、轮次时间线、唤醒规则编辑、待读池、**人类直发对话页**全部落地（`/api/forlife/qq/*` + `/api/forlife/admin/chat` + 「QQ 与后台」面板区块）。
+6. [~] **后台 `/admin`**：会话队列/积压、轮次时间线、唤醒规则编辑、待读池、**人类直发对话页**全部落地（`/api/forlife/qq/*` + `/api/forlife/admin/chat` + 「QQ 与后台」面板区块）。
    **差在**：实时日志的 **SSE + `Last-Event-ID` + 环形缓存 + 退避重连** 未做（当前是 5 秒轮询）。
    - 取舍说明：先要"看得见"，再要"零延迟"；轮询版本已在真机验证可用，SSE 留到阶段 9 的运维面板一起做。
-7. `[x]` **噪音过滤规则层**：可替换规则集 + 说话人白名单；`@我`/拍一拍/`@全体` **永不判噪音**；在唤醒判定**之前**拦截，整批噪音不进提示词也不占待读池。
+7. [x] **噪音过滤规则层**：可替换规则集 + 说话人白名单；`@我`/拍一拍/`@全体` **永不判噪音**；在唤醒判定**之前**拦截，整批噪音不进提示词也不占待读池。
    证据：`timing.test.ts` + `turns.test.ts`（混合批次只把非噪音送进模型）。
-8. `[x]` **多会话单窗口改造**：消息带会话标签、`qq_reply(conversation, …)` 必填目标、**优先级调度 + 批处理**（每会话冷却 + 每窗口配额 + 老化，同会话多批合并成一项）。
+8. [x] **多会话单窗口改造**：消息带会话标签、`qq_reply(conversation, …)` 必填目标、**优先级调度 + 批处理**（每会话冷却 + 每窗口配额 + 老化，同会话多批合并成一项）。
    证据：`scheduler.test.ts`（9 项）、`turns.test.ts` 的提示词断言。
-9. `[x]` **唤醒条件矩阵**：`wake_rules` 表（**每条件一行，互不派生**）+ `set_wake_rule`/`list_wake_rules` 工具（模型自调，留痕）+ 后台同表编辑 + `read_pending` 有界待读池 + 唤醒提示带"未读摘要 + 距上次交互"。
+9. [x] **唤醒条件矩阵**：`wake_rules` 表（**每条件一行，互不派生**）+ `set_wake_rule`/`list_wake_rules` 工具（模型自调，留痕）+ 后台同表编辑 + `read_pending` 有界待读池 + 唤醒提示带"未读摘要 + 距上次交互"。
    证据：`wake.test.ts`（16 项）、`admin-api.test.ts`。
-10. `[x]` **状态通道**：`set_status`（model 来源）+ `system` 故障状态（连续唤醒失败自动置位、**拒绝被静默覆盖**）+ 说明原因后清除并留痕。
+10. [x] **状态通道**：`set_status`（model 来源）+ `system` 故障状态（连续唤醒失败自动置位、**拒绝被静默覆盖**）+ 说明原因后清除并留痕。
     证据：`qq-tools.test.ts`（状态锁、清除留痕、失败计数跨重启保留）。
-11. `[x]` **两条铁律落地**：
+11. [x] **两条铁律落地**：
     - `admin_actions` 审计（复用 `effects` 表）+ `affectsModel()` 判定表 + 60 秒合并报告管线 + "醒着就注入、睡着才唤醒"；
     - `MessageSourceMap` 注册 `forlife:system` / `forlife:qq` / `forlife:admin`，`createForlifeMessage` **构造时**断言 `user` 非法；
     - 后台「对话」页是**唯一人类直发入口**（迁移 8 `admin_chat`，走 `forlife:admin`）。
     证据：`reports.test.ts`（9 项）、`glue.test.ts`（6 项）、`admin-chat.test.ts`（7 项，含"答复不会跑到 QQ"的渠道隔离断言）。
-12. `[x]` **`source_scope` 溯源标记**：`remember` / `push_mid_memory` 未显式给 scope 时自动记为**当前 QQ 会话**；不知道来源就留空（不编造）；**只用于溯源，不做隔离**（统一记忆）。
+12. [x] **`source_scope` 溯源标记**：`remember` / `push_mid_memory` 未显式给 scope 时自动记为**当前 QQ 会话**；不知道来源就留空（不编造）；**只用于溯源，不做隔离**（统一记忆）。
     证据：`glue.test.ts`（含"不同来源的条目同处一个渲染视图"）。
 
 **验收标准（逐条勾选）**
 
-- `[~]` 私聊/群聊各发一条消息 → 3s 内收到回复；同会话连发 5 条 → 合并为一轮（防抖生效）。
+- [~] 私聊/群聊各发一条消息 → 3s 内收到回复；同会话连发 5 条 → 合并为一轮（防抖生效）。
   证据：`gateway.test.ts` 用**真 WebSocket + 真库**跑通"消息进 → 防抖 → 唤醒 → 轮次 → 出站 → 平台回执"，其中"连发 5 条合并成 1 轮"是独立用例。
-  **差在**："3s 内"是在本机假 QQ 端测的；真实 NapCat 的端到端时延要你扫码后才有数。
-- `[~]` 模型在一轮里调用 `qq_reply` 3 次 → QQ 收到 3 条分段消息，顺序正确。
+**差在**："3s 内"是在本机假 QQ 端测的；真实 NapCat 的端到端时延要你扫码后才有数。
+- [~] 模型在一轮里调用 `qq_reply` 3 次 → QQ 收到 3 条分段消息，顺序正确。
   证据：队列是 FIFO（`outbox.test.ts` 有"同会话按入队顺序发送"断言），分段语义由多次 `qq_reply` 天然表达；`qq_reply` 的引用/@/文本拼段顺序也有断言。
-  **差在**：没有"一次模型调用产生 3 次工具调用"的真模型回归（需要凭据）。
-- `[x]` `kill -9` gateway 重启后，未完成轮次自动恢复或明确标记失败（无静默丢失）。
+**差在**：没有"一次模型调用产生 3 次工具调用"的真模型回归（需要凭据）。
+- [x] `kill -9` gateway 重启后，未完成轮次自动恢复或明确标记失败（无静默丢失）。
   证据：`outbox.test.ts` 的 `reclaimStaleOutbound`（卡在 `sending` 超 30 秒回收并最终发出）；`gateway.test.ts` 有一条专门的"崩溃自愈"端到端用例；`qq_inbox` 先落库再处理；轮次失败原因入表（`turns.test.ts`）。
-- `[x]` 跨会话并行：两个会话同时对话互不阻塞。
+- [x] 跨会话并行：两个会话同时对话互不阻塞。
   证据：`timing.test.ts` 的"跨 key 并行"用**交叉等待**做确定性断言（串行就会死锁）；`turns.test.ts` 的"同会话严格串行"。
-- `[x]` 后台能看到队列积压、每条轮次的耗时/token/工具调用次数。
+- [x] 后台能看到队列积压、每条轮次的耗时/token/工具调用次数。
   证据：`admin-api.test.ts` 逐条断言（含失败原因、重试次数、token 输入/输出、工具调用数、挂起原因）。
-- `[x]` **多会话单窗口**：回复各自落到正确会话；一个话痨群刷 50 条时，其它会话仍在 SLO 内被响应。
+- [x] **多会话单窗口**：回复各自落到正确会话；一个话痨群刷 50 条时，其它会话仍在 SLO 内被响应。
   证据：`scheduler.test.ts` 的"验收：话痨群刷 50 条时私聊不会被饿死"（含冷却与合并两个机制）；`gateway.test.ts` 的群/私聊分别走 `send_group_msg` / `send_private_msg`。
   - 这里抓到过一个真 bug：出站解析会话键时把 kind 写死成 `private`，群消息会走私聊通道（线上表现是"群里没人收到、某个人莫名收到一条"）；迁移 7 把会话类型存进队列行，并把参数改成必填让编译器强制每个调用点想清楚。
-- `[x]` **条件矩阵**：关掉某群 `group_message_any` 后刷 100 条 → 零唤醒但 `read_pending` 能读到摘要；`group_mention` 开 → @我立即唤醒；`group_poke` 关 → 拍一拍不唤醒（**三条件互不派生**）。
+- [x] **条件矩阵**：关掉某群 `group_message_any` 后刷 100 条 → 零唤醒但 `read_pending` 能读到摘要；`group_mention` 开 → @我立即唤醒；`group_poke` 关 → 拍一拍不唤醒（**三条件互不派生**）。
   证据：`wake.test.ts` 的"互不派生"用例（同群三条件各判各的，100 条闲聊零唤醒但全部进待读池）。
-- `[x]` **默认值正确**：群聊除 @/拍一拍零唤醒、私聊 ≈80%、临时 ≈20%（各 100 条统计断言）。
+- [x] **默认值正确**：群聊除 @/拍一拍零唤醒、私聊 ≈80%、临时 ≈20%（各 100 条统计断言）。
   证据：`wake.test.ts` 用均匀随机序列做**精确命中**断言（阈值 80 时 <0.8 的恰好 800 个）。
-- `[x]` **@全体成员独立**：100 条 @全体 → 35–65 次；100 条 @我 → 100 次。
+- [x] **@全体成员独立**：100 条 @全体 → 35–65 次；100 条 @我 → 100 次。
   证据：`wake.test.ts` 两条独立用例（均匀序列断言 500/1000，真随机断言落在 35–65 区间）。
-- `[ ]` **主动 @全体受额度约束**：额度为 0 或 `can_at_all=false` 时 `mention_all` 被拒绝并告知模型；成功发送后剩余额度递减且落审计。
-  **状态：未做**。适配器侧已能查额度（`getAtAllRemain`，`can_at_all=false` 归零有测试），但**额度闸门与审计还没接进工具层**。留给阶段 6（表情与媒体发送）一起做 —— 那时才有"主动发消息"的完整场景。
-- `[x]` **概率调节**：`group_message_any` 设 10% → 100 条唤醒次数落在 5–20 次，且受 `min_interval` / `daily_limit` 约束。
+- [ ] **主动 @全体受额度约束**：额度为 0 或 `can_at_all=false` 时 `mention_all` 被拒绝并告知模型；成功发送后剩余额度递减且落审计。
+**状态：未做**。适配器侧已能查额度（`getAtAllRemain`，`can_at_all=false` 归零有测试），但**额度闸门与审计还没接进工具层**。留给阶段 6（表情与媒体发送）一起做 —— 那时才有"主动发消息"的完整场景。
+- [x] **概率调节**：`group_message_any` 设 10% → 100 条唤醒次数落在 5–20 次，且受 `min_interval` / `daily_limit` 约束。
   证据：`wake.test.ts` 的统计用例 + 限流用例（日限、最小间隔、静默期、全局预算的原因码可区分）。
-- `[x]` **模型自调**：模型用 `set_wake_rule` 把吵群降概率并加静默期 → 生效且落审计。
+- [x] **模型自调**：模型用 `set_wake_rule` 把吵群降概率并加静默期 → 生效且落审计。
   证据：`qq-tools.test.ts`（改动落 `effects` 审计、只影响该条件）；`wake.test.ts` 的静默期用例。
-- `[x]` **来源纪律**：唤醒消息 source 均为 `forlife:system`；后台「对话」页为 `forlife:admin`；**不存在 `source.kind === 'user'`**。
+- [x] **来源纪律**：唤醒消息 source 均为 `forlife:system`；后台「对话」页为 `forlife:admin`；**不存在 `source.kind === 'user'`**。
   证据：`glue.test.ts` 断言三种来源可构造、`user` 在**构造时**就抛错；`reports.test.ts` 断言未登记来源也抛错。
-- `[x]` **后台改动必报告**：后台改唤醒规则 → 模型收到报告；`admin_actions.reported` 全为真。
+- [x] **后台改动必报告**：后台改唤醒规则 → 模型收到报告；`admin_actions.reported` 全为真。
   证据：`reports.test.ts` 的合并窗口 + "报告只发一次"幂等断言；`admin-api.test.ts` 断言后台改规则写入 `affects_model=1, reported=0` 待报告。
-- `[x]` **状态双源**：连续 3 次唤醒失败 → 自动置 `system` 故障状态且模型**无法静默覆盖**；原因消除后清除并留痕。
+- [x] **状态双源**：连续 3 次唤醒失败 → 自动置 `system` 故障状态且模型**无法静默覆盖**；原因消除后清除并留痕。
   证据：`qq-tools.test.ts`（`locked_by_system` 拒绝 + 清除留痕 + 失败计数跨重启保留）。
-  **差在**："原因消除后**自动**清除并唤醒告知"这一步的自动触发没接线（当前要模型或管理员显式清除）。
-- `[x]` **溯源而非隔离**：压缩一次后 A 群信息仍可被引用（统一记忆），但带正确 `source_scope` 标签。
+**差在**："原因消除后**自动**清除并唤醒告知"这一步的自动触发没接线（当前要模型或管理员显式清除）。
+- [x] **溯源而非隔离**：压缩一次后 A 群信息仍可被引用（统一记忆），但带正确 `source_scope` 标签。
   证据：`glue.test.ts` 的"溯源不隔离"用例（不同来源标记的条目同处一个渲染视图）。
-- `[x]` **送达确认**：正常发送 → `confirmed:true` + `message_id`；回执丢失 → 3 s 后 `confirmed:false` **并带自助确认提示**（不报错、不阻塞）。
+- [x] **送达确认**：正常发送 → `confirmed:true` + `message_id`；回执丢失 → 3 s 后 `confirmed:false` **并带自助确认提示**（不报错、不阻塞）。
   证据：`outbox.test.ts` 的 `waitForConfirmation` 三条用例；`qq_reply` 在未确认时返回 `hint` 提示可重发或观察。
-  **差在**："连续 3 次超时 → 判为 QQ 侧故障并置系统状态"未接线（判据与状态写入都在，缺联动）。
+**差在**："连续 3 次超时 → 判为 QQ 侧故障并置系统状态"未接线（判据与状态写入都在，缺联动）。
 
 **真机证据（本阶段）**
 
@@ -1961,86 +1961,86 @@ $ dsh --profile forlife-qq "ping"
 
 **交付物**
 
-1. `[x]` **提示词分层落地**：P1 `forlife:p1-system`(100) / P2 `forlife:p2-style`(110) 两个独立段，
+1. [x] **提示词分层落地**：P1 `forlife:p1-system`(100) / P2 `forlife:p2-style`(110) 两个独立段，
    文本取自数据库（函数型 section ⇒ **改完下一轮生效，不重启**）。
    证据：`prompt.test.ts` 用**真 dsh-system-prompt** 装配验证热生效与变量插值。
    - **段序重排**：L2/L3 从 100/110 让到 **120/130**。理由写进了 `prompt.ts` 的注释：
      前缀缓存按字节比对，越靠前的内容变化作废的后缀越长；记忆是这里变得最勤的，所以排最后。
      换来的是"记忆写入不再作废人设前缀"。
-2. `[x]` **提示词管理**：`prompt_revisions`（部分唯一索引保证每 slug 至多一版 active）
+2. [x] **提示词管理**：`prompt_revisions`（部分唯一索引保证每 slug 至多一版 active）
    + 规范化与 SHA-256（**哈希规范化结果**，否则"只改了行尾空格"也算一版）
    + **变量白名单**（未知变量与动态变量都在保存前拒绝）+ 试渲染（含 token 数）
    + 一键回滚（改 active 标记，**不复制新版本** —— 历史是事实记录）+ **P2 按会话覆盖**。
    证据：`prompt-text.test.ts`（15 项）、`prompt.test.ts`（10 项）、迁移 9。
-3. `[x]` **后台「提示词」页**：编辑、逐行 diff（+绿 −红）、预览最终拼装结果、
+3. [x] **后台「提示词」页**：编辑、逐行 diff（+绿 −红）、预览最终拼装结果、
    **明说"此改动将导致一次缓存未命中"**、历史版本一键回滚、变量白名单参考。
    证据：`/api/forlife/prompts*` 6 条路由（`admin-api.test.ts` 7 项）+ 面板第三块（`client.test.ts`）。
-4. `[x]` **位置契约 lint**：`scripts/lint-prompt-positions.ts` 扫描所有 section 注册点，
+4. [x] **位置契约 lint**：`scripts/lint-prompt-positions.ts` 扫描所有 section 注册点，
    检查 order 区间与**前缀里有没有动态内容迹象**（Date.now / new Date / nowIso /
    Math.random / currentConversationScope / timeContext）。已接进 doctor 与 `pnpm lint:prompt`。
    证据：`tests/prompt-contract.test.ts` —— **含"故意造违规必须报错"的自测**。
    一个从不失败的检查等于没有检查，所以自测是这条交付物的一部分。
-5. `[x]` **字节稳定性测试套件**：`assemble()` + `renderPrompt()` 哈希对比。
+5. [x] **字节稳定性测试套件**：`assemble()` + `renderPrompt()` 哈希对比。
    证据：`prompt.test.ts` 的"无写入时 20 轮哈希恒定"、"改 P2 后哈希恰好变一次、
    随后 20 轮稳定"、"回滚后哈希**精确回到**旧值"。
-6. `[x]` **缓存命中率采集**：订阅 `assistant/message` 会话事件（带 `usage`）→ 落库 →
+6. [x] **缓存命中率采集**：订阅 `assistant/message` 会话事件（带 `usage`）→ 落库 →
    与压缩/提示词编辑事件对齐做归因。面板 `/api/forlife/cache` 给汇总、曲线与结论。
    证据：`cache-metrics.test.ts`（14 项）、`cache-collector.test.ts`（12 项）。
    - **口径写死在纯逻辑里并加断言**：`inputTokens` 是**未命中**的输入而不是总输入
      （已在 `dsh-token-meter` 的 `usageTokens()` 核实四类互不重叠），
      所以 `提示词总 token = input + cacheRead + cacheWrite`、`命中率 = cacheRead / 该总和`。
      把 input 当总输入会让命中率虚高 —— 那等于"以为优化生效了，实际在烧钱"。
-7. `[~]` **时间感知**：
-   - `[x]` 我们**自己做时钟**（`memory-core/clock.ts`）：时区换算用 `Intl`（夏令时不自己踩坑）、
+7. [~] **时间感知**：
+   - [x] 我们**自己做时钟**（`memory-core/clock.ts`）：时区换算用 `Intl`（夏令时不自己踩坑）、
      相对年龄系统算好（模型不必做时间算术）、未来时间戳如实说"之后（对方时钟可能快）"。
-   - `[x]` **事件驱动注入**：从未注入→必注入；压缩后 / 唤醒后 / 跨天 / 每轮首步 / 长期空闲 → 必注入；
+   - [x] **事件驱动注入**：从未注入→必注入；压缩后 / 唤醒后 / 跨天 / 每轮首步 / 长期空闲 → 必注入；
      同轮后续步跨过间隔才注入，且**说清为什么跳过**。顺序由纯逻辑保证"强事件优先于间隔"。
-   - `[x]` **`now()` 工具**：这是"主动看时间"的**唯一实现方式**（§2.15.1 根因 4）。
-   - `[x]` **读数只进尾部**：`turns.ts` 把时间块拼进提示词尾部，绝不进前缀。
-   - `[x]` **profile 挂载** `dsh-time-context`（我们的配置，非 web-app 那行 disabled 的），
+   - [x] **`now()` 工具**：这是"主动看时间"的**唯一实现方式**（§2.15.1 根因 4）。
+   - [x] **读数只进尾部**：`turns.ts` 把时间块拼进提示词尾部，绝不进前缀。
+   - [x] **profile 挂载** `dsh-time-context`（我们的配置，非 web-app 那行 disabled 的），
      作为**非 QQ 路径**（DSH 直接对话）的兜底，节流放宽到 30 分钟以免与我们的注入打架。
-   - `[x]` `time_readings` 表（文本可回放、原因、token 成本）+ 面板「时间感知」卡。
-   - `[~]` **`time_drift` 自动抽取未接线**：表、统计与面板展示都在，但"从模型输出里抓时间表述
+   - [x] `time_readings` 表（文本可回放、原因、token 成本）+ 面板「时间感知」卡。
+   - [~] **`time_drift` 自动抽取未接线**：表、统计与面板展示都在，但"从模型输出里抓时间表述
      并与真实时间比对"的抽取器没写。差在：需要一个轻量解析器 + 在轮次收尾时调用。
-8. `[x]` **三层时区**：`systemTimezone`(UTC) / `conversationTimezone` / `displayTimezone`
+8. [x] **三层时区**：`systemTimezone`(UTC) / `conversationTimezone` / `displayTimezone`
    + `conversation_clock_settings` 表 + `get_clock`/`set_clock`/`list_clocks` 工具
    + 渲染双写（ISO 带偏移 + 人类可读）+ 12/24 制只影响表述。
    证据：`clock-wiring.test.ts`、迁移 12。
-   - `[x]` **来源优先级**：`user_set > model_note > small_model_suggest`，且**低优先级不能覆盖高优先级**
+   - [x] **来源优先级**：`user_set > model_note > small_model_suggest`，且**低优先级不能覆盖高优先级**
      （否则"用户设过"会被后来的推断悄悄改掉）。
-   - `[~]` **"小模型时钟建议"只有通道没有小模型**：`clock_suggestions` 表 + 低置信度只写建议
+   - [~] **"小模型时钟建议"只有通道没有小模型**：`clock_suggestions` 表 + 低置信度只写建议
      （不直接生效）的路径都在，但**没有接小模型**去产生这类建议。
-9. `[~]` **时间感知回归测试集**：10 题（覆盖五类）、客观判分（期望命中 + **禁止出现的幻觉模式**）、
+9. [~] **时间感知回归测试集**：10 题（覆盖五类）、客观判分（期望命中 + **禁止出现的幻觉模式**）、
    两组对比逻辑全部完成且被测过（9 项）；运行器 `scripts/time-regression.ts` 也在。
    **差在**：真模型下"挂 vs 不挂"的分数差需要凭据 —— 脚本会明确打印需要凭据，不假装跑过。
    - 对比逻辑的诚实之处：**对照组也答得好时必须说"这套题没测到东西"**，而不是庆祝两组都高分。
 
 **验收标准（逐条勾选）**
 
-- `[x]` 编辑 P2 → 保存 → 下一轮生效；前缀哈希**恰好变化一次**，之后 20 轮完全稳定。
+- [x] 编辑 P2 → 保存 → 下一轮生效；前缀哈希**恰好变化一次**，之后 20 轮完全稳定。
   证据：`prompt.test.ts`。
-- `[x]` 回滚到上一版 → 哈希回到旧值；按会话覆盖只影响该会话。
+- [x] 回滚到上一版 → 哈希回到旧值；按会话覆盖只影响该会话。
   证据：`prompt.test.ts`（哈希精确回到旧值）+ 覆盖用例（别的会话仍是 global）。
-- `[~]` 未声明变量在保存时报错；试渲染 token 数与真实请求误差 ≤2%。
+- [~] 未声明变量在保存时报错；试渲染 token 数与真实请求误差 ≤2%。
   证据：前半句 `[x]`（未知变量与动态变量都被拒，`prompt-text.test.ts`）；
-  **后半句没验** —— "真实请求的 token"要有模型凭据才能对账，本机只能给出估算值。
-- `[~]` 20 轮无记忆写入的对话：前缀哈希 100% 稳定；未命中次数 == 压缩次数 + 提示词编辑次数。
+**后半句没验** —— "真实请求的 token"要有模型凭据才能对账，本机只能给出估算值。
+- [~] 20 轮无记忆写入的对话：前缀哈希 100% 稳定；未命中次数 == 压缩次数 + 提示词编辑次数。
   证据：前半句 `[x]`（`prompt.test.ts` 的 20 轮哈希恒定）；
-  **后半句没验** —— 它需要真实调用产生的 `usage` 数据。采集、归因与
+**后半句没验** —— 它需要真实调用产生的 `usage` 数据。采集、归因与
   `judgeCache()` 的报警逻辑都已就绪（含"不可解释的未命中必须报警"）。
-- `[~]` **时间感知**：10 题在"挂 time-context + 事件驱动注入"下全部答对；
+- [~] **时间感知**：10 题在"挂 time-context + 事件驱动注入"下全部答对；
   对照组显著退化（证明因果）。
   证据：考卷、判分、对比与运行器都完成并测过；**真模型两组对比待凭据**。
-- `[x]` 压缩后、唤醒后、长空闲后三个场景下都**存在一条新鲜读数**（最新读数年龄 < 30 s）。
+- [x] 压缩后、唤醒后、长空闲后三个场景下都**存在一条新鲜读数**（最新读数年龄 < 30 s）。
   证据：`clock-wiring.test.ts` 断言"压缩后/唤醒后即使刚读过也必须注入"并以对应原因落库；
   长空闲由 `clock.test.ts` 的 `after-idle` 用例覆盖；新鲜度阈值 30 秒在接口与测试里都写死。
-- `[x]` 时间读数**从未**出现在稳定前缀里（位置契约 lint + 哈希稳定性双重保证）。
+- [x] 时间读数**从未**出现在稳定前缀里（位置契约 lint + 哈希稳定性双重保证）。
   证据：`tests/prompt-contract.test.ts`（lint 会抓住动态内容进前缀）
   + `clock-wiring.test.ts`（真宿主装配出的前缀里既无时间戳也无读数块）。
-- `[x]` **三层时区**：存储里全是 UTC；给模型的读数双写；会话时区按
+- [x] **三层时区**：存储里全是 UTC；给模型的读数双写；会话时区按
   `user_set > model_note > 小模型建议` 优先生效；12/24 制只影响表述。
   证据：`clock.test.ts` + `clock-wiring.test.ts` + `sourceRank()` 的优先级保护。
-- `[ ]` **路由降级 / 切换代价 / 子代理不可自切** —— **已移到阶段 5**（属于路由与多模型）。
+- [ ] **路由降级 / 切换代价 / 子代理不可自切** —— **已移到阶段 5**（属于路由与多模型）。
 
 **本阶段未做（已排期，不是遗漏）**
 
