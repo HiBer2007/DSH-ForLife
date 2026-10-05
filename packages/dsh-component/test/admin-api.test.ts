@@ -84,19 +84,25 @@ async function post(path: string, body: unknown): Promise<{ status: number; body
 }
 
 test('路由齐备：QQ 概览 / 队列 / 轮次 / 唤醒规则 / 判定留痕 / 待读池 / 后台对话', () => {
-  const paths = routes.map((r) => `${r.methods.join(',')} ${r.path}`)
-  for (const expected of [
-    'GET /api/forlife/qq/state',
-    'GET /api/forlife/qq/queue',
-    'GET /api/forlife/qq/turns',
-    'GET /api/forlife/qq/wake-rules',
-    'POST /api/forlife/qq/wake-rules',
-    'GET /api/forlife/qq/wake-events',
-    'GET /api/forlife/qq/pending',
-    'GET /api/forlife/admin/chat',
-    'POST /api/forlife/admin/chat',
-  ]) {
-    assert.ok(paths.includes(expected), `缺少 ${expected}`)
+  // 断言"某个 path 支持某个 method"，而不是拼字符串 "GET /path"：
+  // 同 path 的读写现在会**合并成一条注册**（宿主的注册表按 path 唯一），
+  // 拼字符串时 methods 变成 'GET,POST' 就匹配不上 —— 那会让这条守卫在
+  // "合并"这个正确做法生效时反而报错。
+  const cases: readonly (readonly [string, string])[] = [
+    ['GET', '/api/forlife/qq/state'],
+    ['GET', '/api/forlife/qq/queue'],
+    ['GET', '/api/forlife/qq/turns'],
+    ['GET', '/api/forlife/qq/wake-rules'],
+    ['POST', '/api/forlife/qq/wake-rules'],
+    ['GET', '/api/forlife/qq/wake-events'],
+    ['GET', '/api/forlife/qq/pending'],
+    ['GET', '/api/forlife/admin/chat'],
+    ['POST', '/api/forlife/admin/chat'],
+  ]
+  for (const [method, path] of cases) {
+    const hit = routes.find((route) => route.path === path)
+    assert.ok(hit !== undefined, `缺少路由 ${path}`)
+    assert.ok(hit.methods.includes(method as 'GET' | 'HEAD' | 'POST'), `${path} 不支持 ${method}（实际 ${hit.methods.join(',')}）`)
   }
 })
 
@@ -618,3 +624,37 @@ test('路由页：云端点（不需要容器）的模式切换是真的生效�
   assert.ok(listModeSwitches(runtime.db, 'ep-cloud-x').length >= 1, '切换要留审计')
 })
 
+
+test('注册契约：**同一个 path 只能注册一次**（宿主的 fetch 注册表按 path 唯一）', () => {
+  // 这条是真机启动才暴露的：我把 GET /routes 与 POST /routes 分成两次注册，
+  // 宿主直接抛 `exact Fetch route "/api/forlife/routes" is already registered` ——
+  // 而那个异常会让**整个面板插件都不激活**（用户看到的是"什么都没有"）。
+  // 内存测试里逐个取路由，撞车完全看不出来，所以必须有这条守卫。
+  const seen = new Map<string, number>()
+  for (const route of routes) seen.set(route.path, (seen.get(route.path) ?? 0) + 1)
+  const duplicated = [...seen.entries()].filter(([, count]) => count > 1).map(([path]) => path)
+  assert.deepEqual(duplicated, [], `这些 path 注册了多次（读写要合并成一条、methods 列全）：${duplicated.join(', ')}`)
+})
+
+test('注册契约：/routes 一条注册里同时支持 GET 与 POST（读写合并的形态）', async () => {
+  const route = routes.find((item) => item.path === '/api/forlife/routes')
+  assert.ok(route !== undefined)
+  assert.ok(route.methods.includes('GET'), '要能读')
+  assert.ok(route.methods.includes('POST'), '要能写')
+  // GET 拿到的是快照
+  const read = await route.fetch(new Request('http://local/api/forlife/routes'))
+  assert.equal(read.status, 200)
+  const body = (await read.json()) as Record<string, unknown>
+  assert.equal(body['ok'], true)
+  assert.ok(Array.isArray(body['roles']))
+  // POST 走写路径
+  const written = await route.fetch(
+    new Request('http://local/api/forlife/routes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'L1', rank: 5, provider: 'merged-p', model: 'merged-m' }),
+    }),
+  )
+  assert.equal(written.status, 200)
+  assert.equal(((await written.json()) as Record<string, unknown>)['ok'], true)
+})

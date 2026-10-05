@@ -96,6 +96,52 @@ function intParam(url: URL, name: string): number | undefined {
  * @param runtime - 记忆运行时。
  * @returns 路由数组（尚未注册）。
  */
+/**
+ * 按 path 合并路由注册（**宿主的注册表按 path 唯一**）。
+ *
+ * 为什么需要它：`ctx.connection.fetch.register` 对同一个 path 注册两次会抛
+ * `exact Fetch route "..." is already registered`，而**那个异常会让整个面板插件都不激活**
+ * （用户看到的是"面板什么都没有"，而不是"某一条路由坏了"）。
+ *
+ * 我在真机启动时踩了这个坑：`/api/forlife/routes` 的读写分成了两条注册。
+ * 更糟的是——同一个错误在 `/qq/wake-rules`、`/admin/chat`、`/prompts` 上**早就存在**，
+ * 也就是说**面板插件从阶段 3 起就没成功激活过**。内存测试逐条取路由，所以一直没发现。
+ *
+ * 现在做成机械合并：同 path 的注册合成一条，methods 取并集，请求按 method 分派。
+ * 这样"读写分成两处写"仍然是自然的写法，而注册层不会再撞车。
+ *
+ * @param routes - 原始注册（可有重复 path）。
+ * @returns 合并后的注册。
+ */
+export function mergeRoutesByPath(routes: readonly PanelRoute[]): readonly PanelRoute[] {
+  const byPath = new Map<string, PanelRoute[]>()
+  for (const route of routes) {
+    const list = byPath.get(route.path) ?? []
+    list.push(route)
+    byPath.set(route.path, list)
+  }
+  const merged: PanelRoute[] = []
+  for (const [path, group] of byPath) {
+    if (group.length === 1) {
+      merged.push(group[0] as PanelRoute)
+      continue
+    }
+    const methods = [...new Set(group.flatMap((route) => route.methods))]
+    merged.push({
+      path,
+      methods,
+      fetch: async (request: Request): Promise<Response> => {
+        // 找**声明了该方法**的那一条；找不到就 405（而不是随便挑一条，那会让 GET 打到写路径上）
+        const handler = group.find((route) => route.methods.includes(request.method as 'GET' | 'HEAD' | 'POST'))
+        if (handler === undefined) {
+          return json({ ok: false, error: `${path} 不支持 ${request.method}` }, 405)
+        }
+        return await handler.fetch(request)
+      },
+    })
+  }
+  return merged
+}
 export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] {
   const get = (path: string, handler: (url: URL) => Response): PanelRoute => ({
     path,
@@ -109,7 +155,127 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
     },
   })
 
-  return [
+  /**
+   * 读路由页快照。
+   *
+   * 抽成局部函数而不是内联：因为宿主的注册表**按 path 唯一**，读写必须共用一条注册，
+   * 在 fetch 里按 method 分派（见下方注册块）。
+   *
+   * @returns 响应。
+   */
+  const readRoutes = (): Response => {
+  const entries = listModelRoutes(runtime.db)
+  const endpoints = listEndpoints(runtime.db)
+  const overview = endpointOverview(runtime.db)
+  const stats = routingStats(runtime.db, 24)
+  const uncertain = uncertainStats(runtime.db)
+
+  // 角色映射：每个角色一条有序候选链（面板就是编辑这个）
+  const roles = ROUTE_ROLES.map((role) => {
+    const candidates = entries
+      .filter((entry) => entry.role === role)
+      .sort((a, b) => a.rank - b.rank)
+      .map((entry) => ({
+        rank: entry.rank,
+        provider: entry.provider,
+        model: entry.model,
+        effort: entry.reasoning_effort,
+        enabled: entry.enabled === 1,
+        note: entry.note,
+        updatedAt: entry.updated_at,
+      }))
+    return { role, candidates, purpose: ROLE_PURPOSE[role as keyof typeof ROLE_PURPOSE] ?? undefined }
+  })
+
+  // 校验：把"保存即报错"的规则也算给面板看（不是等用户点保存才知道）
+  const devices = runtime.deviceProbe()
+  const issues = endpoints.flatMap((endpoint) =>
+    validateEndpoint(
+      {
+        id: endpoint.id,
+        type: endpoint.type as never,
+        mode: endpoint.mode as never,
+        backend: endpoint.backend as never,
+        baseUrl: endpoint.base_url,
+        models: JSON.parse(endpoint.models) as never[],
+      },
+      { devices },
+    ).map((issue) => ({ endpoint: endpoint.id, ...issue })),
+  )
+
+  return json({
+    ok: true,
+    roles,
+    endpoints: endpoints.map((endpoint) => ({
+      id: endpoint.id,
+      type: endpoint.type,
+      mode: endpoint.mode,
+      backend: endpoint.backend,
+      baseUrl: endpoint.base_url,
+      deployTarget: endpoint.deploy_target,
+      deployHost: endpoint.deploy_host,
+      models: JSON.parse(endpoint.models) as unknown[],
+      health: {
+        ok: endpoint.health_ok === 1,
+        checkedAt: endpoint.health_checked_at,
+        latencyMs: endpoint.health_latency_ms,
+        // **实际生效的后端**：有些镜像会静默回落到 CPU
+        effectiveBackend: endpoint.effective_backend,
+        note: endpoint.health_note,
+      },
+    })),
+    overview,
+    // 试跑：最近的真实延迟与是否降级（"一键试跑"的结果落在这里）
+    probe: runtime.probeHistory(),
+    stats,
+    uncertain,
+    devices,
+    issues,
+    tierOverride: runtime.tierOverride() ?? null,
+  })
+  }
+
+  /**
+   * 写一行角色候选（(role, rank) 唯一）。
+   *
+   * @param request - 请求。
+   * @returns 响应。
+   */
+  const writeRoute = async (request: Request): Promise<Response> => {
+    try {
+      const body = (await request.json()) as {
+        role?: unknown
+        rank?: unknown
+        provider?: unknown
+        model?: unknown
+        effort?: unknown
+        enabled?: unknown
+        note?: unknown
+      }
+      const role = typeof body.role === 'string' ? body.role : ''
+      if (!(ROUTE_ROLES as readonly string[]).includes(role)) {
+        return json({ ok: false, error: `role 必须是 ${ROUTE_ROLES.join(' / ')} 之一` }, 400)
+      }
+      const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
+      const model = typeof body.model === 'string' ? body.model.trim() : ''
+      if (provider === '' || model === '') return json({ ok: false, error: 'provider 与 model 必填' }, 400)
+
+      const id = upsertModelRoute(runtime.db, {
+        role,
+        rank: typeof body.rank === 'number' ? body.rank : 0,
+        provider,
+        model,
+        reasoningEffort: typeof body.effort === 'string' && body.effort !== '' ? body.effort : null,
+        enabled: body.enabled !== false,
+        note: typeof body.note === 'string' ? body.note : null,
+      })
+      return json({ ok: true, id })
+    } catch (error) {
+      return json({ ok: false, error: String(error) }, 400)
+    }
+  }
+
+  const declared: PanelRoute[] = [
     // 概览：epoch / revision / 条目数 / 渲染指纹 / 约束违反
     get('/api/forlife/state', () => json({ ok: true, ...runtime.stats(), dbPath: runtime.dbPath })),
 
@@ -269,117 +435,22 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
     }),
     // ── 阶段 5：模型与路由 ────────────────────────────────────────────────
 
-    // 聚合模型列表 + 角色映射 + 校验 + 试跑记录
-    get('/api/forlife/routes', () => {
-      const entries = listModelRoutes(runtime.db)
-      const endpoints = listEndpoints(runtime.db)
-      const overview = endpointOverview(runtime.db)
-      const stats = routingStats(runtime.db, 24)
-      const uncertain = uncertainStats(runtime.db)
-
-      // 角色映射：每个角色一条有序候选链（面板就是编辑这个）
-      const roles = ROUTE_ROLES.map((role) => {
-        const candidates = entries
-          .filter((entry) => entry.role === role)
-          .sort((a, b) => a.rank - b.rank)
-          .map((entry) => ({
-            rank: entry.rank,
-            provider: entry.provider,
-            model: entry.model,
-            effort: entry.reasoning_effort,
-            enabled: entry.enabled === 1,
-            note: entry.note,
-            updatedAt: entry.updated_at,
-          }))
-        return { role, candidates, purpose: ROLE_PURPOSE[role as keyof typeof ROLE_PURPOSE] ?? undefined }
-      })
-
-      // 校验：把"保存即报错"的规则也算给面板看（不是等用户点保存才知道）
-      const devices = runtime.deviceProbe()
-      const issues = endpoints.flatMap((endpoint) =>
-        validateEndpoint(
-          {
-            id: endpoint.id,
-            type: endpoint.type as never,
-            mode: endpoint.mode as never,
-            backend: endpoint.backend as never,
-            baseUrl: endpoint.base_url,
-            models: JSON.parse(endpoint.models) as never[],
-          },
-          { devices },
-        ).map((issue) => ({ endpoint: endpoint.id, ...issue })),
-      )
-
-      return json({
-        ok: true,
-        roles,
-        endpoints: endpoints.map((endpoint) => ({
-          id: endpoint.id,
-          type: endpoint.type,
-          mode: endpoint.mode,
-          backend: endpoint.backend,
-          baseUrl: endpoint.base_url,
-          deployTarget: endpoint.deploy_target,
-          deployHost: endpoint.deploy_host,
-          models: JSON.parse(endpoint.models) as unknown[],
-          health: {
-            ok: endpoint.health_ok === 1,
-            checkedAt: endpoint.health_checked_at,
-            latencyMs: endpoint.health_latency_ms,
-            // **实际生效的后端**：有些镜像会静默回落到 CPU
-            effectiveBackend: endpoint.effective_backend,
-            note: endpoint.health_note,
-          },
-        })),
-        overview,
-        // 试跑：最近的真实延迟与是否降级（"一键试跑"的结果落在这里）
-        probe: runtime.probeHistory(),
-        stats,
-        uncertain,
-        devices,
-        issues,
-        tierOverride: runtime.tierOverride() ?? null,
-      })
-    }),
-
-      // 角色映射编辑：写一行候选（(role, rank) 唯一）
-      {
-        path: '/api/forlife/routes',
-        methods: ['POST'],
-        fetch: async (request: Request): Promise<Response> => {
-          try {
-            const body = (await request.json()) as {
-              role?: unknown
-              rank?: unknown
-              provider?: unknown
-              model?: unknown
-              effort?: unknown
-              enabled?: unknown
-              note?: unknown
-            }
-            const role = typeof body.role === 'string' ? body.role : ''
-            if (!(ROUTE_ROLES as readonly string[]).includes(role)) {
-              return json({ ok: false, error: `role 必须是 ${ROUTE_ROLES.join(' / ')} 之一` }, 400)
-            }
-            const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
-            const model = typeof body.model === 'string' ? body.model.trim() : ''
-            if (provider === '' || model === '') return json({ ok: false, error: 'provider 与 model 必填' }, 400)
-
-            const id = upsertModelRoute(runtime.db, {
-              role,
-              rank: typeof body.rank === 'number' ? body.rank : 0,
-              provider,
-              model,
-              reasoningEffort: typeof body.effort === 'string' && body.effort !== '' ? body.effort : null,
-              enabled: body.enabled !== false,
-              note: typeof body.note === 'string' ? body.note : null,
-            })
-            return json({ ok: true, id })
-          } catch (error) {
-            return json({ ok: false, error: String(error) }, 400)
-          }
-        },
+    // 聚合模型列表 + 角色映射 + 校验 + 试跑记录（读）+ 写一行候选（写）。
+    //
+    // **读写必须合成一条注册**：宿主的 fetch 注册表按 **path 唯一**
+    // （不是 path+method），同 path 注册两次会抛
+    // `exact Fetch route "/api/forlife/routes" is already registered`，
+    // 而那个异常会让**整个面板插件都不激活**（真机启动时才暴露：
+    // 内存测试里我逐个取路由，撞车看不出来）。所以 methods 列全，在 fetch 里分派。
+    {
+      path: '/api/forlife/routes',
+      methods: ['GET', 'POST'],
+      fetch: async (request: Request): Promise<Response> => {
+        if (request.method === 'POST') return await writeRoute(request)
+        return readRoutes()
       },
+    },
+
 
       // 删一行候选。
       // 用 POST 而不是 DELETE：宿主的 fetch 注册表**只支持 GET/HEAD/POST**
@@ -829,6 +900,10 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
       },
     },
   ]
+
+  // 注册前统一合并：宿主的注册表**按 path 唯一**，同 path 注册两次会让
+  // **整个面板插件都不激活**（用户看到的是"什么都没有"）
+  return mergeRoutesByPath(declared)
 }
 
 /** 提示词变量的当前取值（面板预览要用真实值）。 */
@@ -884,6 +959,7 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
 
 
 
