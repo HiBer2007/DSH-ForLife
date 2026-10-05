@@ -248,6 +248,7 @@ test('时序串联：防抖把连发 5 条合成一批 → 一轮 → 一条回�
   assert.equal((JSON.parse(input_ids_of(turn)) as unknown[]).length, 5, '轮次要记录这 5 条的 id（可追溯）')
 })
 
+
 /** 断言轮次一定有 id（否则测试本身就失效了），并收窄类型供 SQL 使用。 */
 function requireTurnId(result: { readonly turnId?: string }): string {
   assert.ok(result.turnId !== undefined, '这一批必须产生轮次')
@@ -297,9 +298,57 @@ test('规则可调：模型把某群 @我 概率降到 0 ⇒ 不再唤醒（但�
   assert.equal(driver.requests.length, 0)
 })
 
+test('噪音过滤接入：整批闲聊不进模型、不占待读池（§8.5）', async () => {
+  const driver = new FakeTurnDriver(() => ({ segments: ['不该被调用'] }))
+  const runner = new TurnRunner({ db, driver, scopeOf: defaultScopeOf, conditionOf: defaultConditionOf, random: () => 0, log: () => {} })
+  // 群里的"嗯嗯"（两字以内、没被 @）⇒ 噪音
+  const result = await runner.handleBatch([inbound({ text: '嗯嗯', chatId: '77777', kind: 'group' })], new AbortController().signal)
+
+  assert.equal(result.woken, false)
+  assert.equal(result.reason, 'noise', '整批噪音应当直接被挡掉（连唤醒判定都不做）')
+  assert.equal(driver.requests.length, 0)
+  const pending = db.prepare('SELECT * FROM pending_messages WHERE conversation_key = ?').all('onebot11:77777') as unknown as unknown[]
+  assert.equal(pending.length, 0, '噪音不该占待读池 —— 不值得回复的消息也不值得记')
+})
+
+test('噪音过滤接入：混合批次只把非噪音送进模型', async () => {
+  const driver = new FakeTurnDriver((request) => {
+    return { segments: [], toolCalls: 0, tokensIn: 0, tokensOut: 0, ...(request.messages.length === 1 ? {} : { error: '应当只收到 1 条' }) }
+  })
+  const runner = new TurnRunner({ db, driver, scopeOf: defaultScopeOf, conditionOf: defaultConditionOf, random: () => 0.99, log: () => {} })
+  const result = await runner.handleBatch(
+    [
+      inbound({ text: '嗯', chatId: '66666', kind: 'group' }), // 噪音
+      inbound({ text: '@我 帮个忙', chatId: '66666', kind: 'group', mentionedMe: true }), // 真信号
+    ],
+    new AbortController().signal,
+  )
+  assert.equal(result.woken, true, '有真信号就该醒（噪音不该拖累判断）')
+  assert.equal(driver.requests[0]?.messages.length, 1, '送进模型的只应有非噪音那条')
+  assert.ok(driver.requests[0]?.prompt.includes('帮个忙'))
+  assert.ok(!driver.requests[0]?.prompt.includes('嗯'), '噪音不进提示词')
+})
+
+test('噪音过滤关掉时可放行（排障用）', async () => {
+  const driver = new FakeTurnDriver(() => ({ segments: [] }))
+  const runner = new TurnRunner({
+    db,
+    driver,
+    scopeOf: defaultScopeOf,
+    conditionOf: defaultConditionOf,
+    random: () => 0,
+    disableNoiseFilter: true,
+    log: () => {},
+  })
+  const result = await runner.handleBatch([inbound({ text: '嗯嗯', chatId: '55501', kind: 'private' })], new AbortController().signal)
+  assert.equal(result.reason !== 'noise', true, '关掉过滤后不该再判噪音')
+})
+
 test('出站队列：网关未认领前动作一直留在队列（不丢）', () => {
   const id = enqueueOutbound(db, { conversationKey: 'onebot11:10006', kind: 'text', payload: { segments: [{ kind: 'text', text: '排队中' }] } })
   assert.equal(getOutbound(db, id)?.status, 'pending')
   assert.equal(getOutbound(db, id)?.platform_msg_id, null)
 })
+
+
 

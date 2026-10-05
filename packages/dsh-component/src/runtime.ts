@@ -383,6 +383,22 @@ export class MemoryRuntime {
     )
   }
 
+  /**
+   * 当前正在处理的 QQ 会话（若有）。
+   *
+   * 用途：**溯源标记**（§2.17.5）。模型调 `remember` 时不必自己填 scope ——
+   * 它很可能不知道该填什么。运行时从"当前 running 轮次"推出会话键，
+   * 于是每条记忆天然带上"这是谁说的/在哪个群发生的"。
+   *
+   * 统一记忆、不做隔离：这个标记只用于标注来源与将来溯源自查，不用于隔离。
+   */
+  currentConversationScope(): string | undefined {
+    const row = this.db
+      .prepare("SELECT conversation_key FROM qq_turns WHERE status = 'running' ORDER BY started_at DESC LIMIT 1")
+      .get() as { conversation_key: string } | undefined
+    return row?.conversation_key
+  }
+
   /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
   resetCompactionAccounting(): void {
     const now = new Date().toISOString()
@@ -528,6 +544,7 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
 
 
 

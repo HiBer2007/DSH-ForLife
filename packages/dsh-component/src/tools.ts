@@ -54,7 +54,7 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
       summary: { type: 'string', required: true, description: '一句话摘要，自足、无指代。' },
       content: { type: 'string', description: '可选：需要保留的细节原文。' },
       entities: { type: 'array', items: { type: 'string' }, description: '可选：关键实体（人名/项目/技术名），最多 5 个。' },
-      scope: { type: 'string', description: '可选：来源范围标记，如 group:123456 或 private:10001。' },
+      scope: { type: 'string', description: '可选：来源标记。**一般不用填** —— 不填时会自动记为当前会话。' },
     },
     output: {
       schema: {
@@ -77,11 +77,14 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
       const a = args as { summary: string; content?: string; entities?: string[]; scope?: string }
       const entities = (a.entities ?? []).slice(0, 5)
       runtime.recordToolCall()
+      // 溯源：模型没显式给 scope 时，用"当前正在处理的 QQ 会话"——
+      // 它多半不知道该填什么，而这条信息对将来回溯"这话是谁说的"很关键。
+      const sourceScope = a.scope ?? runtime.currentConversationScope() ?? null
       const result = runtime.append({
         summary: a.summary,
         ...(a.content === undefined ? {} : { content: a.content }),
         entities,
-        sourceScope: a.scope ?? null,
+        sourceScope,
       })
       const stats = runtime.stats()
       return {
@@ -149,12 +152,13 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
       const a = args as { entries: { summary: string; content?: string; entities?: string[] }[]; scope?: string }
       const added: { id: string; windowOffset: number; tokenCount: number }[] = []
       let revision = runtime.revision()
+      const batchScope = a.scope ?? runtime.currentConversationScope() ?? null
       for (const entry of a.entries) {
         const result = runtime.append({
           summary: entry.summary,
           ...(entry.content === undefined ? {} : { content: entry.content }),
           entities: (entry.entities ?? []).slice(0, 5),
-          sourceScope: a.scope ?? null,
+          sourceScope: batchScope,
         })
         added.push({ id: result.id, windowOffset: result.windowOffset, tokenCount: result.tokenCount })
         revision = result.revision
@@ -364,5 +368,6 @@ function parseEntities(raw: string | null): readonly string[] {
 
 /** 工具名清单（测试与文档引用同一份，避免写错）。 */
 export const MEMORY_TOOL_NAMES = ['remember', 'push_mid_memory', 'recall_longterm', 'recall_full', 'request_compaction'] as const
+
 
 

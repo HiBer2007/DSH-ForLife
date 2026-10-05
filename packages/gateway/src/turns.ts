@@ -27,6 +27,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { nowIso } from '@forlife/store'
 
+import { classifyNoise, type NoiseFilterOptions, type NoiseVerdict } from './timing.ts'
 import { decideWake, type WakeRequest } from './wake.ts'
 import type { ConversationRef, InboundMessage } from './transport.ts'
 import { conversationKey } from './transport.ts'
@@ -153,6 +154,10 @@ export interface TurnRunnerOptions {
   readonly random?: () => number
   /** 未读摘要提供者（唤醒提示里带上"你错过了什么"）。 */
   readonly unreadSummaryOf?: (scope: string) => string | undefined
+  /** 噪音过滤选项（§8.5：不值得回复的消息，也不值得进记忆系统）。 */
+  readonly noise?: NoiseFilterOptions
+  /** 关掉噪音过滤（默认开启；关掉只用于排障）。 */
+  readonly disableNoiseFilter?: boolean
 }
 
 /** 一轮的处理结果。 */
@@ -169,6 +174,8 @@ export interface TurnRunResult {
 export class TurnRunner {
   private readonly options: TurnRunnerOptions
   private readonly log: (message: string) => void
+  /** 最近一批被过滤掉的噪音条数（诊断用）。 */
+  private lastNoiseCount = 0
 
   constructor(options: TurnRunnerOptions) {
     this.options = options
@@ -186,10 +193,40 @@ export class TurnRunner {
     const first = messages[0]
     if (first === undefined) return { woken: false, reason: 'empty-batch' }
 
+    // ① 噪音过滤（§8.5）：在**队列层**就把纯闲聊挡在 DSH 之外 ——
+    //    "不值得回复的消息，也不值得进记忆系统"。被过滤掉的不进提示词、也不进待读池。
+    const survivors: InboundMessage[] = []
+    const filtered: { message: InboundMessage; verdict: NoiseVerdict }[] = []
+    for (const message of messages) {
+      const verdict =
+        this.options.disableNoiseFilter === true
+          ? ({ noise: false } as NoiseVerdict)
+          : classifyNoise(
+              {
+                text: message.text,
+                isGroup: message.conversation.kind === 'group',
+                mentionedMe: message.mentionedMe,
+                mentionedAll: message.mentionedAll,
+                isPoke: message.isPoke,
+                mediaKind: message.mediaKind ?? null,
+                senderId: message.senderId,
+              },
+              this.options.noise ?? {},
+            )
+      if (verdict.noise) filtered.push({ message, verdict })
+      else survivors.push(message)
+    }
+    this.lastNoiseCount = filtered.length
+    if (survivors.length === 0) {
+      this.log(`整批都是噪音（${filtered.map((f) => f.verdict.rule ?? '?').join(',')}），不进记忆也不占待读池`)
+      return { woken: false, reason: 'noise' }
+    }
+    const effective = survivors
+
     const scope = this.options.scopeOf(first.conversation)
-    const condition = this.options.conditionOf(messages)
+    const condition = this.options.conditionOf(effective)
     const key = conversationKey(first.conversation)
-    const summary = messages.map((m) => `${m.senderName || m.senderId}: ${m.text}`).join(' / ')
+    const summary = effective.map((m) => `${m.senderName || m.senderId}: ${m.text}`).join(' / ')
 
     const verdict = decideWake(
       this.options.db,
@@ -208,15 +245,15 @@ export class TurnRunner {
         `INSERT INTO qq_turns (id, conversation_key, status, started_at, ended_at, session_id, model, input_ids, tokens_in, tokens_out, tool_calls, defer_reason, defer_until, error)
          VALUES (?, ?, 'running', ?, NULL, NULL, NULL, ?, 0, 0, 0, NULL, NULL, NULL)`,
       )
-      .run(turnId, key, startedAt, JSON.stringify(messages.map((m) => m.messageId)))
+      .run(turnId, key, startedAt, JSON.stringify(effective.map((m) => m.messageId)))
 
-    const prompt = buildTurnPrompt(messages, {
+    const prompt = buildTurnPrompt(effective, {
       ...(this.options.unreadSummaryOf?.(scope) === undefined ? {} : { unreadSummary: this.options.unreadSummaryOf?.(scope) as string }),
-      ...(latestAt(messages) === undefined ? {} : { lastInteractionAt: latestAt(messages) as string }),
+      ...(latestAt(effective) === undefined ? {} : { lastInteractionAt: latestAt(effective) as string }),
     })
 
     try {
-      const outcome = await this.options.driver.run({ turnId, conversation: first.conversation, messages, prompt, signal })
+      const outcome = await this.options.driver.run({ turnId, conversation: first.conversation, messages: effective, prompt, signal })
       this.finishTurn(turnId, outcome)
       return { turnId, woken: true, reason: 'matched', outcome }
     } catch (error) {
@@ -283,3 +320,4 @@ export function defaultScopeOf(conversation: ConversationRef): string {
   if (conversation.kind === 'group') return `group:${conversation.chatId}`
   return `private:${conversation.chatId}`
 }
+
