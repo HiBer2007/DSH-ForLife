@@ -52,6 +52,7 @@ export {
   emptyDeviceProbe,
   ENDPOINT_TYPES,
   planBackend,
+  probeDevices,
   RUN_MODES,
   suggestBackend,
   suggestSizing,
@@ -69,6 +70,7 @@ export type {
   EndpointType,
   InferenceEndpoint,
   ModelCapability,
+  ProbePort,
   Quantization,
   RunMode,
   SizingAdvice,
@@ -142,3 +144,4 @@ export type {
   SubagentAssignment,
   SubagentRole,
 } from './subagents.ts'
+

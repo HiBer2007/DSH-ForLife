@@ -34,6 +34,8 @@ import {
 } from '@forlife/memory-core'
 import { defaultFor } from '@forlife/contracts'
 import { cacheCurve, expectedMisses, judgeCache, summarizeCache } from '@forlife/memory-core'
+import { ROUTE_ROLES, ROLE_PURPOSE, RUN_MODES, validateEndpoint } from '@forlife/router'
+import { deleteModelRoute, endpointOverview, getEndpoint, listEndpoints, listModelRoutes, routingStats, uncertainStats, upsertModelRoute } from '@forlife/store'
 import { lastCacheUsageAt, listCacheUsage, listTimeDrift, listTimeReadings, timeDriftStats, timeReadingStats, timeReadingTokens } from '@forlife/store'
 
 import type { MemoryRuntime } from './runtime.ts'
@@ -265,6 +267,178 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
         })),
       })
     }),
+    // ── 阶段 5：模型与路由 ────────────────────────────────────────────────
+
+    // 聚合模型列表 + 角色映射 + 校验 + 试跑记录
+    get('/api/forlife/routes', () => {
+      const entries = listModelRoutes(runtime.db)
+      const endpoints = listEndpoints(runtime.db)
+      const overview = endpointOverview(runtime.db)
+      const stats = routingStats(runtime.db, 24)
+      const uncertain = uncertainStats(runtime.db)
+
+      // 角色映射：每个角色一条有序候选链（面板就是编辑这个）
+      const roles = ROUTE_ROLES.map((role) => {
+        const candidates = entries
+          .filter((entry) => entry.role === role)
+          .sort((a, b) => a.rank - b.rank)
+          .map((entry) => ({
+            rank: entry.rank,
+            provider: entry.provider,
+            model: entry.model,
+            effort: entry.reasoning_effort,
+            enabled: entry.enabled === 1,
+            note: entry.note,
+            updatedAt: entry.updated_at,
+          }))
+        return { role, candidates, purpose: ROLE_PURPOSE[role as keyof typeof ROLE_PURPOSE] ?? undefined }
+      })
+
+      // 校验：把"保存即报错"的规则也算给面板看（不是等用户点保存才知道）
+      const devices = runtime.deviceProbe()
+      const issues = endpoints.flatMap((endpoint) =>
+        validateEndpoint(
+          {
+            id: endpoint.id,
+            type: endpoint.type as never,
+            mode: endpoint.mode as never,
+            backend: endpoint.backend as never,
+            baseUrl: endpoint.base_url,
+            models: JSON.parse(endpoint.models) as never[],
+          },
+          { devices },
+        ).map((issue) => ({ endpoint: endpoint.id, ...issue })),
+      )
+
+      return json({
+        ok: true,
+        roles,
+        endpoints: endpoints.map((endpoint) => ({
+          id: endpoint.id,
+          type: endpoint.type,
+          mode: endpoint.mode,
+          backend: endpoint.backend,
+          baseUrl: endpoint.base_url,
+          deployTarget: endpoint.deploy_target,
+          deployHost: endpoint.deploy_host,
+          models: JSON.parse(endpoint.models) as unknown[],
+          health: {
+            ok: endpoint.health_ok === 1,
+            checkedAt: endpoint.health_checked_at,
+            latencyMs: endpoint.health_latency_ms,
+            // **实际生效的后端**：有些镜像会静默回落到 CPU
+            effectiveBackend: endpoint.effective_backend,
+            note: endpoint.health_note,
+          },
+        })),
+        overview,
+        // 试跑：最近的真实延迟与是否降级（"一键试跑"的结果落在这里）
+        probe: runtime.probeHistory(),
+        stats,
+        uncertain,
+        devices,
+        issues,
+        tierOverride: runtime.tierOverride() ?? null,
+      })
+    }),
+
+      // 角色映射编辑：写一行候选（(role, rank) 唯一）
+      {
+        path: '/api/forlife/routes',
+        methods: ['POST'],
+        fetch: async (request: Request): Promise<Response> => {
+          try {
+            const body = (await request.json()) as {
+              role?: unknown
+              rank?: unknown
+              provider?: unknown
+              model?: unknown
+              effort?: unknown
+              enabled?: unknown
+              note?: unknown
+            }
+            const role = typeof body.role === 'string' ? body.role : ''
+            if (!(ROUTE_ROLES as readonly string[]).includes(role)) {
+              return json({ ok: false, error: `role 必须是 ${ROUTE_ROLES.join(' / ')} 之一` }, 400)
+            }
+            const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
+            const model = typeof body.model === 'string' ? body.model.trim() : ''
+            if (provider === '' || model === '') return json({ ok: false, error: 'provider 与 model 必填' }, 400)
+
+            const id = upsertModelRoute(runtime.db, {
+              role,
+              rank: typeof body.rank === 'number' ? body.rank : 0,
+              provider,
+              model,
+              reasoningEffort: typeof body.effort === 'string' && body.effort !== '' ? body.effort : null,
+              enabled: body.enabled !== false,
+              note: typeof body.note === 'string' ? body.note : null,
+            })
+            return json({ ok: true, id })
+          } catch (error) {
+            return json({ ok: false, error: String(error) }, 400)
+          }
+        },
+      },
+
+      // 删一行候选。
+      // 用 POST 而不是 DELETE：宿主的 fetch 注册表**只支持 GET/HEAD/POST**
+      // （见 PanelRoute 的 methods 联合类型），DELETE 注册不上去。
+      {
+        path: '/api/forlife/routes/delete',
+        methods: ['POST'],
+        fetch: async (request: Request): Promise<Response> => {
+          try {
+            const body = (await request.json()) as { role?: unknown; rank?: unknown }
+            const role = typeof body.role === 'string' ? body.role : ''
+            if (role === '') return json({ ok: false, error: '缺少 role' }, 400)
+            const rank = typeof body.rank === 'number' ? body.rank : 0
+            const removed = deleteModelRoute(runtime.db, role, rank)
+            return removed ? json({ ok: true }) : json({ ok: false, error: '没有这一行' }, 404)
+          } catch (error) {
+            return json({ ok: false, error: String(error) }, 400)
+          }
+        },
+      },
+
+      // 运行模式切换（排水 + 回滚在 runtime 里做；这里只暴露意图与结果）
+      {
+        path: '/api/forlife/routes/mode',
+        methods: ['POST'],
+        fetch: async (request: Request): Promise<Response> => {
+          try {
+            const body = (await request.json()) as { endpointId?: unknown; mode?: unknown; reason?: unknown }
+            const endpointId = typeof body.endpointId === 'string' ? body.endpointId : ''
+            const mode = typeof body.mode === 'string' ? body.mode : ''
+            if (endpointId === '' || mode === '') return json({ ok: false, error: 'endpointId 与 mode 必填' }, 400)
+            if (!RUN_MODES.includes(mode as never)) return json({ ok: false, error: `mode 必须是 ${RUN_MODES.join(' / ')} 之一` }, 400)
+            if (getEndpoint(runtime.db, endpointId) === undefined) return json({ ok: false, error: '端点不存在' }, 404)
+            const reason = typeof body.reason === 'string' && body.reason !== '' ? body.reason : '面板手动切换'
+            const result = await runtime.switchEndpointMode(endpointId, mode as never, reason)
+            // result 里已经有 ok，不要再手写一个（TS 会警告，而且真写错时是静默覆盖）
+            return json(result)
+          } catch (error) {
+            return json({ ok: false, error: String(error) }, 400)
+          }
+        },
+      },
+
+      // 一键试跑：真发一次最小请求，记录真实延迟与**实际生效的后端**
+      {
+        path: '/api/forlife/routes/probe',
+        methods: ['POST'],
+        fetch: async (request: Request): Promise<Response> => {
+          try {
+            const body = (await request.json()) as { endpointId?: unknown; model?: unknown }
+            const endpointId = typeof body.endpointId === 'string' ? body.endpointId : ''
+            if (endpointId === '') return json({ ok: false, error: 'endpointId 必填' }, 400)
+            const result = await runtime.probeEndpoint(endpointId, typeof body.model === 'string' ? body.model : undefined)
+            return json(result)
+          } catch (error) {
+            return json({ ok: false, error: String(error) }, 400)
+          }
+        },
+      },
     // 健康与契约信息（面板首页用）
     get('/api/forlife/health', () => json({ ok: true, contracts: contractsSummary(), dbPath: runtime.dbPath })),
 
@@ -710,6 +884,10 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
+
+
+
 
 
 

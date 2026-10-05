@@ -125,9 +125,12 @@ export {
   deleteEndpoint,
   endpointOverview,
   getEndpoint,
+  lastEndpointProbe,
+  listEndpointProbes,
   listEndpoints,
   listModeSwitches,
   recordEndpointHealth,
+  recordEndpointProbe,
   recordModeSwitch,
   setEndpointMode,
   upsertEndpoint,
@@ -144,4 +147,5 @@ export {
   visionStats,
 } from './vision.ts'
 export type { ImageDescriptionRow } from './vision.ts'
+
 

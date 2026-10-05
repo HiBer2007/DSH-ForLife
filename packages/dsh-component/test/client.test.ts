@@ -61,6 +61,9 @@ function loadClientModule(): {
     previewPrompt: (slug: string, text: string) => Promise<Record<string, unknown>>
     savePrompt: (slug: string, text: string) => Promise<Record<string, unknown>>
     rollbackPromptRevision: (revisionId: string) => Promise<Record<string, unknown>>
+    RoutesPanel: () => unknown
+    fetchRoutesSnapshot: (signal?: AbortSignal) => Promise<Record<string, unknown>>
+    describeRoutes: (snapshot: unknown) => PanelNodeLike
   }
   jsxCalls: { type: string; props: unknown }[]
 } {
@@ -131,9 +134,17 @@ test('注册契约：先 slots.inject 等声明，再 register 到 settings.sect
   exports.apply(ctx)
 
   assert.deepEqual([...new Set(injected)], ['settings.section'], '必须用 inject 等槽位声明（直接 register 到未声明槽会抛错）')
-  // 两个区块：「记忆」看记忆本体，「QQ 与后台」看网关与人类直发通道。
+  // 四个区块：「记忆」看记忆本体，「QQ 与后台」看网关与人类直发通道，
+  // 「提示词」编辑人设与风格，「模型与路由」管模型供应。
   // 刻意分别注册而不是塞进一个区块 —— 使用场景不同，混在一起两边都难用。
-  assert.equal(registered.length, 3, '应当注册三个设置区块：记忆 / QQ 与后台 / 提示词')
+  //
+  // 断言**包含关系**而不是数量：这是第四次踩"数量断言"的坑了
+  // （每加一个区块就要改一次测试 ⇒ 改多了人会闭眼改 ⇒ 断言失去意义）。
+  const sectionIds = new Set(registered.map((entry) => String(entry.options['id'])))
+  for (const required of ['forlife-memory', 'forlife-qq', 'forlife-prompts', 'forlife-routes']) {
+    assert.ok(sectionIds.has(required), `必须注册区块 ${required}`)
+  }
+  assert.equal(registered.length, sectionIds.size, '不该注册重复 id 的区块')
   const byId = new Map(registered.map((entry) => [String(entry.options['id']), entry]))
   assert.deepEqual(byId.get('forlife-memory')?.options, {
     name: 'settings.section',
@@ -486,3 +497,74 @@ test('面板组件：加载中状态返回提示文本', () => {
 
 
 
+
+// ── 阶段 5：模型与路由页 ───────────────────────────────────────────────────
+
+test('渲染内容：路由页（端点概览、角色映射、校验问题、实际后端不一致）', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describeRoutes({
+    ok: true,
+    roles: [
+      {
+        role: 'vision',
+        purpose: '视觉桥接：必须用声明了 image 能力的模型',
+        candidates: [{ rank: 0, provider: 'vlm', model: 'vl-7b', effort: null, enabled: true, note: '看图' }],
+      },
+      { role: 'embedding', purpose: '向量', candidates: [] },
+    ],
+    endpoints: [
+      {
+        id: 'ep-local',
+        type: 'local',
+        mode: 'resident',
+        backend: 'cuda',
+        baseUrl: 'http://127.0.0.1:8080/v1',
+        deployTarget: 'local-docker',
+        deployHost: null,
+        models: [{ id: 'qwen' }],
+        health: { ok: true, checkedAt: '2026-10-05T12:00:00.000Z', latencyMs: 12, effectiveBackend: 'cpu', note: '镜像回落到 CPU' },
+      },
+    ],
+    overview: { total: 1, backendMismatch: [{ id: 'ep-local', declared: 'cuda', effective: 'cpu' }] },
+    probe: [{ at: '2026-10-05T12:00:00.000Z', endpointId: 'ep-local', ok: true, latencyMs: 12, note: '延迟 12ms' }],
+    stats: { total: 20, degradedRate: 0.2 },
+    uncertain: { pending: 3 },
+    devices: { renderNodes: ['/dev/dri/renderD128'], nvidia: false, rocm: false, intel: false, vulkan: true },
+    issues: [{ endpoint: 'ep-local', field: 'backend', message: '目标机没有可用的 NVIDIA 设备', severity: 'error' }],
+    tierOverride: { tier: 'L3', reason: '架构设计' },
+  })
+  const all = texts(panel).join(' ')
+  for (const expected of [
+    '模型与路由',
+    '降级率',
+    '手动切到 L3',
+    '设备探测',
+    '/dev/dri/renderD128',
+    '校验问题',
+    'NVIDIA',
+    '实际生效后端',
+    'ep-local',
+    '镜像回落到 CPU',
+    '视觉桥接',
+    '还没有配置候选模型',
+    '试跑记录',
+    '12ms',
+  ]) {
+    assert.ok(all.includes(expected), `路由页应显示「${expected}」，实际：${all.slice(0, 400)}`)
+  }
+})
+
+test('渲染内容：路由页没有端点时给出可执行的下一步（而不是空白）', () => {
+  const { exports } = loadClientModule()
+  const text = texts(exports.describeRoutes({ ok: true, roles: [], endpoints: [], overview: {}, stats: {}, devices: {}, issues: [], probe: [], uncertain: {}, tierOverride: null })).join(' ')
+  assert.ok(text.includes('还没有登记任何推理端点'))
+  assert.ok(text.includes('外挂自建'), '要告诉用户"不需要本地部署也能开始"')
+  assert.ok(text.includes('自动判定'))
+})
+
+test('渲染内容：路由读取失败时如实报错（不装作没事）', () => {
+  const { exports } = loadClientModule()
+  const text = texts(exports.describeRoutes({ ok: false, error: 'HTTP 500' })).join(' ')
+  assert.ok(text.includes('读取路由失败'))
+  assert.ok(text.includes('HTTP 500'))
+})

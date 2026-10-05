@@ -872,6 +872,40 @@ CREATE INDEX IF NOT EXISTS idx_vision_calls_attachment ON vision_call_log (attac
 
 const m0015Checksum = createHash('sha256').update(m0015.sql).digest('hex')
 
+/**
+ * 迁移 16：端点探测日志（阶段 5 交付物 7 的"一键试跑"）。
+ *
+ * 为什么单独一张表：试跑结果**不是**模式切换，塞进 `endpoint_mode_audit` 是错的
+ * （我第一版那么干过，结果查了一个不存在的列，面板直接 500）。
+ * 两类事件的语义完全不同：一个是"改了运行模式"，一个是"测了一下健不健康"。
+ *
+ * `models_json` 存这次探到的模型列表 —— 用来发现"这个端点其实还有别的模型"
+ * （以及验证模型发现机制真的在工作）。
+ */
+const m0016 = {
+  version: 16,
+  name: '0016_endpoint_probes',
+  sql: `
+CREATE TABLE IF NOT EXISTS endpoint_probe_log (
+  id          TEXT PRIMARY KEY,
+  at          TEXT NOT NULL,
+  endpoint_id TEXT NOT NULL,
+  model       TEXT,
+  ok          INTEGER NOT NULL,
+  latency_ms  INTEGER,
+  note        TEXT,
+  models_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_probe_endpoint ON endpoint_probe_log (endpoint_id, at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0016.sql)
+  },
+} as const
+
+const m0016Checksum = createHash('sha256').update(m0016.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -964,10 +998,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0015Checksum,
     up: m0015.up,
   },
+  {
+    version: m0016.version,
+    name: m0016.name,
+    checksum: m0016Checksum,
+    up: m0016.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

@@ -218,6 +218,48 @@ export function endpointOverview(db: DatabaseSync): {
     .all() as unknown as { id: string; declared: string; effective: string }[]
   return { total, byType, byMode, unhealthy, backendMismatch }
 }
+// ── 探测日志（"一键试跑"的结果） ────────────────────────────────────────────
 
+/** 记一次端点探测。 */
+export function recordEndpointProbe(
+  db: DatabaseSync,
+  input: {
+    readonly endpointId: string
+    readonly model?: string | null
+    readonly ok: boolean
+    readonly latencyMs?: number | null
+    readonly note?: string | null
+    readonly models?: readonly string[]
+  },
+): string {
+  const id = `pr_${randomUUID()}`
+  db.prepare(
+    `INSERT INTO endpoint_probe_log (id, at, endpoint_id, model, ok, latency_ms, note, models_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    nowIso(),
+    input.endpointId,
+    input.model ?? null,
+    input.ok ? 1 : 0,
+    input.latencyMs ?? null,
+    input.note ?? null,
+    input.models === undefined ? null : JSON.stringify(input.models),
+  )
+  return id
+}
 
+/** 最近的探测记录。 */
+export function listEndpointProbes(db: DatabaseSync, limit = 20): readonly Record<string, unknown>[] {
+  return db.prepare('SELECT * FROM endpoint_probe_log ORDER BY at DESC, rowid DESC LIMIT ?').all(limit) as unknown as Record<
+    string,
+    unknown
+  >[]
+}
 
+/** 某端点的最近一次探测。 */
+export function lastEndpointProbe(db: DatabaseSync, endpointId: string): Record<string, unknown> | undefined {
+  return db.prepare('SELECT * FROM endpoint_probe_log WHERE endpoint_id = ? ORDER BY at DESC, rowid DESC LIMIT 1').get(endpointId) as
+    | Record<string, unknown>
+    | undefined
+}

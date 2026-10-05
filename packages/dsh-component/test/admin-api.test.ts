@@ -507,3 +507,114 @@ test('时间：按会话时区与漂移统计都要能看到', async () => {
   assert.ok((body['recentDrift'] as Record<string, unknown>[]).some((d) => d['severity'] === 'bad'))
 })
 
+
+// ── 阶段 5：模型与路由接口 ─────────────────────────────────────────────────
+
+test('路由页：七个角色都在，且每个角色带用途说明（让人理解为什么用便宜/强模型）', async () => {
+  const body = await get('/api/forlife/routes')
+  assert.equal(body['ok'], true)
+  const roles = body['roles'] as Record<string, unknown>[]
+  assert.equal(roles.length, 7)
+  for (const role of roles) {
+    assert.ok(typeof role['role'] === 'string')
+    assert.ok(Array.isArray(role['candidates']))
+  }
+  // 视觉与嵌入角色要有用途说明（面板要能解释"这个角色是干什么的"）
+  const vision = roles.find((item) => item['role'] === 'vision')
+  assert.match(String(vision?.['purpose']), /image/)
+})
+
+test('路由页：写一行候选（(role, rank) upsert）并按 rank 排序返回', async () => {
+  const created = await post('/api/forlife/routes', { role: 'L2', rank: 0, provider: 'main-a', model: 'mid', effort: 'medium' })
+  assert.equal(created.body['ok'], true)
+  await post('/api/forlife/routes', { role: 'L2', rank: 1, provider: 'main-b', model: 'mid-backup' })
+
+  const body = await get('/api/forlife/routes')
+  const l2 = (body['roles'] as Record<string, unknown>[]).find((item) => item['role'] === 'L2')
+  const candidates = l2?.['candidates'] as Record<string, unknown>[]
+  assert.equal(candidates.length, 2)
+  assert.equal(candidates[0]?.['provider'], 'main-a')
+  assert.equal(candidates[1]?.['provider'], 'main-b')
+})
+
+test('路由页：非法 role / 缺 provider 都要 400（校验在保存时，不在运行期）', async () => {
+  const badRole = await post('/api/forlife/routes', { role: 'L9', rank: 0, provider: 'p', model: 'm' })
+  assert.equal(badRole.body['ok'], false)
+  assert.match(String(badRole.body['error']), /role 必须是/)
+  const missing = await post('/api/forlife/routes', { role: 'L1', rank: 0, provider: '', model: '' })
+  assert.equal(missing.body['ok'], false)
+  assert.match(String(missing.body['error']), /必填/)
+})
+
+test('路由页：删行用 POST（宿主的 fetch 注册表只支持 GET/HEAD/POST）', async () => {
+  await post('/api/forlife/routes', { role: 'L1', rank: 0, provider: 'x', model: 'y' })
+  const removed = await post('/api/forlife/routes/delete', { role: 'L1', rank: 0 })
+  assert.equal(removed.body['ok'], true)
+  const again = await post('/api/forlife/routes/delete', { role: 'L1', rank: 0 })
+  assert.equal(again.body['ok'], false)
+  assert.match(String(again.body['error']), /没有这一行/)
+})
+
+test('路由页：设备探测结果与校验问题都要给出来', async () => {
+  const body = await get('/api/forlife/routes')
+  const devices = body['devices'] as Record<string, unknown>
+  assert.ok(typeof devices['nvidia'] === 'boolean')
+  assert.ok(Array.isArray(devices['renderNodes']))
+  assert.ok(Array.isArray(body['issues']))
+  // 降级率与不确定案例也要能看见
+  assert.ok(typeof (body['stats'] as Record<string, unknown>)['degradedRate'] === 'number')
+  assert.ok(typeof (body['uncertain'] as Record<string, unknown>)['pending'] === 'number')
+})
+
+test('路由页：试跑端点会记录真实延迟（端点不存在时如实报错）', async () => {
+  const missing = await post('/api/forlife/routes/probe', { endpointId: 'nope' })
+  assert.equal(missing.body['ok'], false)
+  assert.match(String(missing.body['error']), /端点不存在/)
+})
+
+test('路由页：模式切换对不存在的端点/非法模式都要拦住', async () => {
+  const noEndpoint = await post('/api/forlife/routes/mode', { endpointId: 'nope', mode: 'resident' })
+  assert.equal(noEndpoint.body['ok'], false)
+  assert.match(String(noEndpoint.body['error']), /端点不存在/)
+
+  const badMode = await post('/api/forlife/routes/mode', { endpointId: 'nope', mode: 'teleport' })
+  assert.equal(badMode.body['ok'], false)
+  assert.match(String(badMode.body['error']), /mode 必须是/)
+})
+
+test('路由页：容器端点没有执行器时**明确失败**，绝不假装切成功', async () => {
+  const { upsertEndpoint } = await import('@forlife/store')
+  upsertEndpoint(runtime.db, {
+    id: 'ep-container',
+    type: 'local',
+    mode: 'resident',
+    backend: 'cpu',
+    baseUrl: 'http://127.0.0.1:8099/v1',
+    models: [],
+  })
+  const result = await post('/api/forlife/routes/mode', { endpointId: 'ep-container', mode: 'on-demand', reason: '省内存' })
+  assert.equal(result.body['ok'], false)
+  assert.match(String(result.body['note']), /需要容器执行器/)
+  assert.match(String(result.body['note']), /没有假装切成功/)
+
+  // 而且模式**真的没变**（假装成功会让面板显示"已按需"而容器还在占内存）
+  const { getEndpoint } = await import('@forlife/store')
+  assert.equal(getEndpoint(runtime.db, 'ep-container')?.mode, 'resident')
+})
+
+test('路由页：云端点（不需要容器）的模式切换是真的生效并留审计', async () => {
+  const { upsertEndpoint, getEndpoint, listModeSwitches } = await import('@forlife/store')
+  upsertEndpoint(runtime.db, {
+    id: 'ep-cloud-x',
+    type: 'cloud-api',
+    mode: 'remote-api',
+    backend: 'cpu',
+    baseUrl: 'https://api.example.test/v1',
+    models: [],
+  })
+  const result = await post('/api/forlife/routes/mode', { endpointId: 'ep-cloud-x', mode: 'host-native', reason: '改用宿主内置模型' })
+  assert.equal(result.body['ok'], true)
+  assert.equal(getEndpoint(runtime.db, 'ep-cloud-x')?.mode, 'host-native')
+  assert.ok(listModeSwitches(runtime.db, 'ep-cloud-x').length >= 1, '切换要留审计')
+})
+

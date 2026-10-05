@@ -25,6 +25,12 @@ import {
   setConversationClock,
 } from '@forlife/store'
 
+import { execFileSync } from 'node:child_process'
+import { existsSync, readdirSync } from 'node:fs'
+
+import { probeDevices, switchMode, type DeviceProbe, type RunMode } from '@forlife/router'
+import { getEndpoint, listEndpointProbes, recordEndpointHealth, recordEndpointProbe, recordModeSwitch, setEndpointMode } from '@forlife/store'
+
 import { defaultClockConfig } from './clock-tools.ts'
 import { activePrompt, type PromptSlug } from './prompt-store.ts'
 import {
@@ -623,6 +629,193 @@ export class MemoryRuntime {
     return listModelRoutes(this.db, role)
   }
 
+  // ── 阶段 5：端点探测、试跑与模式切换 ────────────────────────────────────
+
+  /** 设备探测结果缓存（探测要跑外部命令，不能每轮都跑）。 */
+  private deviceProbeCache: DeviceProbe | undefined
+
+  /**
+   * 探测宿主的加速能力（**懒执行 + 缓存**）。
+   *
+   * 为什么懒执行：nvidia-smi / clinfo 之类要几十到几百毫秒，
+   * 放在启动路径上会让每次开插件都变慢；而只有在"模型与路由"页真的要看的时候才需要它。
+   * 探测结果是**建议**不是判决 —— 面板上可以手动覆盖。
+   */
+  deviceProbe(): DeviceProbe {
+    if (this.deviceProbeCache !== undefined) return this.deviceProbeCache
+    const probed = probeDevices({
+      platform: process.platform,
+      exists: (path) => existsSync(path),
+      listDir: (path) => {
+        try {
+          return readdirSync(path)
+        } catch {
+          return []
+        }
+      },
+      run: (command, args) => {
+        try {
+          // 短超时：探测命令挂住会拖死面板请求
+          const stdout = execFileSync(command, [...args], { encoding: 'utf8', timeout: 3_000, stdio: ['ignore', 'pipe', 'ignore'] })
+          return { ok: true, stdout }
+        } catch {
+          return { ok: false, stdout: '' }
+        }
+      },
+    })
+    this.deviceProbeCache = probed
+    return probed
+  }
+
+  /** 试跑历史（面板显示"上次试跑真实延迟是多少"）。 */
+  probeHistory(): readonly { readonly at: string; readonly endpointId: string; readonly ok: boolean; readonly latencyMs: number | null; readonly note: string | null }[] {
+    // 读**专门的探测日志表**：第一版我从模式切换审计里捞，结果查了一个不存在的列
+    // （试跑结果和模式切换是两类事件，塞一张表里迟早出这种事）
+    return listEndpointProbes(this.db, 10).map((row) => ({
+      at: String(row['at']),
+      endpointId: String(row['endpoint_id']),
+      ok: row['ok'] === 1,
+      latencyMs: row['latency_ms'] === null ? null : Number(row['latency_ms']),
+      note: row['note'] === null ? null : String(row['note']),
+    }))
+  }
+
+  /**
+   * 切换端点的运行模式（幂等 + 排水 + 失败回滚 + 审计，§2.13.2）。
+   *
+   * **诚实说明**：真正把容器停下/拉起需要容器执行器（阶段 10 的部署接线）。
+   * 对不需要容器的端点（cloud-api / host-native / external-api）这里就是纯粹的登记切换；
+   * 对本地容器端点，如果没有接上执行器，会**明确失败**而不是假装切成功 ——
+   * 假装成功会让面板显示"已按需"，而容器其实还在占内存。
+   *
+   * @param endpointId - 端点 id。
+   * @param mode - 目标模式。
+   * @param reason - 理由（进审计）。
+   * @returns 切换结果。
+   */
+  async switchEndpointMode(
+    endpointId: string,
+    mode: RunMode,
+    reason: string,
+  ): Promise<{ readonly ok: boolean; readonly effectiveMode: string; readonly drained: boolean; readonly rolledBack: boolean; readonly note: string }> {
+    const endpoint = getEndpoint(this.db, endpointId)
+    if (endpoint === undefined) {
+      return { ok: false, effectiveMode: mode, drained: false, rolledBack: false, note: '端点不存在' }
+    }
+
+    const needsContainer = endpoint.type === 'local' || endpoint.type === 'remote-selfhost'
+    const involvesContainerMode = mode === 'resident' || mode === 'on-demand' || endpoint.mode === 'resident' || endpoint.mode === 'on-demand'
+    if (needsContainer && involvesContainerMode && this.containerExecutor === undefined) {
+      const note =
+        '容器端点的模式切换需要容器执行器（阶段 10 的部署接线）。' +
+        '**没有假装切成功**：面板上的模式没有改动，容器仍在按原来的模式运行。'
+      recordModeSwitch(this.db, { endpointId, from: endpoint.mode, to: mode, actor: 'admin', reason, ok: false, note })
+      return { ok: false, effectiveMode: endpoint.mode, drained: false, rolledBack: false, note }
+    }
+
+    const result = await switchMode(
+      { endpointId, from: endpoint.mode as RunMode, to: mode, actor: 'admin', reason },
+      {
+        inFlight: () => this.inFlightRequests(),
+        stopAccepting: async () => {
+          this.acceptingRequests = false
+        },
+        resumeAccepting: async () => {
+          this.acceptingRequests = true
+        },
+        apply: async (request) => {
+          if (this.containerExecutor !== undefined) await this.containerExecutor(request)
+          setEndpointMode(this.db, endpointId, request.to)
+        },
+        audit: (entry) => {
+          recordModeSwitch(this.db, {
+            endpointId: entry.endpointId,
+            from: entry.from,
+            to: entry.to,
+            actor: entry.actor,
+            reason: entry.reason,
+            ok: entry.ok,
+            note: entry.note,
+            at: entry.at,
+          })
+        },
+      },
+    )
+    this.log(`端点 ${endpointId} 模式切换：${endpoint.mode} → ${mode}（${result.note}）`)
+    return { ok: result.ok, effectiveMode: result.effectiveMode, drained: result.drained, rolledBack: result.rolledBack, note: result.note }
+  }
+
+  /** 容器执行器（阶段 10 接线；没接上时容器类切换会明确失败）。 */
+  private containerExecutor: ((request: { readonly endpointId: string; readonly to: string }) => Promise<void>) | undefined
+
+  /** 接上容器执行器（部署接线用）。 */
+  setContainerExecutor(executor: (request: { readonly endpointId: string; readonly to: string }) => Promise<void>): void {
+    this.containerExecutor = executor
+  }
+
+  /**
+   * 一键试跑：真发一次最小请求，记录**真实延迟**与**实际生效的后端**。
+   *
+   * @param endpointId - 端点 id。
+   * @param model - 指定模型（不给则用端点第一个）。
+   * @returns 结果（含实际模型列表，用于发现"这个端点其实还有别的模型"）。
+   */
+  async probeEndpoint(
+    endpointId: string,
+    model?: string,
+  ): Promise<{ readonly ok: boolean; readonly latencyMs?: number; readonly models?: readonly string[]; readonly error?: string; readonly note?: string }> {
+    const endpoint = getEndpoint(this.db, endpointId)
+    if (endpoint === undefined) return { ok: false, error: '端点不存在' }
+
+    const base = endpoint.base_url.replace(/\/$/, '')
+    const started = Date.now()
+    try {
+      const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(8_000) })
+      const latencyMs = Date.now() - started
+      if (!response.ok) {
+        recordEndpointHealth(this.db, endpointId, { ok: false, latencyMs, note: `HTTP ${String(response.status)}` })
+        recordEndpointProbe(this.db, { endpointId, model: model ?? null, ok: false, latencyMs, note: `HTTP ${String(response.status)}` })
+        return { ok: false, latencyMs, error: `HTTP ${String(response.status)}` }
+      }
+      const body = (await response.json()) as { data?: { id?: string }[] }
+      const models = (body.data ?? []).map((item) => item.id ?? '').filter((id) => id !== '')
+      recordEndpointHealth(this.db, endpointId, {
+        ok: true,
+        latencyMs,
+        note: `试跑成功，发现 ${String(models.length)} 个模型`,
+      })
+      recordEndpointProbe(this.db, { endpointId, model: model ?? null, ok: true, latencyMs, note: `延迟 ${String(latencyMs)}ms`, models })
+      return {
+        ok: true,
+        latencyMs,
+        models,
+        note: '延迟是**真实**往返时间（本地容器通常在 1–5ms，局域网外挂 1–20ms，云 provider 100ms+）',
+      }
+    } catch (error) {
+      const latencyMs = Date.now() - started
+      const note = String(error)
+      recordEndpointHealth(this.db, endpointId, { ok: false, latencyMs, note })
+      recordEndpointProbe(this.db, { endpointId, model: model ?? null, ok: false, latencyMs, note })
+      return { ok: false, latencyMs, error: note }
+    }
+  }
+
+  /** 在途请求数（排水依据；没有网关时恒为 0）。 */
+  private inFlightRequestsValue = 0
+
+  /** 当前在途请求数。 */
+  inFlightRequests(): number {
+    return this.inFlightRequestsValue
+  }
+
+  /** 记一次在途请求的开始/结束（网关调用）。 */
+  markInFlight(delta: number): void {
+    this.inFlightRequestsValue = Math.max(0, this.inFlightRequestsValue + delta)
+  }
+
+  /** 是否还在接受新请求（排水期间为 false）。 */
+  acceptingRequests = true
+
   /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
   resetCompactionAccounting(): void {
     const now = new Date().toISOString()
@@ -768,6 +961,7 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
 
 
 

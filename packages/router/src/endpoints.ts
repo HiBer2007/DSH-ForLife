@@ -417,3 +417,58 @@ export function validateEndpoint(
 
   return issues
 }
+// ── 真实探测（宿主信号） ────────────────────────────────────────────────────
+
+/** 探测用的环境端口（注入：测试不碰真机器）。 */
+export interface ProbePort {
+  readonly platform: string
+  /** 路径是否存在（`/dev/dri` 这类渲染节点）。 */
+  readonly exists: (path: string) => boolean
+  /** 列出目录（找 `/dev/dri/renderD*`）。 */
+  readonly listDir: (path: string) => readonly string[]
+  /** 跑一个探测命令（nvidia-smi / rocm-smi / vulkaninfo / clinfo）。 */
+  readonly run: (command: string, args: readonly string[]) => { readonly ok: boolean; readonly stdout: string }
+}
+
+/**
+ * 探测宿主的加速能力（§2.13.2 自动探测）。
+ *
+ * **保守**：探测不到就返回空结果（= 建议 cpu），绝不猜。
+ * 每次调用都会真的跑那几个命令，所以调用方要**缓存结果**
+ * （nvidia-smi 之类要几十到几百毫秒，不该在每轮对话里跑）。
+ *
+ * @param port - 环境端口。
+ * @returns 探测结果。
+ */
+export function probeDevices(port: ProbePort): DeviceProbe {
+  // 渲染节点只在类 Unix 上有；Windows 下没有 /dev/dri
+  const renderNodes: string[] = []
+  if (port.platform !== 'win32' && port.exists('/dev/dri')) {
+    for (const name of port.listDir('/dev/dri')) {
+      if (name.startsWith('renderD')) renderNodes.push(`/dev/dri/${name}`)
+    }
+    if (renderNodes.length === 0) renderNodes.push('/dev/dri')
+  }
+
+  // NVIDIA：nvidia-smi -L 列出卡；有输出才算有设备
+  const nvidia = safeProbe(port, 'nvidia-smi', ['-L'], /GPU \d+/)
+  // ROCm：rocm-smi 能跑通且列出卡。注意 GCN1 老核心（R7 430 这类）**不被 ROCm 支持**，
+  // 但 rocm-smi 有时仍能跑 —— 所以这里只看"有没有设备"，是否受支持由用户/文档判断
+  const rocm = safeProbe(port, 'rocm-smi', ['--showproductname'], /Card series|GPU\[/)
+  // Intel：clinfo 里出现 Intel
+  const intel = safeProbe(port, 'clinfo', [], /Intel/i)
+  // Vulkan：vulkaninfo 能跑通（跨厂商，最省心的通用加速）
+  const vulkan = safeProbe(port, 'vulkaninfo', ['--summary'], /GPU id|deviceName/i)
+
+  return { renderNodes, nvidia, rocm, intel, vulkan }
+}
+
+/** 跑一个探测命令并匹配输出（失败/超时/没输出都算"没探测到"）。 */
+function safeProbe(port: ProbePort, command: string, args: readonly string[], pattern: RegExp): boolean {
+  try {
+    const result = port.run(command, args)
+    return result.ok && pattern.test(result.stdout)
+  } catch {
+    return false
+  }
+}

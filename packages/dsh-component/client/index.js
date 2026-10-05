@@ -748,6 +748,137 @@ window.__ModuleLoader__.load({
      * @param {object} [ui] - 交互回调。
      * @returns {object} 结构树。
      */
+    /** 「模型与路由」页（阶段 5）：聚合模型列表 + 角色映射 + 校验 + 试跑。 */
+    function describeRoutes(snapshot) {
+      if (!snapshot || snapshot.ok === false) {
+        return node('div', { style: styles.err }, [`读取路由失败：${(snapshot && snapshot.error) || '未知错误'}`])
+      }
+      const children = []
+      const overview = snapshot.overview || {}
+      const stats = snapshot.stats || {}
+      const devices = snapshot.devices || {}
+      const issues = snapshot.issues || []
+      const override = snapshot.tierOverride
+
+      children.push(
+        node('div', { style: styles.card }, [
+          node('div', { style: styles.metricLabel }, ['模型与路由']),
+          node('div', { style: styles.row }, [
+            metric('端点', overview.total || 0),
+            metric('近 24h 决策', stats.total || 0),
+            metric('降级率', `${Math.round((stats.degradedRate || 0) * 100)}%`),
+            metric('待复盘案例', (snapshot.uncertain || {}).pending || 0),
+          ]),
+          node('div', { style: styles.muted }, [
+            override
+              ? `当前档位被**手动切到 ${override.tier}**（${override.reason}）—— 换模型会作废上下文缓存，不需要了请撤销`
+              : '当前档位由自动判定（守卫 → 评分器 → 启发式）',
+          ]),
+          node('div', { style: styles.mono }, [
+            `设备探测：渲染节点 ${(devices.renderNodes || []).join(',') || '无'}｜NVIDIA ${devices.nvidia ? '有' : '无'}｜ROCm ${devices.rocm ? '有' : '无'}｜Intel ${devices.intel ? '有' : '无'}｜Vulkan ${devices.vulkan ? '有' : '无'}`,
+          ]),
+        ]),
+      )
+
+      if (issues.length > 0) {
+        children.push(
+          node('div', { style: styles.card }, [
+            node('div', { style: styles.metricLabel }, [`校验问题（${issues.length}）`]),
+            node('div', { style: styles.muted }, ['这些是"保存即报错"的规则提前算出来的 —— 不必等到点了保存才知道。']),
+            ...issues.slice(0, 8).map((issue) =>
+              node('div', { style: issue.severity === 'error' ? styles.err : styles.warn }, [
+                `[${issue.endpoint}] ${issue.field}：${issue.message}`,
+              ]),
+            ),
+          ]),
+        )
+      }
+
+      if ((overview.backendMismatch || []).length > 0) {
+        children.push(
+          node('div', { style: styles.card }, [
+            node('div', { style: styles.metricLabel }, ['实际生效后端 ≠ 声明后端']),
+            node('div', { style: styles.warn }, [
+              '这些端点声明的加速后端没有真的生效（常见原因：镜像静默回落到 CPU）。面板显示"cuda 加速中"而实际在慢跑，是必须被看见的。',
+            ]),
+            ...overview.backendMismatch.map((item) =>
+              node('div', { style: styles.mono }, [`${item.id}：声明 ${item.declared} → 实际 ${item.effective}`]),
+            ),
+          ]),
+        )
+      }
+
+      for (const role of snapshot.roles || []) {
+        children.push(
+          node('div', { style: styles.card }, [
+            node('div', { style: styles.metricLabel }, [`${role.role}${role.purpose ? ` —— ${role.purpose}` : ''}`]),
+            role.candidates.length === 0
+              ? node('div', { style: styles.warn }, ['这个角色还没有配置候选模型 —— 相关功能（如视觉/嵌入）会不可用'])
+              : node(
+                  'div',
+                  {},
+                  role.candidates.map((candidate, index) =>
+                    node('div', { style: candidate.enabled ? styles.mono : styles.muted }, [
+                      `${index === 0 ? '主选' : `备选${index}`}：${candidate.provider}/${candidate.model}${candidate.effort ? `（${candidate.effort}）` : ''}${candidate.enabled ? '' : ' [已关闭]'}${candidate.note ? ` — ${candidate.note}` : ''}`,
+                    ]),
+                  ),
+                ),
+          ]),
+        )
+      }
+
+      const endpoints = snapshot.endpoints || []
+      if (endpoints.length > 0) {
+        children.push(node('div', { style: styles.metricLabel }, ['端点']))
+        for (const endpoint of endpoints) {
+          const health = endpoint.health || {}
+          const rows = [
+            node('div', { style: styles.mono }, [`${endpoint.type}｜${endpoint.mode}｜后端 ${endpoint.backend}｜${endpoint.baseUrl}`]),
+            node('div', { style: styles.muted }, [
+              `部署目标 ${endpoint.deployTarget || '未登记'}${endpoint.deployHost ? ` @ ${endpoint.deployHost}` : ''}｜模型 ${(endpoint.models || []).length} 个`,
+            ]),
+          ]
+          if (health.checkedAt) {
+            rows.push(
+              node('div', { style: health.ok ? styles.mono : styles.err }, [
+                `健康 ${health.ok ? '正常' : '异常'}${health.latencyMs !== undefined && health.latencyMs !== null ? `｜${health.latencyMs}ms` : ''}${health.note ? `｜${health.note}` : ''}`,
+              ]),
+            )
+          } else {
+            rows.push(node('div', { style: styles.muted }, ['还没试跑过 —— 点"试一次"能看到真实延迟']))
+          }
+          if (health.effectiveBackend && health.effectiveBackend !== endpoint.backend) {
+            rows.push(node('div', { style: styles.warn }, [`实际生效后端是 ${health.effectiveBackend}（声明的是 ${endpoint.backend}）`]))
+          }
+          children.push(node('div', { style: styles.card }, [node('div', { style: styles.metricLabel }, [endpoint.id]), ...rows]))
+        }
+      } else {
+        children.push(
+          node('div', { style: styles.card }, [
+            node('div', { style: styles.muted }, [
+              '还没有登记任何推理端点。评分器、视觉桥接、嵌入都需要端点 —— 可以先登记一个"外挂自建"（不需要本地部署）。',
+            ]),
+          ]),
+        )
+      }
+
+      const probes = snapshot.probe || []
+      if (probes.length > 0) {
+        children.push(
+          node('div', { style: styles.card }, [
+            node('div', { style: styles.metricLabel }, ['试跑记录']),
+            ...probes.slice(0, 5).map((probe) =>
+              node('div', { style: probe.ok ? styles.mono : styles.err }, [
+                `${String(probe.at).slice(11, 19)} UTC｜${probe.endpointId}｜${probe.ok ? `${probe.latencyMs}ms` : '失败'}${probe.note ? `｜${probe.note}` : ''}`,
+              ]),
+            ),
+          ]),
+        )
+      }
+
+      return node('div', {}, children)
+    }
+
     function describePrompts(snapshot, ui) {
       const slugs = snapshot.prompts || []
       const find = (slug) => slugs.find((s) => s.slug === slug) || {}
@@ -785,6 +916,22 @@ window.__ModuleLoader__.load({
      * @param {AbortSignal} [signal] - 取消信号。
      * @returns {Promise<object>} 快照（失败时带 `error`，不抛）。
      */
+    /**
+     * 取路由快照。
+     *
+     * 前端只做"展示 + 发意图"，不做判断：校验规则在服务端（保存即报错），
+     * 前端再算一遍会出现"两边规则不一致"这种最难查的问题。
+     */
+    async function fetchRoutesSnapshot(signal) {
+      try {
+        const response = await fetch(API_BASE + '/routes', { signal })
+        if (!response.ok) throw new Error(`/routes → HTTP ${response.status}`)
+        return await response.json()
+      } catch (error) {
+        return { ok: false, error: String(error) }
+      }
+    }
+
     async function fetchPromptSnapshot(signal) {
       const snapshot = {}
       const get = async (path) => {
@@ -854,6 +1001,94 @@ window.__ModuleLoader__.load({
       return response.json()
     }
     /** 提示词面板：编辑 P1/P2、预览、保存、回滚。 */
+    /** 「模型与路由」页组件：只做展示与"发意图"，判断都在服务端。 */
+    function RoutesPanel() {
+      const [snapshot, setSnapshot] = React.useState({})
+      const [loading, setLoading] = React.useState(true)
+      const [busy, setBusy] = React.useState('')
+      const [notice, setNotice] = React.useState('')
+
+      const load = React.useCallback(async () => {
+        setLoading(true)
+        setSnapshot(await fetchRoutesSnapshot())
+        setLoading(false)
+      }, [])
+
+      React.useEffect(() => {
+        void load()
+      }, [load])
+
+      const send = React.useCallback(
+        async (path, body) => {
+          setBusy(path)
+          setNotice('')
+          try {
+            const response = await fetch(API_BASE + path, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            })
+            const result = await response.json()
+            setNotice(result && result.ok ? '完成' : `未完成：${(result && (result.error || result.note)) || '未知原因'}`)
+            await load()
+          } catch (error) {
+            setNotice(`请求失败：${String(error)}`)
+          } finally {
+            setBusy('')
+          }
+        },
+        [load],
+      )
+
+      if (loading) return node('div', { style: styles.muted }, ['加载中…'])
+
+      const children = [describeRoutes(snapshot)]
+      if (notice) children.push(node('div', { style: styles.muted }, [notice]))
+
+      const endpoints = snapshot.endpoints || []
+      if (endpoints.length > 0) {
+        children.push(
+          node('div', { style: styles.card }, [
+            node('div', { style: styles.metricLabel }, ['端点操作']),
+            node('div', { style: styles.muted }, [
+              '试跑 = 真发一次请求（记录真实延迟）；模式切换对容器端点需要容器执行器，没接上时会**明确失败**而不是假装成功。',
+            ]),
+            ...endpoints.slice(0, 6).flatMap((endpoint) =>
+              node('div', { style: styles.row }, [
+                node('span', { style: styles.mono }, [endpoint.id]),
+                node(
+                  'button',
+                  {
+                    disabled: busy !== '',
+                    onClick: () => void send('/routes/probe', { endpointId: endpoint.id }),
+                  },
+                  ['试一次'],
+                ),
+                node(
+                  'button',
+                  {
+                    disabled: busy !== '',
+                    onClick: () => void send('/routes/mode', { endpointId: endpoint.id, mode: 'resident', reason: '面板手动切换为常驻' }),
+                  },
+                  ['常驻'],
+                ),
+                node(
+                  'button',
+                  {
+                    disabled: busy !== '',
+                    onClick: () => void send('/routes/mode', { endpointId: endpoint.id, mode: 'on-demand', reason: '面板手动切换为按需' }),
+                  },
+                  ['按需'],
+                ),
+              ]),
+            ),
+          ]),
+        )
+      }
+
+      return node('div', {}, children)
+    }
+
     function PromptPanel() {
       const [snapshot, setSnapshot] = React.useState({})
       const [loading, setLoading] = React.useState(true)
@@ -1014,6 +1249,12 @@ window.__ModuleLoader__.load({
           PromptPanel,
         ),
       )
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          { name: 'settings.section', id: 'forlife-routes', order: 63, label: '模型与路由' },
+          RoutesPanel,
+        ),
+      )
     }
 
     /**
@@ -1040,6 +1281,8 @@ window.__ModuleLoader__.load({
     exports.PromptPanel = PromptPanel
     exports.fetchPromptSnapshot = fetchPromptSnapshot
     exports.describePrompts = describePrompts
+    exports.describeRoutes = describeRoutes
+    exports.fetchRoutesSnapshot = fetchRoutesSnapshot
     exports.previewPrompt = previewPrompt
     exports.savePrompt = savePrompt
     exports.rollbackPromptRevision = rollbackPromptRevision
