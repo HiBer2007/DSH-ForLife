@@ -444,4 +444,74 @@ export function lastSuccessfulCompaction(db: DatabaseSync): { readonly at: strin
   return { at: row.timestamp, turnsSince: 0 }
 }
 
+// ── 溢出存储（大工具结果的全文，供 recall_full 取回）─────────────────────────
+
+/** 一条溢出记录。 */
+export interface SpillRow {
+  readonly id: string
+  readonly session_id: string | null
+  readonly tool_name: string
+  readonly tool_call_id: string | null
+  readonly head: string
+  readonly content: string
+  readonly byte_size: number
+  readonly line_count: number
+  readonly created_at: string
+}
+
+/**
+ * 存入一份大工具结果的全文，返回可被 `recall_full` 引用的 id。
+ *
+ * `head` 是留在上下文里的前 N 行，`content` 是完整结果 ——
+ * 这样"分层降噪"（PLAN §3.2）与"可按需取回"同时成立。
+ */
+export function insertSpill(
+  db: DatabaseSync,
+  input: {
+    readonly id: string
+    readonly toolName: string
+    readonly content: string
+    readonly sessionId?: string | null
+    readonly toolCallId?: string | null
+    readonly headLines?: number
+  },
+): SpillRow {
+  const lines = input.content.split('\n')
+  const headLines = input.headLines ?? 20
+  const head = lines.slice(0, headLines).join('\n')
+  db.prepare(
+    `INSERT INTO spill_entries (id, session_id, tool_name, tool_call_id, head, content, byte_size, line_count, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run(
+    input.id,
+    input.sessionId ?? null,
+    input.toolName,
+    input.toolCallId ?? null,
+    head,
+    input.content,
+    Buffer.byteLength(input.content, 'utf8'),
+    lines.length,
+    nowIso(),
+  )
+  const row = getSpill(db, input.id)
+  if (row === undefined) throw new Error('写入后读不到溢出记录')
+  return row
+}
+
+/** 按 id 取溢出记录（含全文）。 */
+export function getSpill(db: DatabaseSync, id: string): SpillRow | undefined {
+  return db.prepare('SELECT * FROM spill_entries WHERE id = ?').get(id) as SpillRow | undefined
+}
+
+/** 列出某会话最近的溢出记录（不含全文，供面板/诊断用）。 */
+export function listSpills(db: DatabaseSync, sessionId: string, limit = 20): readonly Omit<SpillRow, 'content'>[] {
+  return db
+    .prepare(
+      `SELECT id, session_id, tool_name, tool_call_id, head, byte_size, line_count, created_at
+         FROM spill_entries WHERE session_id = ? ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(sessionId, limit) as Omit<SpillRow, 'content'>[]
+}
+
 

@@ -1651,7 +1651,7 @@ model_routes(
 | ~~U1~~ | ~~宿主能否暴露缓存指标~~ → **已关闭**：`TokenUsage.cacheReadTokens/cacheWriteTokens` 存在（`dsh-llm/lib/types/types.d.ts:160-172`） | 缓存命中率监控直接可做 | 已核实 |
 | U2 | 长连接式轮次驱动（`HarnessSdkJsonRpcServer` / Web 侧 API+WS）是否可用、延迟如何？ | 决定 D6 是否升级（每轮 spawn 的固定开销） | 阶段 3：三种驱动各跑 100 轮，测 p50/p95、内存、崩溃行为 |
 | U3 | 嵌入模型来源：远端 API vs 本地 ONNX | 影响 CPU/内存需求与离线能力 | 阶段 1 先只做 FTS5；阶段 5 决策 |
-| U4 | `ui.dsh` ContributionHost 在 DSH Web 的实际承接方是否存在（dsh-std 的 UI 契约 vs 原生 slot） | 决定记忆面板走"dsh-std UI 贡献"还是"原生 slot / prefix 页面" | 阶段 1 末尾 spike；原生两条路均已核实可行 |
+| U4 | `ui.dsh` ContributionHost 在 DSH Web 的实际承接方是否存在（dsh-std 的 UI 契约 vs 原生 slot） | 决定记忆面板走"dsh-std UI 贡献"还是"原生 slot / prefix 页面" | **已解决（阶段 1 spike）**：原生承接方存在，两条路都可用 —— ① **slot 贡献**：`dsh-client-ui-slots` 暴露 `slots?: Record<string, FactoryLocalSlotDef>`，插件可直接往具名 slot 里挂（`dsh-client-ui-layout` / `-sidebar-*` / `-settings-*` 是现成槽位）；② **独立 UI 包**：`dsh-client-ui-settings-models` 这类包证明"整页贡献"是官方模式（我们的设置页可以照抄这个形状）。**结论：面板一期走 U8 的"内嵌 DSH Web"路线，用 slot 挂一个记忆页；dsh-std 的 `ui.dsh` 契约等它落地再适配。** |
 | U5 | 宿主版本漂移（0.1.7-rc.2 → 更高）对 API 的影响面 | 决定我们的 `compat.hosts` 范围 | 每次升级跑自建契约测试（对照 `research/dsh-plugin-authoring-reference.md` 的 `path:line` 清单） |
 | U6 | 本机**没有**可用的 DSH 测试工具链（无 `@deepseek-ai/dsh-test*`；`dsh-agent-loop-testkit` 已发布但未安装；`dsh-tools` 无 `./testing` 子路径） | 决定我们的测试底座要自建到什么程度 | 阶段 0：以 `dsh-app-boot` 的 `boot()` + `--json` NDJSON 断言为主，`@dsh-std/connection` 的 `createMemoryConnectionPair()` 兜协议层 |
 | U7（部分关闭） | 容器运行条件已查明：**NapCat 无需图形环境**（扫码走 WebUI `:6099`）；SnowLuma 需 Xvfb+VNC+noVNC 且额外开 `SYS_PTRACE`/`seccomp=unconfined`。**残余实测项**：镜像体积与内存实测、NapCat 单进程多账号并发上限、群聊 typing（两家均无接口，已确认为降级项）、Windows Server Core 无桌面会话可用性 | 决定 compose 里 `qq` 服务的资源配额 | 阶段 3 起官方镜像实测：冷启动 / 内存 / 登录→收发全链路 |
@@ -1689,31 +1689,57 @@ model_routes(
 7. `scripts/dev-up.ps1` / `dev-up.sh` 与 `forlife doctor`。
 
 **验收标准**
-- [ ] `docker compose up` 后，`forlife doctor` 输出：DSH 版本、facet 激活状态、协商报告、权限清单、存储根可写性。
-- [ ] 单测在**无 DSH 宿主**环境下跑通协商（`createMemoryConnectionPair`）。
-- [ ] 全仓库无任何指向 `C:\Users\...\.dsh` 的写操作；grep 证明。
-- [ ] 同一份代码能在 `dsh-tui` 与 `dsh-web` 两种 profile 下被 admission（至少 `Declared`/`Parsed` 级）。
 
-### 阶段 1 · 记忆骨架（PLAN 阶段一，预计 5–8 天）
+> 勾选约定：`[x]` 已达成并附证据；`[~]` 部分达成，括号里写明差在哪、为什么；`[ ]` 未开始。
+> 证据一律给出**可复现的命令或测试名**，不接受"应该可以"。
+
+- [x] `forlife doctor` 输出：Node/`node:sqlite`(FTS5)/保真度基线/可移植性/`DSH_HOME`/profile 可达性/存储根可写性/DSH CLI/Compose/Git/调研素材 —— **12 项检查，0 失败**。证据：`node scripts/doctor.ts`。
+- [~] `docker compose up` 后跑 doctor —— **未做**：阶段 0 的 compose 只有**拓扑骨架**（dsh/gateway 用 node 镜像占位，真实镜像在阶段 9/10）。已做的替代验证：`docker compose -f deploy/docker-compose.yml config --quiet` 在本机 Compose **v2.13.0** 下解析通过，且 `tests/portability.test.ts` 断言了 compose/Caddyfile 不得含被禁配置。
+- [x] 单测在**无 DSH 宿主**环境下跑通协商 —— **做法与原计划不同且更强**：原计划用 `@dsh-std/connection` 的 `createMemoryConnectionPair()` 跑协议替身；实际改为**加载真实宿主服务**的进程内验收台（真 `@deepseek-ai/dsh-system-prompt` + 真 `defineTool` + 真 SQLite），`packages/dsh-component/test/harness.test.ts`。副产物：真 DSH 启动验证已打通（见阶段 1 末条）。
+- [x] 全仓库无任何指向宿主 `~/.dsh` 的写操作；grep 证明 —— `tests/portability.test.ts` 四条断言（无宿主绝对路径 / `storageRoots` 全相对 / 无向主目录写入的调用 / 无协议级危险动作），**48 项测试全绿**。
+- [~] 同一份代码能在 `dsh-tui` 与 `dsh-web` 两种 profile 下被 admission —— **组合级已验证、挂载级已验证、tui/web 具体 profile 未跑**：`dsh --profile forlife --dump-config` 组合出 **95 个条目、0 告警**；并用真 DSH 启动 headless 组合证明插件**真的被挂载**（迁移应用、库打开、2 个提示段 + 4 个工具注册、退出时 checkpoint）。tui/web profile 需要相应 bundle 与凭据，留到阶段 4（面板）时一并验。
+
+### 阶段 1 · 记忆骨架（PLAN 阶段一，预计 5–8 天）✅ **已完成**
 
 **目标**：三张表 + 渲染 + 最小工具集 + 面板雏形。
 
-**交付物**
-1. `packages/store`：SQLite 封装（WAL、busy_timeout、迁移框架 `0001_init`）、`mid_memory_entries` / `long_memory_entries` / `compaction_log` 表照 PLAN §2.1/§4.5/§6.1；`revision` 列。
-2. `packages/memory-core`：`renderMidMemory()` 纯函数（含碎片 `[F1→]` 渲染）、追加协议（同事务写表 + 递增 revision）、按表重建窗口的恢复函数。
-3. `dsh-component`：
-   - `ctx.systemPrompt.section()` 注册 L2（`forlife:l2-index`, order 100）/ L3（`forlife:l3-mid`, order 110），provider 从 `(epoch, revision)` 渲染缓存取字节；
-   - `ctx.tools.register(defineTool(...))`：`remember`、`push_mid_memory`、`recall_longterm`（先用 FTS5）、`recall_full` —— 每个工具都必须写 `output.schema` + `render()`（**必填**），`execute` 返回规范 JSON 值；
-   - `SessionEventMap` 声明合并：`forlife.mid_memory.appended` 等，信息类标 `ignorable: true`；
-   - 声明插件 `Config`（schemastery）承载全部可配项（存储根/tier/预算/阈值），并**至少放一个 `.volatile()` 字段**，否则该 entry 不进设置页。
-4. DSH Web 记忆面板雏形：`/api/forlife/state|entries|compaction`（`ctx.connection.fetch.register`）+ `settings.section`（或 `main` 面板，视 U4 结论）。
-5. 单测：渲染纯度（同 revision 输出 SHA-256 恒定）、崩溃恢复（模拟中途 kill）、表↔窗口一致性。
+**交付物**（全部完成，标注实现位置）
 
-**验收标准**
-- [ ] 一次 headless 会话里模型能调 `push_mid_memory`，下一轮请求的 system prompt 里出现该条目（用 `assemble()` + `renderPrompt()` 断言）。
-- [ ] 连续 3 轮无记忆写入时，`renderPrompt(await ctx.systemPrompt.assemble())` 的 SHA-256 **完全不变**。
-- [ ] kill -9 后重启，`renderMidMemory()` 输出与崩溃前一致（表是权威）。
-- [ ] 面板能列出条目并按 epoch 过滤。
+1. ✅ `packages/store`：`node:sqlite` 封装（WAL、`busy_timeout`、`foreign_keys`）＋迁移器（有序迁移 + `user_version` + **迁移前原子备份** + 只前滚）；`mid_memory_entries` / `long_memory_entries` / `compaction_log` **字段与 PLAN §2.1/§4.5/§6.1 一比一**（测试逐字段断言）；`revision` 列与 `source_scope` 列（`[design]` 注释标明出处）；**迁移 `0002_spill`**（大工具结果全文，供 `recall_full`）。
+2. ✅ `packages/memory-core`：`renderMidMemory()` 纯函数（碎片 `[F1→]` 渲染、`[Mn]` 顺序编号）、追加协议（**同事务**写表 + 递增 revision，见 `store/src/repository.ts:appendMidEntry`）、按表重建窗口（无任何内存态依赖）。
+3. ✅ `dsh-component`：
+   - `ctx.systemPrompt.section()` 注册 L2（`forlife:l2-index`, order **100**）/ L3（`forlife:l3-mid`, order **110**），文本是**函数**、从 `(epoch, revision)` 渲染缓存取字节；
+   - `ctx.tools.register(defineTool(...))`：`remember`、`push_mid_memory`、`recall_longterm`（FTS5，含**中文按字切分 + 相邻短语匹配**）、`recall_full`；四个工具都有 `output.schema` + `render()`（纯投影，测试断言 render 不写库）；
+   - `SessionEventMap` 声明合并（`forlife.mid_memory.appended` / `.fragmented` / `forlife.render.changed`），一律带 `ignorable: true` 追加 —— 未登记事件不带这个标记会被宿主拒绝；
+   - 插件 `Config`（schemastery）承载存储根/时区/预算/阈值，**含两个 `.volatile()` 字段**（`storageRoot`、`l2IndexText`）⇒ 设置页会出现本条目。注意：volatile 字段在解析结果里是 cosmokit 的 `Volatile<T>` **引用对象**，必须经 `resolveConfig()` 取快照（这是真机才会踩的坑，已写测试）。
+4. ✅（接口层）／⏳（UI 页面）**记忆面板雏形**：`/api/forlife/{state,entries,compaction,spills,health}`，经 `ctx.connection.fetch.register({path,methods,requestBody,fetch})` 注册（真实契约来自 `dsh-client-connection/lib/types/rpc.d.ts:111-128`）。
+   - **UI 页面尚未做**，但**承接方已定**（U4 spike 结论）：用 `dsh-client-ui-slots` 的 slot 贡献挂一个记忆页（形状照抄 `dsh-client-ui-settings-models`）。
+   - 接口按 REST 定形，两种承接方式都不用改后端 —— UI 只是消费者。
+5. ✅ 单测：渲染纯度（同 revision 输出 SHA-256 恒定）、崩溃恢复（模拟中途 kill）、表↔窗口一致性 —— 见 `memory-core/test/{render,recovery}.test.ts`。
+
+**验收标准（逐条勾选）**
+
+- [x] 一次 headless 会话里模型能调 `push_mid_memory`，下一轮请求的 system prompt 里出现该条目（用 `assemble()` + `renderPrompt()` 断言）
+      证据：`harness.test.ts` **A1**。用真 `@deepseek-ai/dsh-system-prompt` 装配 + `renderPrompt()` 断言条目文本出现在提示词里、且提示词确实变长。
+      精度说明：断言的是"工具执行 → 下一轮提示词"这条链路；**没有**让真模型发起 tool call（本机无 API key），工具是通过 `defineTool` 编译出的真实定义直接执行的。
+- [x] 连续 3 轮无记忆写入时，`renderPrompt(await ctx.systemPrompt.assemble())` 的 SHA-256 **完全不变**
+      证据：**A2**（三轮指纹全等）＋**反证**（一旦写入，指纹必须变化 —— 否则"不变"可能只是因为提示段根本没接上）。`memory-core/test/recovery.test.ts` 另有"纯渲染不推进 revision"的持久层侧证明。
+- [x] kill -9 后重启，`renderMidMemory()` 输出与崩溃前一致（表是权威）
+      证据：**A3**（用独立库文件 + 两套独立上下文模拟两个进程：进程 A 写入后直接丢弃、不做任何清理，进程 B 全新装配 → 渲染出的**完整系统提示词逐字节相同**）；`recovery.test.ts` 另有表↔窗口一致性证明（直接改表，窗口随之改变，无需同步动作）。
+- [x] 面板能列出条目并按 epoch 过滤
+      证据：**A4**（`/forlife/entries` 全量 / 按 `epoch` 过滤 / 按 `status` 过滤；不存在的 epoch 必须返回空且回显该 epoch；`/forlife/state` 展示的渲染指纹与运行时一致）。
+
+**阶段 1 的额外产出（原计划里没有，但实现中发现必须做）**
+
+| 项 | 为什么必须 |
+| :--- | :--- |
+| FTS5 **中文按字切分 + 短语引号** | `unicode61` 把连续 CJK 当一个整词，搜"防抖"命中不了"防抖与消息队列策略"（除非原文恰好有空格 —— 这正是最容易骗过测试的假象）。含**负向断言**：不相邻不命中。 |
+| FTS 表改为**独立表** | 外部内容表的 `'delete'` 指令必须传原始值，传空串会静默损坏索引（表现为 `database disk image is malformed`）。 |
+| 配置 **volatile 归一化** | `.volatile()` 字段解析后是 `Volatile<T>` 引用对象而非裸值，直接拼接会得到 `[object Object]`。 |
+| **活动运行时登记表** | cordis 上下文对自定义属性**只读**（实测挂 `ctx.forlife` 失败），面板/doctor/测试改从模块级登记表取运行时，保证同一个库不被重复打开。 |
+| `defineTool` 顶层 await 动态导入 | 静态 import 会让"宿主没装 dsh-tools"变成"插件加载失败"，丧失可移植性；全部自研又会与宿主 schema 编译分叉。 |
+| 去掉 `peerDependencies` 声明 | pnpm 会解析 peer 及其传递依赖，导致 `pnpm install` 在无网/离线环境**退出码 1**（实测卡在 `@deepseek-ai/dsh-brand`）。宿主依赖关系改用文档 + `ctx` 探测表达。 |
+
 
 ### 阶段 2 · 压缩与沉降（PLAN 阶段二，预计 8–12 天）
 

@@ -1,0 +1,6 @@
+# 验证用 profile：配置尽量小，只为证明插件真的被加载。
+- id: forlife-memory
+  name: forlife-memory
+  config:
+    storageRoot: ./forlife
+    verbose: true

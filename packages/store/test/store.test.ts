@@ -18,6 +18,11 @@ import { appendMidEntry, currentRevision, fragmentMidEntry, listRenderableMidEnt
 
 const tempDir = (): string => mkdtempSync(join(tmpdir(), 'forlife-store-'))
 
+/** 迁移版本必须连续：1..N。测试不写死具体数字，加迁移时不必改测试。 */
+function expectedVersions(): number[] {
+  return Array.from({ length: SCHEMA_VERSION }, (_, i) => i + 1)
+}
+
 /**
  * Windows 上刚关闭的 SQLite 文件仍可能被索引器/杀毒短暂持有，
  * 直接 rmSync 会 EPERM。重试几次即可（这是环境问题，不是测试失败）。
@@ -38,8 +43,9 @@ test('迁移：建表后版本正确，重复打开不重复应用', async () =>
   const file = join(dir, 'forlife.sqlite')
   try {
     const first = openDatabase({ file })
-    assert.deepEqual(first.applied, [1], '首次应应用迁移 1')
-    assert.equal(SCHEMA_VERSION, 1)
+    // 不写死版本号：断言"首次打开应把到最新版本为止的迁移全部应用完"
+    assert.deepEqual(first.applied, expectedVersions(), `首次应应用全部迁移，实际 ${first.applied.join(',')}`)
+    assert.equal(SCHEMA_VERSION, expectedVersions().length)
     const journalMode = first.db.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
     assert.equal(journalMode.journal_mode, 'wal', '必须是 WAL：网关与 DSH 要共享同一个库')
     const busy = first.db.prepare('PRAGMA busy_timeout').get() as { timeout: number }
@@ -226,7 +232,8 @@ test('时间戳一律 UTC（存储层不出现本地时间）', async () => {
 
 test('迁移清单：改名或改历史 SQL 会被 checksum 发现', async () => {
   const list = migrationList()
-  assert.equal(list.length, 1)
+  assert.ok(list.length >= 2, '至少应有 0001_init 与 0002_spill')
+  assert.deepEqual(list.map((m) => m.version), expectedVersions(), '版本号必须连续且升序')
   assert.match(list[0]?.checksum ?? '', /^[0-9a-f]{64}$/, '迁移必须有 sha256 校验和')
   const source = readFileSync(new URL('../src/migrations.ts', import.meta.url), 'utf8')
   assert.ok(source.includes('0001_init'), '迁移名写进源码后不应随意改动（checksum 会变）')
@@ -235,5 +242,6 @@ test('迁移清单：改名或改历史 SQL 会被 checksum 发现', async () =>
   writeFileSync(probe, list[0]?.name ?? '')
   rmSync(probe, { force: true })
 })
+
 
 

@@ -15,14 +15,17 @@ export {
   currentEpoch,
   currentRevision,
   fragmentMidEntry,
+  getSpill,
   getLongEntry,
   getMidEntry,
   getState,
   insertLongEntry,
+  insertSpill,
   lastSuccessfulCompaction,
   listCompactionLog,
   listRenderableMidEntries,
   listSettleCandidates,
+  listSpills,
   markLongRecovered,
   markLongSettled,
   midStats,
@@ -41,5 +44,7 @@ export type {
   LongEntryRow,
   MidEntryRow,
   MidStats,
+  SpillRow,
 } from './repository.ts'
+
 

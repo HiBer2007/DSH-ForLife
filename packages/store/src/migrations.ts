@@ -133,6 +133,35 @@ INSERT OR IGNORE INTO forlife_state (key, value) VALUES ('compaction_epoch', '0'
 /** 迁移 SQL 的校验和（改了它就是改了历史，必须换新迁移）。 */
 const m0001Checksum = createHash('sha256').update(m0001.sql).digest('hex')
 
+/** 迁移 2：大工具结果的溢出存储（PLAN §3.2 的 `recall_full` 依赖它）。 */
+const m0002 = {
+  version: 2,
+  name: '0002_spill',
+  sql: `
+-- 大工具结果：上下文里只留"前 N 行 + 摘要"，全文落在这里，模型可 recall_full(id) 取回。
+-- 出处：PLAN.MD §3.2「大工具结果：写入时保留前 N 行 + 摘要，完整结果存日志」。
+CREATE TABLE IF NOT EXISTS spill_entries (
+  id           TEXT PRIMARY KEY,
+  session_id   TEXT,
+  tool_name    TEXT NOT NULL,
+  tool_call_id TEXT,
+  head         TEXT NOT NULL DEFAULT '',
+  content      TEXT NOT NULL,
+  byte_size    INTEGER NOT NULL,
+  line_count   INTEGER NOT NULL,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_spill_session ON spill_entries (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_spill_call ON spill_entries (tool_call_id);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0002.sql)
+  },
+} as const
+
+const m0002Checksum = createHash('sha256').update(m0002.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -140,6 +169,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0001.name,
     checksum: m0001Checksum,
     up: m0001.up,
+  },
+  {
+    version: m0002.version,
+    name: m0002.name,
+    checksum: m0002Checksum,
+    up: m0002.up,
   },
 ]
 

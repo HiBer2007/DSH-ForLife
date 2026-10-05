@@ -14,24 +14,39 @@
 
 两份设计文档是**约束**：其中每个参数与时机都要一比一实现（见下"保真度"）。
 
-## 当前状态：阶段 0 完成（可移植骨架与验证台）
+## 当前状态
+
+**阶段 0（可移植骨架与验证台）✅ 完成** · **阶段 1（记忆骨架）✅ 完成**
 
 已经能跑的东西：
 
 ```powershell
-$env:DSH_HOME = "D:\DSH-ForLife\.runtime\dsh"   # 把 DSH 的家目录隔离到仓库内
-node scripts/doctor.ts                          # 诊断：运行时/契约/可移植性/存储/工具链
-node --test "packages/**/test/*.test.ts" "tests/*.test.ts"   # 13 项测试
-dsh --profile forlife --dump-config             # 用真实 DSH 验证 profile 组合（只组合不挂载）
+pwsh -File scripts/setup-dev.ps1                  # 一键就位（junction + 工作区链接 + DSH_HOME 隔离）
+$env:DSH_HOME = "D:\DSH-ForLife\.runtime\dsh"     # DSH 的家目录隔离在仓库内
+node scripts/doctor.ts                            # 诊断：12 项检查
+node --test "packages/**/test/*.test.ts" "tests/*.test.ts"   # 48 项测试
+dsh --profile forlife --dump-config               # profile 组合（95 条目 / 0 告警）
+dsh --profile forlife-headless "你好"              # 真实加载：看插件被挂载的日志
 ```
+
+阶段 1 交付的能力：
+
+| 能做什么 | 怎么验证 |
+| :--- | :--- |
+| 记忆写进表、渲染进**稳定前缀**（L2 手册 + L3 中期记忆区） | `harness.test.ts` A1：调 `push_mid_memory` → 下一轮 `renderPrompt(assemble())` 里出现该条目 |
+| 没有写入时提示词**逐字节不变**（缓存断点前提） | A2：连续 3 轮指纹全等 + 反证（写入后必须变） |
+| 崩溃后按表重建，重启后提示词**逐字节相同** | A3：两个独立上下文模拟两个进程 |
+| 中文检索（按字切分 + 相邻短语，不信 `unicode61`） | `store.test.ts`：`防抖` 命中、`防队` **不**命中 |
+| 四个工具（`remember` / `push_mid_memory` / `recall_longterm` / `recall_full`） | `harness.test.ts` A5：schema 被真 `defineTool` 编译 |
+| 面板接口按 epoch / status 过滤 | A4：`/api/forlife/entries?epoch=&status=` |
+| 存储路径/时区/预算可在设置页改 | `Config` 含 2 个 `.volatile()` 字段 ⇒ 设置页出现本条目 |
 
 阶段 0 的可验证结论：
 
 - **profile 组合通过**：真实 DSH 在隔离的 `DSH_HOME` 里成功组合 `dsh-base` + 我们的组件 + 显式挂载的 `dsh-time-context`；
-- **保真度基线就位**：114 条参数（45 条来自设计文档）、20 个时机、**数值偏离 0**、1 条规则级偏离；
-- **可移植性有测试守着**：仓库内无宿主绝对路径、`storageRoots` 全相对、无向宿主主目录写入的调用；
-- **安全红线有测试守着**：`send_packet` / 凭据类等协议级动作在代码里零引用；
-- **部署骨架就位**：`deploy/docker-compose.yml`（五服务拓扑）与 `deploy/Caddyfile`（单一真源 + unix socket Admin API）都能被解析。
+- **真实加载通过**：`dsh --profile forlife-headless` 启动后，插件挂载、迁移应用、2 个提示段 + 4 个工具注册、退出时 checkpoint（模型调用因无凭据失败，与插件无关）；
+- **保真度基线就位**：119 条参数（45 条来自设计文档）、20 个时机、**数值偏离 0**、1 条规则级偏离；
+- **可移植性与安全红线有测试守着**。
 
 ## 三条不可动摇的规则
 

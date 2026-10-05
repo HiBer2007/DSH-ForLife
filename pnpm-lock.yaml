@@ -118,6 +118,12 @@ importers:
       '@forlife/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@forlife/memory-core':
+        specifier: workspace:*
+        version: link:../memory-core
+      '@forlife/store':
+        specifier: workspace:*
+        version: link:../store
 
   packages/gateway: {}
 
@@ -139,6 +145,12 @@ importers:
   packages/store: {}
 
   profiles/forlife:
+    dependencies:
+      forlife-memory:
+        specifier: workspace:*
+        version: link:../../packages/dsh-component
+
+  profiles/forlife-headless:
     dependencies:
       forlife-memory:
         specifier: workspace:*

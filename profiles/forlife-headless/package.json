@@ -1,0 +1,17 @@
+{
+  "name": "dsh-profile-forlife-headless",
+  "private": true,
+  "description": "仅供端到端验证：把 forlife-memory 挂进真实的 headless app，证明插件在生产组合下真的会被加载。",
+  "dependencies": {
+    "forlife-memory": "workspace:*"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-headless",
+        "forlife-memory"
+      ]
+    }
+  }
+}

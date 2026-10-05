@@ -7,6 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./facet": "./src/facet.ts",
+    "./config": "./src/config.ts",
+    "./runtime": "./src/runtime.ts",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./dsh-plugin.json": "./dsh-plugin.json",
     "./package.json": "./package.json"
@@ -22,6 +24,8 @@
     }
   },
   "dependencies": {
-    "@forlife/contracts": "workspace:*"
+    "@forlife/contracts": "workspace:*",
+    "@forlife/store": "workspace:*",
+    "@forlife/memory-core": "workspace:*"
   }
 }
