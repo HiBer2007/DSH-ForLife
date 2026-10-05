@@ -230,6 +230,33 @@ function elementText(value: unknown): string {
   return props === undefined ? '' : elementText(props.children)
 }
 
+/**
+ * React 只认 camelCase 的 HTML 属性名。写成小写 React **不抛错**、只打一条 console 告警，
+ * 于是这种笔误能一直藏着（`spellcheck` 就是我从真代码里抓出来的）。
+ * React 不抛错的，就由这条检查来抓。
+ */
+const CAMEL_CASE_TRAPS = new Set([
+  'spellcheck', 'readonly', 'maxlength', 'minlength', 'tabindex', 'colspan', 'rowspan',
+  'class', 'for', 'contenteditable', 'autocomplete', 'enctype', 'srcset', 'usemap',
+  'crossorigin', 'datetime', 'formaction', 'novalidate', 'autofocus', 'autoplay',
+  'cellpadding', 'cellspacing', 'charset', 'accesskey', 'srcset',
+])
+
+/** 收集整棵元素树上出现过的 prop 名。 */
+function collectPropNames(value: unknown, into: Set<string>): void {
+  if (value === null || typeof value !== 'object') return
+  if (Array.isArray(value)) {
+    for (const child of value) collectPropNames(child, into)
+    return
+  }
+  const element = value as { props?: Record<string, unknown> }
+  if (element.props === undefined) return
+  for (const key of Object.keys(element.props)) {
+    if (key !== 'children') into.add(key)
+  }
+  collectPropNames(element.props.children, into)
+}
+
 // ── 四条真渲染 ────────────────────────────────────────────────────────────
 
 const PANELS = [
@@ -261,6 +288,16 @@ for (const panel of PANELS) {
         text.length >= panel.floor,
         `${panel.name} 在真实数据下应有内容（≥${panel.floor} 字），实际只有 ${text.length} 字：${text.slice(0, 200)}`,
       )
+
+      // React 不会为这些"小写属性名"抛错，只会打告警 —— 所以必须由测试来抓
+      const propNames = new Set<string>()
+      collectPropNames(second, propNames)
+      for (const name of propNames) {
+        assert.ok(
+          !CAMEL_CASE_TRAPS.has(name),
+          `${panel.name}：prop「${name}」不是 React 认的写法（React 只会告警，页面照常，但这是笔误）`,
+        )
+      }
     } finally {
       runtime.dispose()
       restore()

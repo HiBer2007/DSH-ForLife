@@ -824,7 +824,7 @@ window.__ModuleLoader__.load({
           style: Object.assign({}, styles.textarea, { minHeight: '220px' }),
           value: text || '',
           onChange: (event) => onDraft && onDraft(slug, event.target.value),
-          spellcheck: false,
+          spellCheck: false,
         }),
         node('div', { style: { marginTop: '8px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [
           node('button', { style: styles.button, disabled: busy, onClick: () => onPreview && onPreview(slug) }, ['预览']),
