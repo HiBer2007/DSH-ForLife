@@ -145,3 +145,13 @@ export type {
   SubagentRole,
 } from './subagents.ts'
 
+
+export { assertRouteForStep, classifyFailure, isSwappable, onRequestError, startStep } from './failover.ts'
+export type {
+  FailureKind,
+  FailoverDecision,
+  FailoverPolicy,
+  ModelRef,
+  RequestFailure,
+  StepFailoverState,
+} from './failover.ts'
