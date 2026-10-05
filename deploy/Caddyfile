@@ -1,0 +1,40 @@
+# DSH-ForLife · Caddy 基线配置
+#
+# 三条硬规则（来自实测调研，别改）：
+#   1. **单一真源是 gateway**：Caddy 启动只加载这份最小引导配置，之后所有变更由 gateway
+#      合成「完整 JSON」→ `POST /load`。绝不用「Caddyfile 基线 + Admin API 追加」——
+#      `caddy reload` / `adapt` 本质都是整份替换，会把 API 追加的路由静默抹掉。
+#   2. **Admin API 无任何内置鉴权** ⇒ 只监听 unix socket（默认 0200，权限即访问控制），
+#      绝不 publish 2019，绝不写 `admin :2019`（wildcard 接口时不校验 Host）。
+#   3. **DSH 自己的 Web UI 不在这里暴露**：它的 /api 有 Host/Origin 信任栅栏、cookie 是
+#      host-only + SameSite=Strict，官方明确不支持非本机域名反代 ⇒ 留 loopback / 隧道。
+
+{
+	admin unix//run/caddy/admin.sock
+	# autosave 默认开启，会把运行时 JSON 写进配置目录，--resume 时可能冒充真源
+	persist_config off
+	email {$ACME_EMAIL}
+}
+
+# 公网唯一入口：我们自己的后台（自有鉴权）
+{$FORLIFE_HOST} {
+	handle /admin* {
+		reverse_proxy gateway:8081
+	}
+
+	# 已发布的服务（模型在工作区起的 HTTP 服务，由 gateway 按登记表转发）
+	handle /svc/* {
+		reverse_proxy gateway:8081
+	}
+
+	# 刻意**不放兜底 handle**：Caddy 路由首匹配胜出，兜底会把后续动态插入的路由永久遮蔽。
+
+	encode gzip
+	log {
+		output file /data/access.log
+		format json
+	}
+}
+
+# TCP 穿透（layer4）不在 Caddyfile 里写站点块 —— 它在全局选项块的 `layer4 { … }`，
+# 且需要自建镜像（官方 caddy:2 不含 layer4）。阶段 7 落地时改为由 gateway 合成整份 JSON 下发。

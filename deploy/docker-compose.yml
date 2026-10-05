@@ -1,0 +1,98 @@
+# DSH-ForLife · 部署编排（阶段 0：拓扑骨架）
+#
+# 阶段 0 的目标是"结构正确、能被解析"，不是"能起来"：
+#   - 本文件刻意不使用 compose 的较新特性（profiles / up --wait / depends_on: condition 的复杂形式），
+#     因为开发机实测版本是 Compose v2.13.0，CI 会用同版本解析；
+#   - dsh 与 gateway 此时用 node 镜像占位，真实镜像在阶段 9/10 构建；
+#   - QQ 客户端一律**引用官方镜像**，绝不把它的二进制打进我们的产物（许可与安全双重原因）。
+#
+# 验证：docker compose -f deploy/docker-compose.yml config --quiet
+
+name: forlife
+
+services:
+  # ── 唯一公网入口：TLS + 路由 + TCP 穿透 ────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-admin:/run/caddy # Admin API 走 unix socket（绝不暴露 2019）
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── DSH 运行时（我们的便携组件挂在这里）────────────────────────────────────
+  dsh:
+    image: node:24-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "--version"] # 阶段 0 占位；真实入口在阶段 9/10
+    environment:
+      # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
+      DSH_HOME: /data/dsh
+      FORLIFE_MODE: container
+    volumes:
+      - /app:/app:ro
+      - forlife-data:/data # db / vectors / attachments / workspace / models
+      - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
+    networks: [edge, internal]
+    # 只在内网暴露，公网一律经 Caddy
+    expose: ["3080"]
+
+  # ── 伴生服务：QQ 适配、队列、轮次驱动、后台、端口发布、触发引擎 ────────────
+  gateway:
+    image: node:24-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "--version"] # 阶段 0 占位
+    environment:
+      FORLIFE_GATEWAY_PORT: "8081"
+      FORLIFE_DATA_DIR: /data
+      FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
+    volumes:
+      - /app:/app:ro
+      - forlife-data:/data
+      - caddy-admin:/run/caddy
+    networks: [edge, internal]
+    expose: ["8081"]
+    depends_on: [caddy]
+
+  # ── QQ 协议端：只引用官方镜像（内网，绝不 publish 端口）────────────────────
+  qq:
+    # 主选 NapCat（官方镜像，无需图形环境，扫码走其自带 WebUI）
+    # 备选 SnowLuma：需自建带 Xvfb/VNC 的镜像，且其许可禁止打进第三方镜像 ⇒ 更倾向直接用其官方镜像
+    image: mlikiowa/napcat-docker:latest
+    restart: unless-stopped
+    environment:
+      NAPCAT_UID: "1000"
+      NAPCAT_GID: "1000"
+    volumes:
+      - qq-config:/app/.config/QQ
+      - qq-napcat-config:/app/napcat/config
+      - qq-napcat-plugins:/app/napcat/plugins
+    networks: [internal] # 只有内网；OneBot 端口不上公网
+    expose: ["3001", "6099"]
+
+volumes:
+  forlife-data:
+  dsh-home:
+  caddy-data:
+  caddy-config:
+  caddy-admin:
+  qq-config:
+  qq-napcat-config:
+  qq-napcat-plugins:
+
+networks:
+  edge: {} # 与 Caddy 同网，只放需要对外服务的容器
+  internal:
+    internal: true # QQ 侧与内部通信，无出网/入网路由

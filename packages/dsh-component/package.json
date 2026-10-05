@@ -1,0 +1,27 @@
+{
+  "name": "forlife-memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH-ForLife 便携组件：长期记忆 + QQ 生命体运行时（双入口：dsh-std facet + legacy cordis）",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facet": "./src/facet.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./dsh-plugin.json": "./dsh-plugin.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "dsh-plugin.json",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@forlife/contracts": "workspace:*"
+  }
+}

@@ -1,0 +1,35 @@
+# DSH-ForLife profile 的用户补丁层（在 bundle 层之后应用）。
+#
+# 两条规则（来自对宿主实现的调研）：
+#   1. `- id:` 定向 patch 会**替换整行 config**，不是合并 ⇒ 每个键都必须重述；
+#   2. 行顺序不决定加载顺序（由服务可用性驱动），只决定 patch 应用顺序。
+
+# 我们的组件：forlife-memory 由它自己的 bundle 补丁注册，这里覆盖配置。
+- id: forlife-memory
+  name: forlife-memory
+  config:
+    # 全部路径相对 DSH_HOME，保证可移植（换机器只改 DSH_HOME）
+    storageRoots:
+      db: ./forlife/db
+      hot: ./forlife/hot
+      warm: ./forlife/warm
+      cold: ./forlife/cold
+      vectors: ./forlife/vectors
+      workspace: ./forlife/workspace
+      models: ./forlife/models
+      tmp: ./forlife/tmp
+      logs: ./forlife/logs
+    time:
+      systemZone: UTC
+    wake:
+      enabled: false
+
+# 显式挂载宿主时钟插件：它默认只存在于 web bundle 且 disabled:true，
+# 不显式挂就完全拿不到时间上下文（EXECUTION_PLAN §2.15 的根因 R1）。
+# refreshIntervalMs: 0 = 每个合格步骤都注入；后续由我们自己的事件驱动注入节流接管。
+- insert:
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        timeZone: Asia/Shanghai
+        refreshIntervalMs: 0

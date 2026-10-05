@@ -1,0 +1,112 @@
+﻿---
+title: 快速开始
+description: 一页弄清楚该走哪条部署路径，并完成最常见的 Docker 上手
+---
+
+第一步不是装东西，而是**决定走哪条路**。SnowLuma 的核心是把 hook 注入真实 QQ 进程，因此你需要一个能跑 QQ + 注入 + 扫码登录的环境。下面这张表按你手上的环境直接给出推荐路径，照着点进去即可。
+
+## 我该走哪条路？
+
+| 你的情况              | 推荐路径                     | 链接                                          |
+| --------------------- | ---------------------------- | --------------------------------------------- |
+| 有一台 Linux 服务器   | **Docker**（最推荐、最省事） | [Docker 部署](/zh/guide/deploy/docker)        |
+| Windows 本机          | Windows 手动 / Docker Desktop | [Windows 部署](/zh/guide/deploy/windows)      |
+| 想用 WSL2             | WSL2 里跑容器                | [WSL2 部署](/zh/guide/deploy/wsl2)            |
+| 只有安卓手机          | Termux + proot（进阶/实验性）| [手机部署](/zh/guide/deploy/mobile)           |
+| 已安装宝塔面板的 Linux 服务器 | 面板 Docker 应用商店一键导入 | [宝塔面板部署](/zh/guide/deploy/baota)        |
+| 想接 AI 客户端        | MCP 服务                     | [MCP 接入](/zh/mcp/)                          |
+| 想写客户端代码        | TypeScript SDK               | [SDK](/zh/sdk/)                               |
+
+拿不准就选 **Docker on Linux**，这是官方推荐、最容易跑起来的方式。完整对比见[选择部署方式](/zh/guide/deploy/)。
+
+## 最快上手（Docker）
+
+Linux 上官方推荐是自己起官方镜像。三步：
+
+**1. 拉起容器**
+
+```bash
+docker run -d \
+  --name snowluma \
+  --restart unless-stopped \
+  --shm-size=1g \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  -p 6081:6081 -p 5099:5099 -p 3000:3000 -p 3001:3001 \
+  -v qq-gateway-data:/app/data \
+  -v qq-client-config:/app/.config \
+  -v qq-client-data:/app/.local/share \
+  motricseven7/snowluma:latest
+```
+
+> [!DANGER]
+> `--cap-add=SYS_PTRACE` 和 `--security-opt seccomp=unconfined` **不能省**：默认 seccomp 会拦住注入，QQ（Chromium）也需要 `--shm-size=1g`。远程桌面密码首次启动会随机生成，只在日志里打一次。
+
+**2. 扫码登录**
+
+浏览器打开 `http://<服务器IP>:6081/`（noVNC）。密码：
+
+```bash
+docker logs snowluma 2>&1 | grep -E "远程桌面密码:|remote desktop password:" | tail -n 1
+```
+
+远程桌面里 QQ 已自动启动，用手机 QQ 扫码。
+
+**3. 打开 WebUI**
+
+浏览器打开 `http://<服务器IP>:5099/`。完整 Compose、多账号见 [Docker 部署](/docs/guide/deploy/docker)。
+
+## 实验性：一键安装脚本（Alpha）
+
+> [!WARNING]
+> **不是首推。** 正在 Alpha 测试，命令和默认行为都可能变。能跑 Docker 的请优先用上一节。愿意帮忙踩坑的，可以试：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SnowLuma/SnowLuma.Docker.Framework/main/install.sh | bash
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SnowLuma/SnowLuma.Docker.Framework/main/install.sh | bash -s -- --mode docker --yes
+```
+
+交互会问模式；`--yes` 且不写 `--mode` 时默认 docker。细节、sidecar、本机模式见 [一键安装（实验性）](/docs/guide/deploy/install)。
+
+## 登录与首次访问
+
+无论哪条路径，首次上手都绕不开这几件事：
+
+- **扫码登录**：SnowLuma **只支持扫码登录**，没有 CLI 登录。在无头环境里必须通过 VNC / noVNC 看到 QQ 窗口才能扫码。
+- **找 WebUI 临时密码**：**首次**用全新数据目录启动时，日志里会打印一次性管理员密码。Docker：
+
+  ```bash
+  docker logs snowluma 2>&1 | grep -E "临时密码|initial credentials" | tail -n 1
+  ```
+
+  > [!INFO]
+  > 临时密码只在全新数据目录首次启动时输出一次，重启或复用旧数据不会重新生成。
+
+- **开放端口**：要从外部访问，放行 WebUI（`5099`）和你用到的 OneBot 端口（`3000` / `3001`）。
+
+> [!WARNING]
+> **不要**把 noVNC / WebUI / OneBot 端口裸暴露在公网。远程桌面没有固定默认密码，看容器日志即可。
+
+## 免密登录（URL token）
+
+每次手输密码很烦？WebUI 支持在地址里带上**登录密码**直接进入：
+
+```
+http://<服务器IP>:5099/?token=<你的WebUI登录密码>
+```
+
+- 参数名是 `token`，**值就是你平时登录 WebUI 的密码**。SnowLuma 会用它走登录接口，密码正确即直达主页。
+- **用后即清**：密码读取后会**立即从地址栏移除**（`history.replaceState`），避免经浏览器历史 / 访问日志 / Referer 头泄露。
+- 服务端照常校验，密码错误只会退回登录页，不存在绕过。
+
+> [!WARNING]
+> 密码出现在 URL 里**风险较高**（会进浏览器历史、可能被中间设备 / 代理记录）。仅建议在可信的本地 / 内网环境使用；不要分享带密码的链接、不要贴进聊天 / issue、不要在公共设备上用。
+
+## 接下来
+
+- [选择部署方式](/zh/guide/deploy/) —— 各路径详细对比。
+- [配置参考](/zh/guide/configuration) —— 改端口、access token、适配器。
+- [更新](/zh/guide/deploy/update) —— 升级而不丢登录态。

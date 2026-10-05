@@ -1,0 +1,70 @@
+﻿{
+  "license": "SEE LICENSE IN LICENSE",
+  "name": "snowluma-monorepo",
+  "version": "1.14.21",
+  "description": "SnowLuma monorepo workspace (pnpm)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @snowluma/core build",
+    "build:sdk": "pnpm --filter @snowluma/sdk build",
+    "build:webui": "pnpm --filter webui build",
+    "build:mcp": "pnpm --filter @snowluma/mcp build",
+    "build:all": "pnpm --filter @snowluma/core build:all && pnpm --filter @snowluma/sdk build && pnpm --filter @snowluma/mcp build && pnpm --filter @snowluma/ui build && pnpm --filter webui build",
+    "check:release-layout": "node tools/check-release-layout.mjs",
+    "dev": "pnpm --filter @snowluma/core dev",
+    "dev:mode": "cd dist && cross-env SNOWLUMA_DEV_MODE=1 SNOWLUMA_DEV_WEBUI=1 node index.mjs",
+    "dev:web": "pnpm --filter webui dev",
+    "test": "pnpm --filter=\"./packages/**\" -r --no-bail --if-present test",
+    "test:core": "pnpm --filter @snowluma/core test",
+    "test:watch": "pnpm --filter @snowluma/core test:watch",
+    "test:common": "pnpm --filter @snowluma/common test",
+    "test:all": "pnpm test",
+    "test:native": "pnpm --filter=\"./packages/**\" -r --if-present test:native",
+    "coverage": "node tools/coverage.mjs",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "ci": "node tools/ci-check.mjs",
+    "start": "node dist/index.mjs",
+    "bump": "node tools/bump-version.mjs",
+    "release": "node tools/release.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitest/coverage-istanbul": "4.1.4",
+    "@vitest/coverage-v8": "^4.1.4",
+    "cross-env": "^10.1.0",
+    "eslint": "^10.2.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "jiti": "^2.6.1",
+    "typescript": "catalog:",
+    "typescript-eslint": "^8.58.2"
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "eslint-plugin-react-hooks>eslint": "10"
+      }
+    },
+    "overrides": {
+      "esbuild@<0.28.1": "^0.28.1",
+      "@babel/core@<7.29.6": "^7.29.6",
+      "qs@<=6.15.3": "^6.16.0",
+      "fast-uri@<3.1.6": "^3.1.6",
+      "@hono/node-server@<1.19.15": "^1.19.15",
+      "hono": "~4.12.34",
+      "postcss@<=8.5.22": "^8.5.23",
+      "ip-address@<=10.3.0": "^10.3.1",
+      "body-parser@<2.3.0": "^2.3.0",
+      "brace-expansion@<5.0.7": "^5.0.7"
+    }
+  },
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0",
+    "pnpm": "10.28.0"
+  }
+}

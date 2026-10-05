@@ -1,0 +1,54 @@
+﻿---
+title: 对接机器人
+description: 把 SnowLuma 的 OneBot HTTP / WebSocket 接到 MaiBot、AstrBot、NoneBot
+---
+
+SnowLuma 是协议端，不是机器人框架。机器人进程连过来即可。
+
+Docker 镜像里，OneBot 默认听 `0.0.0.0`，这样同一 Docker 网络里的其它容器才能连上。非 Docker 安装默认仍是回环。
+
+鉴权：`Authorization: Bearer <token>` 或 `?access_token=`。Token 在 WebUI 或 `config/onebot.json` / `onebot_<uin>.json` 里。HTTP 和 WS 可能各有各的 token。
+
+## 正向：机器人连 SnowLuma
+
+适合 **MaiBot**（它的 SnowLuma / NapCat 适配器是客户端）。
+
+| | |
+| --- | --- |
+| HTTP API | `http://snowluma:3000/` |
+| WebSocket | `ws://snowluma:3001/` |
+
+在机器人容器里用服务名 `snowluma`，不要用 `127.0.0.1`（那是机器人自己的回环）。
+
+宿主机上的客户端用 `http://127.0.0.1:3000/`（端口已映射时）。
+
+## 反向：SnowLuma 连机器人
+
+适合 **AstrBot**、**NoneBot2**。在 SnowLuma 配置里加 `wsClients`（WebUI 里「反向 WebSocket」）：
+
+| 框架 | 常见 URL |
+| --- | --- |
+| AstrBot | `ws://astrbot:6199/ws` |
+| NoneBot2 | `ws://nonebot:8080/onebot/v11/ws` |
+
+路径以对方文档为准。SnowLuma 只负责连出去。
+
+事件 HTTP POST 用 `httpClients`，同样填对方的上报地址。
+
+## sidecar 安装
+
+已经有 MaiBot / AstrBot 的 compose 时：
+
+```bash
+./install.sh --mode compose --network maim_bot --yes
+```
+
+把 `maim_bot` 换成 `docker network ls` 里实际的网络名。安装器**不会改**对方的 yaml。
+
+然后让机器人适配器指向 `snowluma:3001`（正向）或在 SnowLuma 里填反向 URL。
+
+## 多账号
+
+每个 UIN 一份 `onebot_<uin>.json`。默认都想占 `3000` / `3001`，第二个账号要换端口，或用反向 WS 指到不同的机器人入口。
+
+完整字段见 [配置参考](/docs/guide/configuration)。

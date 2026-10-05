@@ -1,0 +1,16 @@
+{
+  "name": "dsh-profile-forlife",
+  "private": true,
+  "description": "DSH-ForLife 的可移植 profile。用 DSH_HOME 指向本仓库即可运行，绝不触碰宿主 ~/.dsh。",
+  "dependencies": {
+    "forlife-memory": "workspace:*"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "forlife-memory"
+      ]
+    }
+  }
+}

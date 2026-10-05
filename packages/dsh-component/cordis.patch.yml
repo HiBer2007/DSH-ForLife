@@ -1,0 +1,6 @@
+# 自注册补丁：package.json 的 dsh.bundle.patch 指向本文件。
+# 任何把 forlife-memory 作为 bundle 的 profile，都会自动多出下面这一行；
+# 部署方若要改配置，用 id 定向 patch 覆盖本行（注意：id 定向 patch 会替换整行 config）。
+- insert:
+    - id: forlife-memory
+      name: forlife-memory

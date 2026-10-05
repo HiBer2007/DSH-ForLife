@@ -1,0 +1,80 @@
+﻿---
+title: 介绍
+description: SnowLuma 是什么、能做什么，以及它的三种使用形态与发行结构
+---
+
+SnowLuma 是一个面向 NTQQ（QQ 桌面客户端）的**远程协议框架**。它把 QQ 桥接到 [OneBot v11](https://github.com/botuniverse/onebot-11) 生态：一个 native addon 通过 ptrace 级注入把 hook 打进正在运行的 QQ 进程（Linux 进程名 `qq`，Windows `QQ.exe`），解析它的内部数据包，再以 OneBot v11 的形式通过 HTTP / WebSocket / 反向 WS / HTTP 上报暴露出来。
+
+围绕这个内核，SnowLuma 还提供：
+
+- **OneBot v11 适配器** —— HTTP API 服务、WebSocket 服务、反向 WebSocket、HTTP 事件上报，任意组合。
+- **NTQQ 桥接** —— 直接对接真实 QQ 客户端，无需协议号、无需独立登录。
+- **多账号** —— 一个 UIN 一个 OneBot 实例，自动检测、自动接入，无需手动配置。
+- **内置 WebUI** —— 浏览器里管理账号、配置、查看状态。
+- **TypeScript SDK** —— [`@snowluma/sdk`](/zh/sdk/)，写类型完备的 OneBot 客户端。
+- **MCP 服务** —— [`@snowluma/mcp`](/zh/mcp/)，让支持 MCP 的 AI 客户端查询并调用 OneBot action。
+
+## 三种使用形态
+
+| 你的目标                 | 形态                | 入口                                            |
+| ------------------------ | ------------------- | ----------------------------------------------- |
+| 在服务器上长期跑机器人   | **Docker**（推荐）  | [Docker 部署](/zh/guide/deploy/docker)          |
+| 让 AI 客户端调用 QQ      | **MCP**             | [MCP 接入](/zh/mcp/)                            |
+| 在本机快速试一试         | **预编译 tarball**  | [选择部署方式](/zh/guide/deploy/)               |
+
+写客户端代码请看 [TypeScript SDK](/zh/sdk/)。
+
+## 发行结构
+
+每个平台在 [GitHub Releases](https://github.com/SnowLuma/SnowLuma/releases) 提供两种 tarball：
+
+| 包名                                                     | 是否含 Node.js          | 适用                                  |
+| -------------------------------------------------------- | ----------------------- | ------------------------------------- |
+| `SnowLuma-<TAG>-<platform>-<arch>.tar.gz`（**full**）    | 内置 Node.js 运行时     | 机器上没有 Node，开箱即用             |
+| `SnowLuma-<TAG>-<platform>-<arch>-lite.tar.gz`（**lite**）| 不含 Node.js（包小很多） | 机器已装 Node.js ≥ 22（推荐 Node 24 LTS） |
+
+已发布的平台 / 架构：`linux-x64`、`linux-arm64`、`win-x64`。
+
+> [!INFO]
+> SnowLuma 需要 **Node.js ≥ 22**。2026 年 **Node 24（"Krypton"）是 Active LTS**，22（"Jod"）已进入 Maintenance LTS，因此 lite 包推荐安装 **Node 24 LTS**（22 仍可用）。full 包自带运行时，无需安装。来源：[nodejs.org](https://nodejs.org/en/about/previous-releases)。
+
+解包后的 `dist/` 大致结构：
+
+```text
+dist/
+├── index.mjs          # 入口：node ./index.mjs
+├── launcher.bat       # Windows 启动脚本（node ./index.mjs + pause）
+├── webui/             # 内置 WebUI 静态资源
+└── native/            # native addon + websocket 原生模块
+    ├── snowluma-win32-x64.{node,dll}
+    ├── snowluma-linux-x64.{node,so}
+    ├── snowluma-linux-arm64.{node,so}
+    └── websocket-<platform>-<arch>.node
+```
+
+运行方式：解包后执行 `node ./index.mjs`；Windows 上也可以双击 `launcher.bat`。
+
+## 默认服务
+
+| 服务            | 默认监听            | 说明                              |
+| --------------- | ------------------- | --------------------------------- |
+| OneBot HTTP     | `0.0.0.0:3000`      | OneBot v11 HTTP API               |
+| OneBot WS       | `0.0.0.0:3001`      | OneBot v11 WebSocket              |
+| WebUI           | `0.0.0.0:5099`      | 内置管理界面                      |
+| VNC             | `5900`              | 仅 Docker 内部：原生远程桌面。官方模板不对外映射 |
+| noVNC           | `6081`              | 仅 Docker：浏览器远程桌面，扫码登录             |
+
+端口、监听地址等可在配置里改，详见[配置参考](/zh/guide/configuration)。
+
+> [!WARNING]
+> **不要**把 noVNC / WebUI / OneBot 端口裸暴露在公网。Docker 的远程桌面**没有**固定默认密码，第一次启动会随机生成，只在容器日志里打印一次。
+
+## 项目状态
+
+> [!WARNING]
+> SnowLuma 仍处于**早期开发阶段**，接口、配置结构和发行布局都可能在版本之间变化。生产环境请固定具体版本 tag，并在升级前阅读 [更新说明](/zh/guide/deploy/update)。
+
+## 下一步
+
+- [快速开始](/zh/guide/quickstart) —— 不知道从哪开始？先看这里。
+- [选择部署方式](/zh/guide/deploy/) —— 对比所有部署路径，挑一条适合你的。

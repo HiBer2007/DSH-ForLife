@@ -1,0 +1,21 @@
+# 运行时数据（绝不入库）
+.runtime/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# 依赖与构建产物
+node_modules/
+dist/
+lib/
+*.tsbuildinfo
+
+# 调研素材（体积大，可重新获取）
+research/_sources/
+research/**/node_modules/
+
+# 本地环境
+.env
+.env.local
+*.local.md
+.DS_Store
