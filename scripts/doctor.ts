@@ -258,6 +258,24 @@ const icon: Record<Level, string> = { ok: '✅', warn: '⚠️ ', fail: '❌' }
 const pad = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - [...s].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0)))
 
 console.log('\nDSH-ForLife · forlife doctor\n' + '─'.repeat(72))
+// ── 客户端模块（手写 JS，没有编译期保护）────────────────────────────────
+// 加这条检查的原因：阶段 4 我在 client/index.js 里写了裸的 `p1-system:` 作为对象键，
+// TS 看不到它（那是要发布给浏览器的 JS），只有真去解析才发现。
+{
+  const clientPath = join(REPO_ROOT, 'packages', 'dsh-component', 'client', 'index.js')
+  if (!existsSync(clientPath)) {
+    add({ level: 'fail', title: '客户端模块', detail: '缺少 packages/dsh-component/client/index.js', fix: '面板靠它渲染。' })
+  } else {
+    try {
+      // 只做语法检查（不执行）：它要跑在浏览器里，Node 里跑不了
+      execFileSync(process.execPath, ['--check', clientPath], { stdio: 'pipe' })
+      add({ level: 'ok', title: '客户端模块', detail: 'client/index.js 语法检查通过（要发布给浏览器的那份）' })
+    } catch (error) {
+      const message = String((error as { stderr?: Buffer }).stderr ?? error).split('\n').slice(0, 4).join(' ').trim()
+      add({ level: 'fail', title: '客户端模块', detail: `client/index.js 语法错误：${message}`, fix: '手写 JS 没有编译期保护，改完请跑 node --check。' })
+    }
+  }
+}
 // ── QQ 网关接线（阶段 3）──────────────────────────────────────────────────
 // 守两类"改一处忘一处"的错：包导出漏了 ⇒ profile 报 "failed to import"；
 // QQ profile 没挂网关行 ⇒ 网关根本没跑起来，而日志上什么都看不出来。
@@ -324,6 +342,7 @@ function readdirSafe(dir: string): string[] {
     return []
   }
 }
+
 
 
 
