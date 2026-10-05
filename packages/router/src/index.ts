@@ -133,3 +133,12 @@ export type {
   VisionCallCounter,
 } from './vision.ts'
 
+
+export { assignAll, assignSubagent, assertNoRuntimeModelChange, ROLE_PURPOSE, ROLE_TIER, SUBAGENT_ROLES } from './subagents.ts'
+export type {
+  AssignmentContext,
+  ModelInfoLike,
+  SubagentAgentOptions,
+  SubagentAssignment,
+  SubagentRole,
+} from './subagents.ts'
