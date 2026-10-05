@@ -143,6 +143,8 @@
     "ports.publish.requiresApproval": { "v": true, "src": "EXECUTION_PLAN §2.10.2" },
     "ports.publish.defaultTtlMs": { "v": 3600000, "src": "EXECUTION_PLAN §2.10.2" },
 
+    "context.windowTokensDefault": { "v": 128000, "src": "EXECUTION_PLAN §4.4 裁决所需（design：占比分母，宿主 tokenMeter 可用时以它为准）" },
+
     "multiplex.compactionScale": { "v": null, "status": "tbd", "src": "EXECUTION_PLAN §2.17.1（待实测标定）" }
   },
 
@@ -169,3 +171,4 @@
     { "id": "T20", "what": "peer_status_change 按人轮询探测（默认关）", "src": "EXECUTION_PLAN §2.17.8", "landing": "gateway 定时任务" }
   ]
 }
+

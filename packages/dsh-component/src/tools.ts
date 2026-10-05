@@ -76,6 +76,7 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     execute: async (args: never): Promise<unknown> => {
       const a = args as { summary: string; content?: string; entities?: string[]; scope?: string }
       const entities = (a.entities ?? []).slice(0, 5)
+      runtime.recordToolCall()
       const result = runtime.append({
         summary: a.summary,
         ...(a.content === undefined ? {} : { content: a.content }),
@@ -270,7 +271,84 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  return [remember, pushMidMemory, recallLongterm, recallFull]
+  const requestCompaction = defineTool({
+    name: 'request_compaction',
+    description: [
+      '请求压缩这一段对话（把短期轨迹提炼成中期记忆、把当前状态留成一行摘要）。',
+      '系统会用 PLAN §4.4 的阈值与冷却期裁决：太薄（内容不够）或太频繁会被拒，并告诉你还差多少。',
+      '值得请求的时机：你已经完成了若干轮实质工作、但当前任务的中间状态已经不需要保留全部细节了。',
+      '不要为了"清理上下文"反复请求 —— 被拒时返回的 required/current 就是判据，照着攒够再来。',
+    ].join('\n'),
+    parameters: {
+      reason: { type: 'string', required: true, description: '为什么要压缩（会进压缩日志与审计）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          approved: { type: 'boolean', required: true },
+          reason: { type: 'string', description: '被拒原因码：too_thin / too_frequent。' },
+          current: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              tokens: { type: 'integer' },
+              turns: { type: 'integer' },
+              tool_calls: { type: 'integer' },
+            },
+          },
+          required: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              tokens: { type: 'integer' },
+              turns: { type: 'integer' },
+              tool_calls: { type: 'integer' },
+            },
+          },
+          hint: { type: 'string', description: '还差多少 / 为什么现在不行。' },
+          waiver: { type: 'string', description: '命中的豁免：token_threshold / context_pressure。' },
+          queued: { type: 'boolean', description: '是否已排队等待下一次压缩判定执行。' },
+        },
+      },
+      render: (_args: never, value: never): ContentBlock[] => {
+        const v = value as { approved: boolean; reason?: string; hint?: string; waiver?: string }
+        if (v.approved) {
+          return text(`压缩请求已批准${v.waiver === undefined ? '' : `（豁免：${v.waiver}）`}，已排队，下一次压缩判定时立即执行。`)
+        }
+        return text(`压缩请求被拒（${v.reason ?? '未知'}）：${v.hint ?? ''}`)
+      },
+    },
+    execute: async (args: never): Promise<unknown> => {
+      const a = args as { reason: string }
+      // 先裁决、后记账：裁决依据的是**本次请求之前**的累积
+      // （否则工具会把自己算进去，报出的 current.tool_calls 比用户预期多 1）
+      const verdict = runtime.evaluateCompactionRequest()
+      runtime.recordToolCall()
+      if (!verdict.approved) {
+        // 拒绝反馈：字段与 PLAN §4.4 的 JSON 逐字段一致
+        return {
+          approved: false,
+          reason: verdict.reason ?? 'too_thin',
+          current: verdict.current,
+          required: verdict.required,
+          hint: verdict.hint ?? '',
+        }
+      }
+      // 批准：入队 + 记影响（铁律：影响模型的操作必须留痕）
+      runtime.requestCompaction(a.reason)
+      return {
+        approved: true,
+        queued: true,
+        current: verdict.current,
+        required: verdict.required,
+        ...(verdict.waiver === undefined ? {} : { waiver: verdict.waiver }),
+      }
+    },
+  })
+
+  return [remember, pushMidMemory, recallLongterm, recallFull, requestCompaction]
 }
 
 /** 宽松解析 entities（长期表里存的是 JSON 文本）。 */
@@ -285,4 +363,6 @@ function parseEntities(raw: string | null): readonly string[] {
 }
 
 /** 工具名清单（测试与文档引用同一份，避免写错）。 */
-export const MEMORY_TOOL_NAMES = ['remember', 'push_mid_memory', 'recall_longterm', 'recall_full'] as const
+export const MEMORY_TOOL_NAMES = ['remember', 'push_mid_memory', 'recall_longterm', 'recall_full', 'request_compaction'] as const
+
+

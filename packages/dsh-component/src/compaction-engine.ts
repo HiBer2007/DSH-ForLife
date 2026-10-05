@@ -62,6 +62,7 @@ import {
   fragmentMidEntry,
   insertLongEntry,
   recordCompaction,
+  recordEffect,
   rollbackCompactionRun,
 } from '@forlife/store'
 
@@ -247,7 +248,27 @@ export function applyCompactionDecision(
       modelUsed: 'see-compaction-run',
     })
 
+    // ⑤ 第三写：影响审计（跨功能的统一审计面；阶段 3 的 admin_actions 共用这张表）
+    recordEffect(db, {
+      id: `eff_${run.id}`,
+      kind: 'compaction',
+      actor: 'system',
+      subject: sessionId ?? null,
+      detail: {
+        runId: run.id,
+        compactionId: compactionId ?? null,
+        epochFrom,
+        epochTo: epoch,
+        pushed,
+        fragmented,
+        keepInShort: decision.keep_in_short.length,
+        reasoning: decision.reasoning,
+      },
+    })
+
     commitCompactionRun(db, run.id, { epochTo: epoch, detail: { pushed, fragmented, dropped: 0 } })
+    // 记账基线重置：下一次裁决的"距上次压缩"从这里重新起算
+    runtime.resetCompactionAccounting()
     return { pushed, fragmented, epoch, dropped: 0 }
   } catch (error) {
     // 回滚：删掉本次新写的、恢复碎片、epoch 退回
@@ -295,6 +316,33 @@ export class ForlifeCompactionEngine extends BasicCompactionEngine {
         `${config?.summarizationProvider ?? '(跟随路由)'}/${config?.summarizationModel ?? '(跟随路由)'}｜maxTokens=${String(config?.maxTokens ?? '默认')}`,
     )
   }
+  /**
+   * 覆写自动压缩入口：优先消费模型排队的压缩请求。
+   *
+   * 工具执行上下文里**没有 agent**（只有 callId/signal），所以 `request_compaction` 批准后
+   * 只能入队；真正要改会话表面必须有 agent，而这里是唯一能拿到 agent 的地方。
+   * 有排队请求时改用宿主自己的 `context-overflow` 语义强制执行 ——
+   * 该语义按文档就是"绕过常规阈值与保留尾部策略，做一次有用的平衡缩减"。
+   *
+   * @param agent - 目标会话与路由。
+   * @param trigger - 宿主给的触发原因。
+   * @param signal - 取消信号。
+   * @returns 压缩结果，或 null（无需压缩）。
+   */
+  override async compactIfNeeded(
+    agent: Parameters<BasicCompactionEngine['compactIfNeeded']>[0],
+    trigger: Parameters<BasicCompactionEngine['compactIfNeeded']>[1],
+    signal: AbortSignal,
+  ): ReturnType<BasicCompactionEngine['compactIfNeeded']> {
+    const runtime = (hooks.resolveRuntime ?? ((): MemoryRuntime | undefined => activeRuntimes()[0]))()
+    const pending = runtime?.takePendingCompactionRequest()
+    if (pending !== undefined) {
+      console.log(`[forlife] 执行模型请求的压缩（原因：${pending.reason}）`)
+      return super.compactIfNeeded(agent, 'context-overflow', signal)
+    }
+    return super.compactIfNeeded(agent, trigger, signal)
+  }
+
   /**
    * 唯一覆写点：把"要一份摘要"换成"要一份结构化决策"。
    *
@@ -407,6 +455,7 @@ export class ForlifeCompactionEngine extends BasicCompactionEngine {
 }
 
 export default ForlifeCompactionEngine
+
 
 
 

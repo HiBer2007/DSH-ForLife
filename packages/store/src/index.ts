@@ -20,6 +20,8 @@ export {
   rollbackCompactionRun,
 } from './compaction-runs.ts'
 export type { CompactionPlan, CompactionRunRow, RollbackResult } from './compaction-runs.ts'
+export { getEffect, listEffects, listUnreportedEffects, markEffectsReported, recordEffect } from './effects.ts'
+export type { EffectRow } from './effects.ts'
 export type { Migration } from './migrations.ts'
 export {
   appendMidEntry,
@@ -30,6 +32,7 @@ export {
   getLongEntry,
   getMidEntry,
   getState,
+  setState,
   insertLongEntry,
   insertSpill,
   lastSuccessfulCompaction,
@@ -57,6 +60,8 @@ export type {
   MidStats,
   SpillRow,
 } from './repository.ts'
+
+
 
 
 

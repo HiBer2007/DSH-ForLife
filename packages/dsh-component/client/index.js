@@ -112,6 +112,46 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    /** 压缩历史：事务视角（阶段 2 起有数据）。 */
+    function compactionTable(log, runs) {
+      if (log.length === 0 && runs.length === 0) {
+        return node('div', { style: styles.card }, [
+          node('div', { style: styles.muted }, ['还没有压缩记录。压缩会在上下文压力达到阈值、或模型主动请求时发生。']),
+        ])
+      }
+      const phaseColor = { committed: '#16a34a', aborted: '#dc2626', started: '#d97706' }
+      const rows = runs.map((run) =>
+        node('tr', {}, [
+          node('td', { style: styles.td }, [
+            node('span', { style: Object.assign({}, styles.badge, { color: phaseColor[run.phase] || '#666' }) }, [
+              run.phase === 'committed' ? '已提交' : run.phase === 'aborted' ? '已回滚' : '进行中',
+            ]),
+          ]),
+          node('td', { style: styles.td }, [`${run.epochFrom} → ${run.epochTo === null ? '?' : run.epochTo}`]),
+          node('td', { style: styles.td }, [
+            node('span', { style: styles.mono }, [String(run.startedAt || '').slice(0, 19).replace('T', ' ')]),
+          ]),
+          node('td', { style: styles.td }, [run.sessionId || '—']),
+          node('td', { style: styles.td }, [node('span', { style: run.error ? styles.err : styles.muted }, [run.error || '—'])]),
+        ]),
+      )
+      return node('div', { style: styles.card }, [
+        node('div', { style: styles.metricLabel }, [`压缩历史（${runs.length} 次事务 · ${log.length} 条协议日志）`]),
+        node('table', { style: styles.table }, [
+          node('thead', {}, [
+            node('tr', {}, [
+              node('th', { style: styles.th }, ['状态']),
+              node('th', { style: styles.th }, ['epoch']),
+              node('th', { style: styles.th }, ['开始（UTC）']),
+              node('th', { style: styles.th }, ['会话']),
+              node('th', { style: styles.th }, ['失败/回滚原因']),
+            ]),
+          ]),
+          node('tbody', {}, rows),
+        ]),
+      ])
+    }
+
     /**
      * 把数据快照描述成一棵结构树。
      * @param {object} snapshot - `{ state, entries, compaction, error }`。
@@ -155,6 +195,7 @@ window.__ModuleLoader__.load({
       }
 
       children.push(entriesTable(entries))
+      children.push(compactionTable(snapshot.compaction || [], snapshot.runs || []))
       return node('div', { style: styles.wrap }, children)
     }
 
@@ -201,6 +242,7 @@ window.__ModuleLoader__.load({
         snapshot.state = state
         snapshot.entries = entries.entries || []
         snapshot.compaction = compaction.log || []
+        snapshot.runs = compaction.runs || []
       } catch (error) {
         snapshot.error = String(error && error.message ? error.message : error)
       }
@@ -269,3 +311,4 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+

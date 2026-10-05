@@ -33,6 +33,8 @@ export interface ForlifeConfig {
   readonly recallMaxResults: number
   /** 每轮 recall 次数上限。 */
   readonly recallMaxPerTurn: number
+  /** 上下文上限（用于 §4.4 的"短期占比"分母）；0 = 用基线默认。 */
+  readonly contextWindowTokens: number
   /** 是否把 L2/L3 段注册进系统提示词。 */
   readonly registerPromptSections: boolean
   /** 是否注册工具（关闭后模型看不到记忆工具，用于排障）。 */
@@ -89,6 +91,11 @@ export const Config = z.object({
     .number()
     .default(defaultFor<number>('recall.maxPerTurn'))
     .description('每轮 recall 次数上限。'),
+  contextWindowTokens: z
+    .number()
+    .default(0)
+    .description('上下文上限（token）。用于压缩裁决里的"短期占比"；0 = 用默认 128k，宿主有 tokenMeter 时以它为准。')
+    .volatile(),
   registerPromptSections: z.boolean().default(true).description('是否把记忆区注册进系统提示词。'),
   registerTools: z.boolean().default(true).description('是否注册记忆工具（排障时可关闭）。'),
   exposePanelApi: z.boolean().default(true).description('是否暴露 /api/forlife/* 面板接口。'),
@@ -140,9 +147,11 @@ export function resolveConfig(raw: Partial<ForlifeConfig>): ForlifeConfig {
     relativeAges: readConfigValue(raw.relativeAges, defaults.relativeAges),
     recallMaxResults: readConfigValue(raw.recallMaxResults, defaults.recallMaxResults),
     recallMaxPerTurn: readConfigValue(raw.recallMaxPerTurn, defaults.recallMaxPerTurn),
+    contextWindowTokens: readConfigValue(raw.contextWindowTokens, defaults.contextWindowTokens),
     registerPromptSections: readConfigValue(raw.registerPromptSections, defaults.registerPromptSections),
     registerTools: readConfigValue(raw.registerTools, defaults.registerTools),
     exposePanelApi: readConfigValue(raw.exposePanelApi, defaults.exposePanelApi),
     verbose: readConfigValue(raw.verbose, defaults.verbose),
   }
 }
+

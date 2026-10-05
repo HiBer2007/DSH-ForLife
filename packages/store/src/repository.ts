@@ -124,6 +124,13 @@ export function getState(db: DatabaseSync, key: string): string | undefined {
   return row?.value
 }
 
+/** 写一个状态值（记账等持久化用）。 */
+export function setState(db: DatabaseSync, key: string, value: string): void {
+  db.prepare(
+    'INSERT INTO forlife_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).run(key, value)
+}
+
 /** 当前渲染修订号。 */
 export function currentRevision(db: DatabaseSync): number {
   return Number(getState(db, 'render_revision') ?? '0')
@@ -518,6 +525,7 @@ export function listSpills(db: DatabaseSync, sessionId: string, limit = 20): rea
     )
     .all(sessionId, limit) as Omit<SpillRow, 'content'>[]
 }
+
 
 
 

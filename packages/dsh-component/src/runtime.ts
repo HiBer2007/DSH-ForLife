@@ -18,10 +18,13 @@ import { dirname, isAbsolute, join } from 'node:path'
 import {
   appendMidEntry,
   bumpEpoch,
+  getState as readState,
+  setState as writeState,
   currentEpoch,
   currentRevision,
   fragmentMidEntry,
   getSpill,
+  insertLongEntry,
   insertSpill,
   listRenderableMidEntries,
   listSpills,
@@ -35,7 +38,14 @@ import {
   type MidEntryRow,
   type OpenedDatabase,
 } from '@forlife/store'
-import { renderMidMemory, estimateTokens, type RenderedView } from '@forlife/memory-core'
+import {
+  decideCompaction,
+  estimateTokens,
+  makeFragmentHint,
+  planFragmentation,
+  renderMidMemory,
+  type RenderedView,
+} from '@forlife/memory-core'
 import { defaultFor } from '@forlife/contracts'
 
 import type { ForlifeConfig } from './config.ts'
@@ -73,7 +83,13 @@ export class MemoryRuntime {
   private readonly opened: OpenedDatabase
   private readonly config: ForlifeConfig
   private readonly log: (message: string) => void
-  private cache?: { readonly key: string; readonly view: RenderedView }
+  private cache: { readonly key: string; readonly view: RenderedView } | undefined
+  /** 上下文上限（用于算"短期占比"）。配置优先，其次基线默认值。 */
+  private get contextWindowTokens(): number {
+    return this.config.contextWindowTokens > 0
+      ? this.config.contextWindowTokens
+      : defaultFor<number>('context.windowTokensDefault')
+  }
   private turnsThisCycle = 1
   private recallThisTurn = 0
   private recallThisCycle = 0
@@ -284,9 +300,171 @@ export class MemoryRuntime {
     return this.db.prepare('SELECT * FROM compaction_log ORDER BY timestamp DESC LIMIT ?').all(limit) as Record<string, unknown>[]
   }
 
-  /** 轮次边界：重置"每轮"额度的计数（压缩后重置整周期额度，阶段 4 接 T11）。 */
+  /** 轮次边界：重置"每轮"额度的计数，并推进"自上次压缩以来的轮次"（PLAN §4.4 记账）。 */
   beginTurn(): void {
     this.recallThisTurn = 0
+    this.bumpCounter('acct_turns_since_compaction', 1)
+  }
+
+  /** 记一次工具调用（§4.4 的"自上次压缩工具调用数"）。 */
+  recordToolCall(): void {
+    this.bumpCounter('acct_toolcalls_since_compaction', 1)
+  }
+
+  /** 观测当前短期 token 数（宿主 tokenMeter 或网关估算）。 */
+  observeShortTokens(tokens: number): void {
+    this.setState('acct_short_tokens', String(Math.max(0, Math.trunc(tokens))))
+  }
+
+  /**
+   * 取裁决用的统计（PLAN §4.4）。
+   *
+   * @param contextWindowTokens - 上下文上限（用于算占比）；不传则按 128k 估。
+   * @returns 裁决输入。
+   */
+  compactionStats(contextWindowTokens = 128_000): {
+    shortTokens: number
+    turnsSinceLast: number
+    toolCallsSinceLast: number
+    tokenDeltaSinceLast: number
+    timeSinceLastMs: number
+    shortRatio: number
+    hasPreviousCompaction: boolean
+  } {
+    const shortTokens = Number(this.getState('acct_short_tokens') ?? '0')
+    const atLast = this.getState('acct_tokens_at_last_compaction')
+    const lastAt = this.getState('acct_last_compaction_at')
+    return {
+      shortTokens,
+      turnsSinceLast: Number(this.getState('acct_turns_since_compaction') ?? '0'),
+      toolCallsSinceLast: Number(this.getState('acct_toolcalls_since_compaction') ?? '0'),
+      tokenDeltaSinceLast: atLast === undefined ? shortTokens : Math.max(0, shortTokens - Number(atLast)),
+      timeSinceLastMs: lastAt === undefined ? Number.MAX_SAFE_INTEGER : Date.now() - Date.parse(lastAt),
+      shortRatio: contextWindowTokens <= 0 ? 0 : shortTokens / contextWindowTokens,
+      hasPreviousCompaction: lastAt !== undefined,
+    }
+  }
+
+  /**
+   * 记录模型发起的压缩请求（已通过 §4.4 裁决）。
+   *
+   * 为什么是"入队"而不是直接压：**工具执行上下文里没有 agent**（只有 callId/signal/deferContext），
+   * 而压缩必须要 agent 才能改会话表面。所以工具只负责"裁决 + 排队"，
+   * 由引擎在下一次 `compactIfNeeded` 时用宿主的 `context-overflow` 语义强制执行
+   * （该语义按文档就是"绕过常规阈值与保留尾部策略"，正是我们要的效果）。
+   */
+  requestCompaction(reason: string): void {
+    this.setState('acct_pending_compaction', JSON.stringify({ reason, at: new Date().toISOString() }))
+  }
+
+  /** 取出并清空待执行的压缩请求。 */
+  takePendingCompactionRequest(): { readonly reason: string; readonly at: string } | undefined {
+    const raw = this.getState('acct_pending_compaction')
+    if (raw === undefined) return undefined
+    this.setState('acct_pending_compaction', '')
+    try {
+      const parsed = JSON.parse(raw) as { reason?: string; at?: string }
+      return { reason: parsed.reason ?? '(未说明)', at: parsed.at ?? '' }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 用 PLAN §4.4 裁决一次压缩请求（工具与引擎共用同一套判据）。
+   *
+   * @param contextWindowTokens - 上下文上限；不传则用默认估值。
+   * @returns 裁决结果（与 §4.4 的反馈 JSON 字段一致）。
+   */
+  evaluateCompactionRequest(contextWindowTokens?: number): ReturnType<typeof decideCompaction> {
+    return decideCompaction(
+      this.compactionStats(contextWindowTokens ?? this.contextWindowTokens),
+      {},
+    )
+  }
+
+  /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
+  resetCompactionAccounting(): void {
+    const now = new Date().toISOString()
+    this.setState('acct_turns_since_compaction', '0')
+    this.setState('acct_toolcalls_since_compaction', '0')
+    this.setState('acct_tokens_at_last_compaction', this.getState('acct_short_tokens') ?? '0')
+    this.setState('acct_last_compaction_at', now)
+  }
+
+  /**
+   * 沉降维护任务：把最久未访问的活跃条目降级为碎片（PLAN §4.1 的第二类压缩）。
+   *
+   * 与压缩的区别：**不调用模型**，纯系统维护 —— 因此可以在任意时刻跑（定时或占比触发），
+   * 代价只是把全文挪进长期记忆、把一个中期条目换成一行 [F→] 指针。
+   *
+   * @param options - 触发条件与批量上限。
+   * @returns 本次沉降统计。
+   */
+  settle(options: { readonly olderThanDays?: number; readonly limit?: number } = {}): {
+    readonly fragmented: number
+    readonly archived: number
+    readonly notes: readonly string[]
+  } {
+    const olderThanDays = options.olderThanDays ?? defaultFor<number>('tiering.settleAfterDays')
+    const limit = options.limit ?? defaultFor<number>('tiering.settleBatchSize')
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString()
+
+    const candidates = this.listEntries({ status: ['active'] })
+      .filter((e) => (e.last_accessed_at ?? e.created_at) < cutoff)
+      .slice(0, limit)
+      .map((e) => ({
+        id: e.id,
+        summary: e.summary,
+        entities: parseEntities(e.entities),
+        tokenCount: e.token_count,
+        lastAccessedAt: e.last_accessed_at,
+        createdAt: e.created_at,
+      }))
+
+    if (candidates.length === 0) return { fragmented: 0, archived: 0, notes: ['没有满足沉降条件的活跃条目'] }
+
+    const stats = this.stats()
+    const withHints = candidates.map((c) => ({
+      ...c,
+      hintTokens: estimateTokens(makeFragmentHint(c.summary, c.entities).hint),
+    }))
+    const plan = planFragmentation(withHints, stats)
+
+    let fragmented = 0
+    for (const id of plan.toFragment) {
+      const source = this.listEntries().find((e) => e.id === id)
+      if (source === undefined) continue
+      const entities = parseEntities(source.entities)
+      const { hint } = makeFragmentHint(source.summary, entities)
+      const longId = `long_from_${id}`
+      insertLongEntry(this.db, {
+        id: longId,
+        content: source.content ?? source.summary,
+        summary: source.summary,
+        entities,
+        sourceMidIds: [id],
+        sourceScope: source.source_scope,
+      })
+      fragmentMidEntry(this.db, id, longId, hint, estimateTokens(hint))
+      fragmented += 1
+    }
+
+    // 淘汰：把最久未访问的碎片标记 archived（表保留，可恢复；§5.3 第四层）
+    let archived = 0
+    if (stats.fragmentCount >= defaultFor<number>('fragment.maxCount')) {
+      for (const id of plan.toArchive) {
+        archived += Number(
+          this.db.prepare("UPDATE mid_memory_entries SET status = 'archived', revision = revision + 1 WHERE id = ? AND status = 'fragmented'").run(id).changes,
+        )
+      }
+    }
+
+    if (fragmented > 0 || archived > 0) {
+      this.db.prepare("UPDATE forlife_state SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'render_revision'").run()
+      this.cache = undefined
+    }
+    return { fragmented, archived, notes: plan.notes }
   }
 
   /** 压缩后重置周期额度（PLAN §7.6 的 reset_policy = on_compaction）。 */
@@ -299,6 +477,22 @@ export class MemoryRuntime {
   /** 关闭（checkpoint + 释放）。 */
   close(): void {
     this.opened.close()
+  }
+
+  /** 读一个持久化状态值（记账用；跨重启保留）。 */
+  private getState(key: string): string | undefined {
+    const value = readState(this.db, key)
+    return value === undefined || value === '' ? undefined : value
+  }
+
+  /** 写一个持久化状态值。 */
+  private setState(key: string, value: string): void {
+    writeState(this.db, key, value)
+  }
+
+  /** 计数器自增。 */
+  private bumpCounter(key: string, delta: number): void {
+    this.setState(key, String(Number(this.getState(key) ?? '0') + delta))
   }
 
   private budget(maxPerTurn: number, maxPerCycle: number, maxResults: number): RecallBudget {
@@ -318,6 +512,21 @@ export class MemoryRuntime {
 export function resolveDbPath(config: ForlifeConfig, dshHome: string): string {
   const root = isAbsolute(config.storageRoot) ? config.storageRoot : join(dshHome, config.storageRoot)
   return join(root, config.dbFile)
+}
+
+
+
+
+
+
+/** 宽松解析 entities（表里是 JSON 文本；坏数据不该让沉降崩掉）。 */
+function parseEntities(raw: string): readonly string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
 }
 
 

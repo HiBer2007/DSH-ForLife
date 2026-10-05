@@ -171,6 +171,31 @@ test('渲染内容：指标、指纹、条目表都画出来', () => {
   assert.ok(!all.includes(' 缩略 '), '碎片行不该显示 summary（应显示 hint）')
 })
 
+test('渲染内容：压缩历史（事务视角）画出状态、epoch 与回滚原因', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describePanel({
+    state: { epoch: 2, revision: 5 },
+    entries: [],
+    runs: [
+      { id: 'run_1', phase: 'committed', epochFrom: 0, epochTo: 1, sessionId: 'sess_1', startedAt: '2026-10-05T03:00:00.000Z', error: null },
+      { id: 'run_2', phase: 'aborted', epochFrom: 1, epochTo: null, sessionId: 'sess_1', startedAt: '2026-10-05T04:00:00.000Z', error: '注入的写入故障' },
+    ],
+  })
+  const all = texts(panel).join(' ')
+  assert.ok(all.includes('压缩历史'), '要有压缩历史区块')
+  assert.ok(all.includes('已提交') && all.includes('已回滚'), '两种状态都要能显示')
+  assert.ok(all.includes('0 → 1'), 'epoch 变化要显示出来')
+  assert.ok(all.includes('1 → ?'), '未提交的事务没有 epochTo，要显示为 ?')
+  assert.ok(all.includes('注入的写入故障'), '回滚原因必须显示（否则运维无从下手）')
+  assert.ok(all.includes('2026-10-05 03:00:00'), 'UTC 时间要格式化')
+})
+
+test('渲染内容：没有压缩记录时给友好提示而不是空表', () => {
+  const { exports } = loadClientModule()
+  const panel = exports.describePanel({ state: { epoch: 0 }, entries: [], runs: [], compaction: [] })
+  assert.ok(texts(panel).join(' ').includes('还没有压缩记录'))
+})
+
 test('渲染内容：约束违反单独成块，空条目给友好提示', () => {
   const { exports } = loadClientModule()
   const panel = exports.describePanel({
@@ -245,4 +270,5 @@ test('面板组件：加载中状态返回提示文本', () => {
   assert.equal(element.type, 'div')
   assert.match(element.props.children, /正在读取记忆状态/)
 })
+
 

@@ -199,6 +199,38 @@ CREATE INDEX IF NOT EXISTS idx_runs_session ON compaction_runs (session_id, star
 
 const m0003Checksum = createHash('sha256').update(m0003.sql).digest('hex')
 
+/**
+ * 迁移 4：影响审计（"三写"的第三写，也是阶段 3 铁律 §2.17.7 的地基）。
+ *
+ * 用途：任何**会影响模型**的操作都要留一条可审计的影响记录 ——
+ * 压缩对模型的影响是"它的中期记忆被改了、短期窗口被替换了"，
+ * 这类影响必须与 `admin_actions`（阶段 3）用同一张表表达，面板才能统一呈现。
+ */
+const m0004 = {
+  version: 4,
+  name: '0004_effects',
+  sql: `
+CREATE TABLE IF NOT EXISTS effects (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,        -- compaction | settle | admin_action | wake | ...
+  actor      TEXT NOT NULL,        -- system | model | admin
+  subject    TEXT,                 -- 受影响对象（会话 id / 条目 id / 配置键）
+  detail     TEXT NOT NULL,        -- JSON
+  affects_model INTEGER NOT NULL DEFAULT 1,   -- 是否影响模型（决定要不要报告）
+  reported   INTEGER NOT NULL DEFAULT 0,      -- 是否已向模型报告（铁律 1）
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_effects_kind ON effects (kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_effects_unreported ON effects (reported, affects_model, created_at);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0004.sql)
+  },
+} as const
+
+const m0004Checksum = createHash('sha256').update(m0004.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -219,10 +251,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0003Checksum,
     up: m0003.up,
   },
+  {
+    version: m0004.version,
+    name: m0004.name,
+    checksum: m0004Checksum,
+    up: m0004.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

@@ -12,6 +12,8 @@
  * @module forlife-memory/api
  */
 import type { MemoryRuntime } from './runtime.ts'
+import { listCompactionRuns } from '@forlife/store'
+
 import { contractsSummary } from './diagnostics.ts'
 
 /** 一条面板路由。 */
@@ -99,10 +101,26 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
       })
     }),
 
-    // 压缩日志（阶段 2 起有数据）
-    get('/api/forlife/compaction', (url) =>
-      json({ ok: true, log: runtime.compactionLog(intParam(url, 'limit') ?? 20) }),
-    ),
+    // 压缩日志 + 运行记录（阶段 2 起有数据）。
+    // 两份数据用途不同：log 是 PLAN §4.5 的协议字段，runs 是事务视角（含 started/committed/aborted 与回滚结果）。
+    get('/api/forlife/compaction', (url) => {
+      const limit = intParam(url, 'limit') ?? 20
+      return json({
+        ok: true,
+        log: runtime.compactionLog(limit),
+        runs: listCompactionRuns(runtime.db, limit).map((run) => ({
+          id: run.id,
+          phase: run.phase,
+          epochFrom: run.epoch_from,
+          epochTo: run.epoch_to,
+          sessionId: run.session_id,
+          compactionId: run.compaction_id,
+          error: run.error,
+          startedAt: run.started_at,
+          endedAt: run.ended_at,
+        })),
+      })
+    }),
 
     // 溢出记录（大结果被截断后的全文索引）
     get('/api/forlife/spills', (url) => {
@@ -135,5 +153,6 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
 
 
