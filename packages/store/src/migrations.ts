@@ -231,6 +231,169 @@ CREATE INDEX IF NOT EXISTS idx_effects_unreported ON effects (reported, affects_
 
 const m0004Checksum = createHash('sha256').update(m0004.sql).digest('hex')
 
+/**
+ * 迁移 5：QQ 集成的数据模型（PLAN §八）。
+ *
+ * 字段出处逐条标注：
+ *  - §8.4「会话键：(platform, chat_id, thread_id?)」⇒ `qq_sessions.conversation_key` 就是这三段的规范化；
+ *  - §8.4「队列：SQLite 表 + 轮询」「崩溃恢复：队列与处理状态持久化」⇒ `qq_inbox` 带 processed/attempt/error；
+ *  - §8.2「轮次生命周期」⇒ `qq_turns`（一轮的输入、输出、耗时、token、工具调用次数）；
+ *  - §8.3「挂起时不提交、不追加中期记忆」⇒ `qq_turns.status` 含 `deferred`；
+ *  - §2.17.2 唤醒条件矩阵（用户拍板）⇒ `wake_rules` 每个条件**独立**一行，不派生；
+ *  - §2.17.3 有界待读池 ⇒ `pending_messages`；
+ *  - §2.17.6 状态通道 ⇒ `status_state`（source = model/system，system 不可被静默覆盖）。
+ */
+const m0005 = {
+  version: 5,
+  name: '0005_qq',
+  sql: `
+-- ── 会话（§8.4 的会话键）──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS qq_sessions (
+  conversation_key TEXT PRIMARY KEY,     -- platform:chat_id[:thread_id]
+  platform         TEXT NOT NULL,        -- onebot11
+  chat_id          TEXT NOT NULL,
+  thread_id        TEXT,
+  kind             TEXT NOT NULL,        -- private | group | temp
+  title            TEXT,
+  last_message_at  TEXT,
+  last_read_at     TEXT,
+  created_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_qq_sessions_kind ON qq_sessions (kind, last_message_at);
+
+-- ── 入站队列（§8.4：先落库再处理，崩溃可恢复）────────────────────────────
+CREATE TABLE IF NOT EXISTS qq_inbox (
+  id               TEXT PRIMARY KEY,
+  conversation_key TEXT NOT NULL,
+  platform_msg_id  TEXT,
+  sender_id        TEXT,
+  sender_name      TEXT,
+  is_group         INTEGER NOT NULL DEFAULT 0,
+  is_self          INTEGER NOT NULL DEFAULT 0,
+  mentioned_me     INTEGER NOT NULL DEFAULT 0,
+  mentioned_all    INTEGER NOT NULL DEFAULT 0,
+  is_poke          INTEGER NOT NULL DEFAULT 0,
+  media_kind       TEXT,                 -- image | file | NULL
+  text             TEXT NOT NULL DEFAULT '',
+  payload          TEXT NOT NULL,        -- 原始事件 JSON（可回放）
+  at               TEXT NOT NULL,        -- 事件时间（UTC）
+  received_at      TEXT NOT NULL,
+  processed        INTEGER NOT NULL DEFAULT 0,
+  merged_into      TEXT,                 -- 被合并进哪一轮（防抖合并的证据）
+  attempt          INTEGER NOT NULL DEFAULT 0,
+  error            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_qq_inbox_pending ON qq_inbox (processed, conversation_key, at);
+CREATE INDEX IF NOT EXISTS idx_qq_inbox_conv ON qq_inbox (conversation_key, at);
+
+-- ── 轮次（§8.2 生命周期 + §8.3 挂起）─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS qq_turns (
+  id               TEXT PRIMARY KEY,
+  conversation_key TEXT NOT NULL,
+  status           TEXT NOT NULL,        -- running | done | failed | deferred
+  started_at       TEXT NOT NULL,
+  ended_at         TEXT,
+  session_id       TEXT,                 -- DSH 会话 id（多会话单窗口下多个会话共用一个窗口）
+  model            TEXT,
+  input_ids        TEXT NOT NULL DEFAULT '[]',
+  tokens_in        INTEGER NOT NULL DEFAULT 0,
+  tokens_out       INTEGER NOT NULL DEFAULT 0,
+  tool_calls       INTEGER NOT NULL DEFAULT 0,
+  defer_reason     TEXT,
+  defer_until      TEXT,
+  error            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_qq_turns_status ON qq_turns (status, started_at);
+CREATE INDEX IF NOT EXISTS idx_qq_turns_conv ON qq_turns (conversation_key, started_at);
+
+-- ── 出站记录（§2.17.9 送达确认 + 去重）──────────────────────────────────
+CREATE TABLE IF NOT EXISTS qq_outbox (
+  id               TEXT PRIMARY KEY,
+  conversation_key TEXT NOT NULL,
+  platform_msg_id  TEXT,
+  kind             TEXT NOT NULL,        -- text | image | file | sticker | notice | mention_all
+  payload          TEXT NOT NULL,
+  sent_at          TEXT NOT NULL,
+  confirmed        INTEGER NOT NULL DEFAULT 0,
+  confirmed_at     TEXT,
+  error            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_qq_outbox_conv ON qq_outbox (conversation_key, sent_at);
+CREATE INDEX IF NOT EXISTS idx_qq_outbox_unconfirmed ON qq_outbox (confirmed, sent_at);
+
+-- ── 唤醒条件矩阵（§2.17.2：**每个条件独立**，不派生）────────────────────
+CREATE TABLE IF NOT EXISTS wake_rules (
+  scope            TEXT NOT NULL,        -- '*' | private:ID | group:ID
+  condition        TEXT NOT NULL,        -- private_message | group_mention | group_mention_all | ...
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  probability      INTEGER NOT NULL DEFAULT 100,   -- 0-100
+  min_interval_ms  INTEGER NOT NULL DEFAULT 0,
+  daily_limit      INTEGER NOT NULL DEFAULT 0,     -- 0 = 不限
+  quiet_until      TEXT,
+  updated_by       TEXT NOT NULL DEFAULT 'system', -- system | model | admin
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (scope, condition)
+);
+
+-- 每次判定都留痕：为什么唤醒/为什么不唤醒（面板与排障的命根子）
+CREATE TABLE IF NOT EXISTS wake_events (
+  id               TEXT PRIMARY KEY,
+  scope            TEXT NOT NULL,
+  condition        TEXT NOT NULL,
+  conversation_key TEXT,
+  decision         TEXT NOT NULL,        -- wake | skip
+  reason           TEXT NOT NULL,        -- disabled | probability | quiet_hours | rate_limit | budget | matched
+  roll             REAL,                 -- 概率判定的随机数（可复算）
+  at               TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wake_events_at ON wake_events (at);
+CREATE INDEX IF NOT EXISTS idx_wake_events_scope ON wake_events (scope, condition, at);
+
+-- ── 有界待读池（§2.17.3）────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pending_messages (
+  id               TEXT PRIMARY KEY,
+  scope            TEXT NOT NULL,
+  conversation_key TEXT NOT NULL,
+  sender_name      TEXT,
+  summary          TEXT NOT NULL,
+  at               TEXT NOT NULL,
+  read             INTEGER NOT NULL DEFAULT 0,
+  read_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_unread ON pending_messages (read, at);
+CREATE INDEX IF NOT EXISTS idx_pending_scope ON pending_messages (scope, at);
+
+-- ── 状态通道（§2.17.6）──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS status_state (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  source      TEXT NOT NULL,             -- model | system
+  state       TEXT NOT NULL,             -- online | away | busy | custom
+  text        TEXT,
+  reason      TEXT,                      -- 系统状态的原因（不可被静默覆盖）
+  since       TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS status_presets (
+  key        TEXT PRIMARY KEY,           -- failure | degraded | offline ...
+  text       TEXT NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  updated_at TEXT NOT NULL
+);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0005.sql)
+  },
+} as const
+
+const m0005Checksum = createHash('sha256').update(m0005.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -257,10 +420,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0004Checksum,
     up: m0004.up,
   },
+  {
+    version: m0005.version,
+    name: m0005.name,
+    checksum: m0005Checksum,
+    up: m0005.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 
