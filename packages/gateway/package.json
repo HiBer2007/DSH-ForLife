@@ -7,7 +7,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@forlife/contracts": "workspace:*",
     "@forlife/store": "workspace:*",
-    "@forlife/contracts": "workspace:*"
+    "ws": "^8.22.0"
   }
 }
