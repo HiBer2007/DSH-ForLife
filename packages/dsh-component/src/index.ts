@@ -23,6 +23,7 @@ import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
 import { seedDefaultPrompts } from './prompt-store.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
+import { buildClockTools } from './clock-tools.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -180,7 +181,12 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         const dispose = tools.register(definition)
         disposers.push(dispose)
       }
-      log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full')
+      // 时间工具（阶段 4）：`now()` 是"主动看时间"的唯一实现方式（§2.15.1 根因 4）
+      for (const definition of buildClockTools(defineToolImpl, runtime)) {
+        const dispose = tools.register(definition)
+        disposers.push(dispose)
+      }
+      log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks')
     }
   }
 
@@ -240,6 +246,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
 
 
 

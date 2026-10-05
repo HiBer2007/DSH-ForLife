@@ -27,6 +27,8 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { nowIso } from '@forlife/store'
 
+import { decideInjection, renderTimeBlock } from '@forlife/memory-core'
+
 import { classifyNoise, type NoiseFilterOptions, type NoiseVerdict } from './timing.ts'
 import { decideWake, type WakeRequest } from './wake.ts'
 import type { ConversationRef, InboundMessage } from './transport.ts'
@@ -85,7 +87,13 @@ export interface TurnRequest {
  */
 export function buildTurnPrompt(
   messages: readonly InboundMessage[],
-  options: { readonly unreadSummary?: string; readonly lastInteractionAt?: string; readonly now?: Date } = {},
+  options: {
+    readonly unreadSummary?: string
+    readonly lastInteractionAt?: string
+    /** 时间读数块（由调用方按 §2.15.2 P2 的事件驱动规则决定要不要给）。 */
+    readonly timeBlock?: string
+    readonly now?: Date
+  } = {},
 ): string {
   const now = options.now ?? new Date()
   const lines: string[] = [
@@ -128,6 +136,12 @@ export function buildTurnPrompt(
     lines.push('### 你被唤醒期间错过的消息（摘要）', options.unreadSummary, '')
   }
 
+  // 时间读数：**放尾部**，绝不进稳定前缀（§2.15.2 P2 第 6 条：读数进前缀 = 每轮破缓存）。
+  // 措辞是权威式的，并写死"不要依据训练数据/历史消息推断现在"这条裁决规则。
+  if (options.timeBlock !== undefined && options.timeBlock !== '') {
+    lines.push(options.timeBlock, '')
+  }
+
   lines.push('回复时请用 qq_reply 指定目标会话（conversation 参数必填）。')
   return lines.join('\n')
 }
@@ -158,6 +172,23 @@ export interface TurnRunnerOptions {
   readonly noise?: NoiseFilterOptions
   /** 关掉噪音过滤（默认开启；关掉只用于排障）。 */
   readonly disableNoiseFilter?: boolean
+  /**
+   * 时间感知钩子（阶段 4）。不给则本轮不注入时间读数。
+   *
+   * 刻意做成一组小回调而不是直接依赖 store/clock：
+   * 网关包不该反向依赖组件的存储层，而这一层只关心"要不要给、给什么文本"。
+   */
+  readonly timeHooks?: {
+    readonly lastReadingAt: (conversationKey: string) => Date | undefined
+    readonly lastInteractionAt: (conversationKey: string) => Date | undefined
+    readonly lastActionAt: () => Date | undefined
+    readonly compactedSince: (conversationKey: string, since?: Date) => boolean
+    readonly wokeSince: (conversationKey: string, since?: Date) => boolean
+    readonly clockSettings: (conversationKey: string) => { readonly conversationTimezone: string; readonly hour24: boolean }
+    readonly record: (conversationKey: string, at: Date, reason: string, timezone: string, text: string) => void
+    readonly intervalMs?: number
+    readonly idleThresholdMs?: number
+  }
 }
 
 /** 一轮的处理结果。 */
@@ -247,9 +278,14 @@ export class TurnRunner {
       )
       .run(turnId, key, startedAt, JSON.stringify(effective.map((m) => m.messageId)))
 
+    // 时间读数（§2.15.2 P2 的事件驱动判定）：先决定要不要给，再生成文本。
+    // 判定顺序由 memory-core/clock.ts 保证"强事件优先于间隔"。
+    const timeBlock = this.buildTimeBlockIfNeeded(scope, key)
+
     const prompt = buildTurnPrompt(effective, {
       ...(this.options.unreadSummaryOf?.(scope) === undefined ? {} : { unreadSummary: this.options.unreadSummaryOf?.(scope) as string }),
       ...(latestAt(effective) === undefined ? {} : { lastInteractionAt: latestAt(effective) as string }),
+      ...(timeBlock === undefined ? {} : { timeBlock }),
     })
 
     try {
@@ -307,6 +343,51 @@ export class TurnRunner {
     }
   }
 
+  /**
+   * 按事件驱动规则决定并生成时间读数块（§2.15.2 P2）。
+   *
+   * 落库是必须的：验收要断言"压缩后/唤醒后/长空闲后存在一条新鲜读数（年龄 < 30s）"，
+   * 不落库就只能靠日志肉眼看。
+   *
+   * @param scope - 会话作用域。
+   * @param conversationKey - 会话键。
+   * @returns 时间块文本，或 undefined（这一步不需要注入）。
+   */
+  private buildTimeBlockIfNeeded(scope: string, conversationKey: string): string | undefined {
+    const hooks = this.options.timeHooks
+    if (hooks === undefined) return undefined
+    const now = new Date()
+    const lastReading = hooks.lastReadingAt(conversationKey)
+    const decision = decideInjection({
+      now,
+      ...(lastReading === undefined ? {} : { lastReadingAt: lastReading }),
+      ...(hooks.lastInteractionAt(conversationKey) === undefined ? {} : { lastInteractionAt: hooks.lastInteractionAt(conversationKey) as Date }),
+      isTurnFirstStep: true, // QQ 轮次天然是"这一轮的第一步"
+      ...(hooks.compactedSince(conversationKey, lastReading) ? { compactedSinceLastReading: true } : {}),
+      ...(hooks.wokeSince(conversationKey, lastReading) ? { wokeSinceLastReading: true } : {}),
+      ...(hooks.intervalMs === undefined ? {} : { intervalMs: hooks.intervalMs }),
+      ...(hooks.idleThresholdMs === undefined ? {} : { idleThresholdMs: hooks.idleThresholdMs }),
+    })
+    if (!decision.inject || decision.reason === undefined) {
+      this.log(`本轮不注入时间读数：${decision.skipReason ?? ''}`)
+      return undefined
+    }
+    const settings = hooks.clockSettings(conversationKey)
+    const block = renderTimeBlock({
+      now,
+      timezone: settings.conversationTimezone,
+      hour24: settings.hour24,
+      reason: decision.reason,
+      ...(lastReading === undefined ? {} : { lastReadingAt: lastReading }),
+      ...(hooks.lastInteractionAt(conversationKey) === undefined ? {} : { lastInteractionAt: hooks.lastInteractionAt(conversationKey) as Date }),
+      ...(hooks.lastActionAt() === undefined ? {} : { lastActionAt: hooks.lastActionAt() as Date }),
+    })
+    hooks.record(conversationKey, now, decision.reason, settings.conversationTimezone, block)
+    this.log(`已注入时间读数（原因：${decision.reason}）`)
+    void scope
+    return block
+  }
+
   /** 收尾：写状态与计量。 */
   private finishTurn(turnId: string, outcome: TurnOutcome): void {
     if (outcome.deferred !== undefined) {
@@ -361,5 +442,7 @@ export function defaultScopeOf(conversation: ConversationRef): string {
   if (conversation.kind === 'group') return `group:${conversation.chatId}`
   return `private:${conversation.chatId}`
 }
+
+
 
 

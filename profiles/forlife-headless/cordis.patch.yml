@@ -14,3 +14,16 @@
 - insert:
     - id: forlife-compaction
       name: 'forlife-memory/compaction'
+# 时间感知兜底（阶段 4 §2.15.2 P0）
+#
+# 为什么还要挂宿主这个插件：我们的 QQ 轮次走**网关的尾部注入**（更新鲜、更权威），
+# 但通过 DSH 本身（web/TUI 直接对话）进行的轮次不经过网关 —— 那些路径没有时间读数。
+# 所以这里挂上它作为兜底，并把节流放宽到 30 分钟：**避免两个来源频繁打架**，
+# 同时保证"任何路径下模型手里都有一个钟"。
+- insert:
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        timeZone: Asia/Shanghai
+        refreshIntervalMs: 1800000
+

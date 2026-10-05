@@ -642,6 +642,47 @@ CREATE INDEX IF NOT EXISTS idx_time_drift_severity ON time_drift (severity, at D
 
 const m0011Checksum = createHash('sha256').update(m0011.sql).digest('hex')
 
+/**
+ * 迁移 12：三层时区的按会话设置（阶段 4 交付物 8，§2.16）。
+ *
+ * 用户拍板的三层：`systemTimezone`（**记录一律 UTC**）/ `conversationTimezone`（怎么理解）/
+ * `displayTimezone`（给人看）。这张表存第二层的**按会话覆盖**。
+ *
+ * `source` 的优先级是验收项：「`user_set > model_note > 小模型建议`」。
+ * 建议单独一张表且**带 pending 标记**：低置信度的小模型判断只能写建议，
+ * 不能直接改 —— 改错会让这个会话的**所有**时间表述都错，而人未必立刻发现。
+ */
+const m0012 = {
+  version: 12,
+  name: '0012_conversation_clocks',
+  sql: `
+CREATE TABLE IF NOT EXISTS conversation_clock_settings (
+  scope       TEXT PRIMARY KEY,        -- group:88888 / private:10001 / *
+  timezone    TEXT NOT NULL,
+  hour24      INTEGER NOT NULL DEFAULT 1,
+  source      TEXT NOT NULL,           -- user_set | model_note | small_model_suggest | default
+  reason      TEXT,
+  updated_by  TEXT NOT NULL DEFAULT 'model',
+  updated_at  TEXT NOT NULL
+);
+
+-- 待确认的时钟建议：低置信度判断只能写这里，等人确认或出现更多证据
+CREATE TABLE IF NOT EXISTS clock_suggestions (
+  scope       TEXT PRIMARY KEY,
+  timezone    TEXT NOT NULL,
+  confidence  TEXT NOT NULL,           -- high | medium | low
+  origin      TEXT NOT NULL,           -- model | small_model | heuristic
+  reason      TEXT,
+  created_at  TEXT NOT NULL
+);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0012.sql)
+  },
+} as const
+
+const m0012Checksum = createHash('sha256').update(m0012.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -710,10 +751,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0011Checksum,
     up: m0011.up,
   },
+  {
+    version: m0012.version,
+    name: m0012.name,
+    checksum: m0012Checksum,
+    up: m0012.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

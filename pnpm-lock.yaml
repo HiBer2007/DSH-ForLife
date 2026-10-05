@@ -143,6 +143,9 @@ importers:
       '@forlife/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@forlife/memory-core':
+        specifier: workspace:*
+        version: link:../memory-core
       '@forlife/store':
         specifier: workspace:*
         version: link:../store

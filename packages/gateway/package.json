@@ -9,6 +9,7 @@
   "dependencies": {
     "@forlife/contracts": "workspace:*",
     "@forlife/store": "workspace:*",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "@forlife/memory-core": "workspace:*"
   }
 }

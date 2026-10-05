@@ -23,6 +23,7 @@ import z from '@deepseek-ai/schemastery'
 import { createDriver, type TurnDriver } from '@forlife/gateway'
 import { defaultConditionOf, defaultScopeOf, TurnRunner } from '@forlife/gateway'
 import { readPending, seedWakeRules } from '@forlife/gateway'
+import { lastTimeReading, recordTimeReading } from '@forlife/store'
 
 import { activeRuntimes, whenRuntimeReady, type MemoryRuntime } from './index.ts'
 
@@ -141,6 +142,47 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
         driver,
         scopeOf: defaultScopeOf,
         conditionOf: defaultConditionOf,
+        // 时间感知（阶段 4）：判定与落库都在这里接上，网关只负责"要不要给、给什么"
+        timeHooks: {
+          lastReadingAt: (conversationKey) => {
+            const row = lastTimeReading(runtime.db)
+            void conversationKey
+            return row === undefined ? undefined : new Date(row.at)
+          },
+          lastInteractionAt: (conversationKey) => runtime.lastInteractionAt(conversationKey),
+          lastActionAt: () => runtime.lastActionAt(),
+          compactedSince: (_conversationKey, since) => {
+            const row = runtime.db
+              .prepare("SELECT max(ended_at) AS at FROM compaction_runs WHERE phase = 'committed'")
+              .get() as { at: string | null }
+            if (row.at === null) return false
+            return since === undefined ? true : Date.parse(row.at) > since.getTime()
+          },
+          wokeSince: (_conversationKey, since) => {
+            // "刚被唤醒"= 最近一条 wake 事件比上一条读数新
+            const row = runtime.db
+              .prepare("SELECT max(at) AS at FROM wake_events WHERE decision = 'wake'")
+              .get() as { at: string | null }
+            if (row.at === null) return false
+            return since === undefined ? true : Date.parse(row.at) > since.getTime()
+          },
+          clockSettings: (conversationKey) => {
+            const settings = runtime.clockSettings(conversationKey)
+            return { conversationTimezone: settings.conversationTimezone, hour24: settings.hour24 }
+          },
+          record: (conversationKey, at, reason, timezone, text) => {
+            recordTimeReading(runtime.db, {
+              at: at.toISOString(),
+              reason,
+              timezone,
+              text,
+              tokenCount: Math.ceil(text.length / 2),
+              conversationKey,
+            })
+          },
+          intervalMs: defaultFor<number>('clock.intervalMs'),
+          idleThresholdMs: defaultFor<number>('clock.idleThresholdMs'),
+        },
         unreadSummaryOf: (scope) => {
           // 唤醒时带上"你错过了什么"（只读不标记已读：标记留给模型自己read_pending时做）
           const items = readPending(runtime.db, { scope, limit: 5, markRead: false })
@@ -176,4 +218,5 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
 export function runtimeCount(): number {
   return activeRuntimes().length
 }
+
 

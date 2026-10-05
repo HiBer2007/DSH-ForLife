@@ -573,6 +573,38 @@
     "prompt.overrideViaTailWhenShared": {
       "v": true,
       "src": "EXECUTION_PLAN §2.8（design：多会话共用一个窗口时，按会话覆盖走尾部注入，以免每轮换前缀）"
+    },
+    "clock.systemTimezone": {
+      "v": "UTC",
+      "src": "EXECUTION_PLAN §2.16（用户拍板：记录用 UTC）"
+    },
+    "clock.conversationTimezone": {
+      "v": "Asia/Shanghai",
+      "src": "EXECUTION_PLAN §2.16（会话默认东八区）"
+    },
+    "clock.displayTimezone": {
+      "v": "Asia/Shanghai",
+      "src": "EXECUTION_PLAN §2.16（展示默认东八区）"
+    },
+    "clock.hour24": {
+      "v": true,
+      "src": "EXECUTION_PLAN §2.16（12/24 制只影响表述）"
+    },
+    "clock.intervalMs": {
+      "v": 300000,
+      "src": "EXECUTION_PLAN §2.15.2 P2（同轮后续步：默认 5 分钟）"
+    },
+    "clock.idleThresholdMs": {
+      "v": 1800000,
+      "src": "EXECUTION_PLAN §2.15.2 P2（长期空闲阈值：默认 30 分钟）"
+    },
+    "clock.readingFreshMs": {
+      "v": 30000,
+      "src": "EXECUTION_PLAN 阶段 4 验收（最新读数年龄 < 30 s）"
+    },
+    "clock.hostRefreshIntervalMs": {
+      "v": 1800000,
+      "src": "EXECUTION_PLAN §2.15.2 P0（宿主插件作非 QQ 路径的兜底，节流放宽到 30 分钟以免与我们的注入打架）"
     }
   },
   "timings": [

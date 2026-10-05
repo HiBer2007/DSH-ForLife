@@ -15,6 +15,15 @@ import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
+import {
+  getClockSuggestion,
+  getConversationClock,
+  listConversationClocks,
+  setClockSuggestion,
+  setConversationClock,
+} from '@forlife/store'
+
+import { defaultClockConfig } from './clock-tools.ts'
 import { activePrompt, type PromptSlug } from './prompt-store.ts'
 import {
   appendMidEntry,
@@ -452,6 +461,102 @@ export class MemoryRuntime {
   /** 提示词文本缓存（键：`slug:revisionId`）。 */
   private readonly promptCache = new Map<string, string>()
 
+  /**
+   * 生效的时钟设置（会话级覆盖 > 全局）。
+   *
+   * 三层时区：`systemTimezone`（记录用，**一律 UTC**）/ `conversationTimezone`（怎么理解）/
+   * `displayTimezone`（给人看）。这里返回的是"与当前会话对话时该用哪一套"。
+   *
+   * @param conversationKey - 会话键；不给则用当前 QQ 会话。
+   * @returns 生效设置与来源（来源要显示，才能解释"这个时区是谁定的"）。
+   */
+  clockSettings(conversationKey?: string): {
+    readonly systemTimezone: string
+    readonly conversationTimezone: string
+    readonly displayTimezone: string
+    readonly hour24: boolean
+    readonly source: string
+  } {
+    const configured = defaultClockConfig()
+    const scope = conversationKey ?? this.currentConversationScope()
+    const override = scope === undefined ? undefined : getConversationClock(this.db, scope)
+    return {
+      systemTimezone: configured.systemTimezone,
+      conversationTimezone: override?.timezone ?? configured.conversationTimezone,
+      displayTimezone: configured.displayTimezone,
+      hour24: override?.hour24 ?? configured.hour24,
+      source: override?.source ?? 'default',
+    }
+  }
+
+  /** 设置某会话的时区（带优先级保护：低优先级不能覆盖高优先级）。 */
+  setConversationClock(
+    scope: string,
+    input: { readonly timezone: string; readonly hour24?: boolean; readonly source: 'user_set' | 'model_note' | 'small_model_suggest'; readonly reason?: string },
+  ): boolean {
+    return setConversationClock(this.db, {
+      scope,
+      timezone: input.timezone,
+      ...(input.hour24 === undefined ? {} : { hour24: input.hour24 }),
+      source: input.source,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    })
+  }
+
+  /** 写一条待确认的时钟建议（**不生效**）。 */
+  setPendingClockSuggestion(
+    scope: string,
+    input: { readonly timezone: string; readonly confidence: string; readonly origin: string; readonly reason?: string },
+  ): void {
+    setClockSuggestion(this.db, {
+      scope,
+      timezone: input.timezone,
+      confidence: input.confidence,
+      origin: input.origin,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    })
+  }
+
+  /** 读某会话的待确认建议。 */
+  pendingClockSuggestion(scope?: string): ReturnType<typeof getClockSuggestion> {
+    const target = scope ?? this.currentConversationScope()
+    return target === undefined ? undefined : getClockSuggestion(this.db, target)
+  }
+
+  /** 列出全部按会话设置的时区。 */
+  listConversationClocks(): ReturnType<typeof listConversationClocks> {
+    return listConversationClocks(this.db)
+  }
+
+  /**
+   * 上一次与该会话交互（收或发）的时刻。
+   *
+   * 用于"距上次交互多久"这个锚点 —— 模型不必自己做时间算术（§2.15.1 根因 9）。
+   *
+   * @param conversationKey - 会话键。
+   * @returns 时刻，或 undefined（没有记录）。
+   */
+  lastInteractionAt(conversationKey?: string): Date | undefined {
+    const key = conversationKey ?? this.currentConversationScope()
+    if (key === undefined) return undefined
+    const row = this.db.prepare('SELECT max(at) AS at FROM qq_turns WHERE conversation_key = ?').get(key) as { at: string | null }
+    return row.at === null ? undefined : new Date(row.at)
+  }
+
+  /** 上一次"行动"（真的发出了东西）的时刻。 */
+  lastActionAt(): Date | undefined {
+    const row = this.db.prepare('SELECT max(sent_at) AS at FROM qq_outbox').get() as { at: string | null }
+    return row.at === null ? undefined : new Date(row.at)
+  }
+
+  /** 当前会话 id（缓存采集与读数落库要关联会话）。 */
+  currentSessionId(): string | undefined {
+    const row = this.db
+      .prepare("SELECT session_id FROM qq_turns WHERE status = 'running' AND session_id IS NOT NULL ORDER BY started_at DESC LIMIT 1")
+      .get() as { session_id: string } | undefined
+    return row?.session_id
+  }
+
   /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
   resetCompactionAccounting(): void {
     const now = new Date().toISOString()
@@ -597,6 +702,7 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
 
 
 
