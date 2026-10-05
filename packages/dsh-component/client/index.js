@@ -817,7 +817,11 @@ window.__ModuleLoader__.load({
           node('div', { style: styles.card }, [
             node('div', { style: styles.metricLabel }, [`${role.role}${role.purpose ? ` —— ${role.purpose}` : ''}`]),
             role.candidates.length === 0
-              ? node('div', { style: styles.warn }, ['这个角色还没有配置候选模型 —— 相关功能（如视觉/嵌入）会不可用'])
+              ? node('div', { style: role.gapLevel === 'required' ? styles.warn : styles.muted }, [
+                  role.gapLevel === 'required'
+                    ? `还没配置候选模型 —— ${role.gapHint || '会影响主对话路由'}`
+                    : `需要时再配：${role.gapHint || '目前用不到它'}`,
+                ])
               : node(
                   'div',
                   {},

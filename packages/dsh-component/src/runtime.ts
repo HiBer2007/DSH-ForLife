@@ -589,6 +589,16 @@ export class MemoryRuntime {
     this.logger(message)
   }
 
+  /**
+   * 路由表播种用的默认模型（来自配置）。
+   *
+   * 刻意只暴露这两个值而不是整个 config：播种只需要它们，
+   * 而 `config` 里有存储路径这类不该被别处乱动的东西。
+   */
+  defaultRouteModel(): { readonly provider: string; readonly model: string } {
+    return { provider: this.config.defaultProvider, model: this.config.defaultModel }
+  }
+
   /** 当前的手动档位覆盖。 */
   tierOverride(): TierOverride | undefined {
     return this.tierOverrideValue
@@ -961,6 +971,7 @@ function parseEntities(raw: string): readonly string[] {
     return []
   }
 }
+
 
 
 

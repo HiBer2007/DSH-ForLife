@@ -22,6 +22,7 @@ import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
 import { seedDefaultPrompts } from './prompt-store.ts'
+import { seedDefaultRoutes } from './route-seed.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
@@ -164,6 +165,11 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   if (config.registerPromptSections && systemPrompt !== undefined) {
     // 先播种默认提示词（幂等），再注册段：这样首次启动看到的不是空白框，而是真正生效的内容
     const seeded = seedDefaultPrompts(runtime.db)
+    // 档位映射也要播种：路由表是"档位 → 具体模型"的唯一真源，空表等于降级链没有候选
+    const defaultRoute = runtime.defaultRouteModel()
+    const seededRoutes = seedDefaultRoutes(runtime.db, { provider: defaultRoute.provider, model: defaultRoute.model })
+    if (seededRoutes.seeded) log(`已播种档位映射：${seededRoutes.reason}`)
+    else log(`档位映射未改动：${seededRoutes.reason}`)
     if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
     disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
     disposers.push(registerMemorySections(systemPrompt, runtime))
@@ -253,6 +259,8 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
+
 
 
 

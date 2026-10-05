@@ -38,6 +38,8 @@ import { ROUTE_ROLES, ROLE_PURPOSE, RUN_MODES, validateEndpoint } from '@forlife
 import { deleteModelRoute, endpointOverview, getEndpoint, listEndpoints, listModelRoutes, routingStats, uncertainStats, upsertModelRoute } from '@forlife/store'
 import { lastCacheUsageAt, listCacheUsage, listTimeDrift, listTimeReadings, timeDriftStats, timeReadingStats, timeReadingTokens } from '@forlife/store'
 
+import { roleGapSeverity } from './route-seed.ts'
+
 import type { MemoryRuntime } from './runtime.ts'
 import {
   activePrompt,

@@ -510,7 +510,7 @@ test('渲染内容：路由页（端点概览、角色映射、校验问题、�
         purpose: '视觉桥接：必须用声明了 image 能力的模型',
         candidates: [{ rank: 0, provider: 'vlm', model: 'vl-7b', effort: null, enabled: true, note: '看图' }],
       },
-      { role: 'embedding', purpose: '向量', candidates: [] },
+      { role: 'embedding', purpose: '向量', candidates: [], gapLevel: 'optional', gapHint: '只有要用向量召回时才需要' },
     ],
     endpoints: [
       {
@@ -546,7 +546,8 @@ test('渲染内容：路由页（端点概览、角色映射、校验问题、�
     'ep-local',
     '镜像回落到 CPU',
     '视觉桥接',
-    '还没有配置候选模型',
+    '需要时再配',
+    '只有要用向量召回时才需要',
     '试跑记录',
     '12ms',
   ]) {

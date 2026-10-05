@@ -46,6 +46,10 @@ export interface ForlifeConfig {
   readonly promptVariables: Readonly<Record<string, string>>
   /** 是否注册工具（关闭后模型看不到记忆工具，用于排障）。 */
   readonly registerTools: boolean
+  /** 默认 provider（路由表播种用）。 */
+  readonly defaultProvider: string
+  /** 默认 model（路由表播种用）。 */
+  readonly defaultModel: string
   /** 是否暴露 `/api/forlife/*` 面板接口。 */
   readonly exposePanelApi: boolean
   /** 打印详细诊断。 */
@@ -116,6 +120,19 @@ export const Config = z.object({
     .description('可编辑提示词里的稳定变量取值（改动会导致一次缓存未命中）。')
     .volatile(),
   registerTools: z.boolean().default(true).description('是否注册记忆工具（排障时可关闭）。'),
+  // 路由表的播种来源。**应当与宿主 profile 里 agent-default-model 的 provider/model 一致** ——
+  // 我们读不到别的插件的配置，所以只能各写一份；不一致时路由会指向一个宿主不认识的模型，
+  // 表现是"降级链一路失败"，所以面板上会把它显示出来供核对。
+  defaultProvider: z
+    .string()
+    .default('deepseek-official')
+    .description('默认 provider（用于首次播种档位映射；应与宿主 agent-default-model 一致）。')
+    .volatile(),
+  defaultModel: z
+    .string()
+    .default('deepseek-flash')
+    .description('默认 model（用于首次播种档位映射；应与宿主 agent-default-model 一致）。')
+    .volatile(),
   exposePanelApi: z.boolean().default(true).description('是否暴露 /api/forlife/* 面板接口。'),
   verbose: z.boolean().default(false).description('打印详细诊断日志。'),
 })
@@ -178,10 +195,13 @@ export function resolveConfig(raw: Partial<ForlifeConfig>): ForlifeConfig {
     registerPromptSections: readConfigValue(raw.registerPromptSections, defaults.registerPromptSections),
     promptVariables: readConfigValue(raw.promptVariables, defaults.promptVariables),
     registerTools: readConfigValue(raw.registerTools, defaults.registerTools),
+    defaultProvider: readConfigValue(raw.defaultProvider, defaults.defaultProvider),
+    defaultModel: readConfigValue(raw.defaultModel, defaults.defaultModel),
     exposePanelApi: readConfigValue(raw.exposePanelApi, defaults.exposePanelApi),
     verbose: readConfigValue(raw.verbose, defaults.verbose),
   }
 }
+
 
 
 
