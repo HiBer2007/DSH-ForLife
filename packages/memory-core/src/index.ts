@@ -43,3 +43,15 @@ export {
 } from './prompt-text.ts'
 export type { PromptDiffLine, PromptRenderResult, PromptValidation, PromptVariableSpec } from './prompt-text.ts'
 
+
+export {
+  attributeMiss,
+  cacheCurve,
+  expectedMisses,
+  isMiss,
+  judgeCache,
+  promptTokensOf,
+  summarizeCache,
+} from './cache-metrics.ts'
+export type { CacheCurvePoint, CacheSummary, PrefixChangeEvent, UsageSample } from './cache-metrics.ts'
+

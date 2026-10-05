@@ -65,3 +65,15 @@ export type {
 
 
 
+
+export {
+  attachUsageToTurn,
+  cacheUsageCount,
+  lastCacheUsageAt,
+  listCacheUsage,
+  recordCacheUsage,
+  setMissReason,
+  unattrributedMisses,
+} from './cache-metrics.ts'
+export type { CacheMetricRow } from './cache-metrics.ts'
+

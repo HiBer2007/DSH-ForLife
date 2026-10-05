@@ -390,3 +390,56 @@ test('提示词覆盖：只能覆盖 P2；写入与清除都留痕', async () =>
   assert.equal(noScope.status, 400)
 })
 
+
+// ── 阶段 4：缓存命中率接口 ──────────────────────────────────────────────────
+
+test('缓存：空数据时给"还没跑过"而不是假装 0% 命中', async () => {
+  const body = await get('/api/forlife/cache')
+  assert.equal(body['ok'], true)
+  const summary = body['summary'] as Record<string, number>
+  assert.equal(summary['samples'], 0)
+  const verdict = body['verdict'] as Record<string, unknown>
+  assert.equal(verdict['ok'], true)
+  assert.match(String(verdict['verdict']), /还没有用量数据/)
+})
+
+test('缓存：命中率、期望未命中数与结论都算得出来', async () => {
+  const { recordCacheUsage } = await import('@forlife/store')
+  const at = (offsetSec: number): string => new Date(Date.now() + offsetSec * 1000).toISOString()
+
+  // 首次：写缓存（未命中，可解释）
+  recordCacheUsage(runtime.db, { inputTokens: 0, cacheWriteTokens: 1000, outputTokens: 10, at: at(1), missReason: 'first-call' })
+  // 之后 4 次全命中
+  for (let i = 0; i < 4; i++) {
+    recordCacheUsage(runtime.db, { inputTokens: 0, cacheReadTokens: 1000, cacheWriteTokens: 20, outputTokens: 10, at: at(2 + i) })
+  }
+  // 一次无法解释的未命中 —— 这是要报警的
+  recordCacheUsage(runtime.db, { inputTokens: 1000, outputTokens: 10, at: at(10), missReason: 'unexplained' })
+
+  const body = await get('/api/forlife/cache')
+  const summary = body['summary'] as Record<string, number>
+  assert.equal(summary['samples'], 6)
+  assert.equal(summary['misses'], 2)
+  assert.equal(summary['explainedMisses'], 1)
+  assert.equal(summary['unexplainedMisses'], 1)
+  // 精确值而不是拍个阈值：分母是**提示词总 token**（写入的那部分也算），
+  // 1000 + 4×1020 + 1000 = 6080，命中 4000 ⇒ 0.658。阈值式断言会掩盖口径写错。
+  assert.equal(summary['hitRate'], 4000 / 6080)
+
+  const expected = body['expected'] as Record<string, number>
+  assert.ok((expected['total'] ?? 0) >= 1, '期望未命中数至少含首次那一次')
+
+  const verdict = body['verdict'] as Record<string, unknown>
+  // 显式断言 alse（noUncheckedIndexedAccess 下索引访问是 unknown，直接比较更清楚）
+  assert.strictEqual(verdict['ok'], false, '有无法解释的未命中就必须报警')
+  assert.match(String(verdict['verdict']), /无法解释/)
+  assert.match(String(verdict['verdict']), /前缀在无故漂移/)
+
+  assert.ok(Array.isArray(body['curve']))
+  assert.ok(Array.isArray(body['recent']))
+  assert.ok((body['recent'] as unknown[]).length > 0)
+})
+
+
+
+

@@ -33,6 +33,8 @@ import {
   validatePromptText,
 } from '@forlife/memory-core'
 import { defaultFor } from '@forlife/contracts'
+import { cacheCurve, expectedMisses, judgeCache, summarizeCache } from '@forlife/memory-core'
+import { lastCacheUsageAt, listCacheUsage } from '@forlife/store'
 
 import type { MemoryRuntime } from './runtime.ts'
 import {
@@ -40,6 +42,7 @@ import {
   listPromptOverrides,
   listPromptRevisions,
   promptRevisionById,
+  promptEditCount,
   promptStatus,
   PROMPT_SLUGS,
   rollbackPrompt,
@@ -164,6 +167,49 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
       return json({ ok: true, session, spills: runtime.listSpill(session, intParam(url, 'limit') ?? 20) })
     }),
 
+    // ── 阶段 4：缓存命中率 ──────────────────────────────────────────────────
+
+    // 命中率汇总 + 曲线 + 未命中归因（面板要能回答"缓存到底有没有在省"）
+    get('/api/forlife/cache', (url) => {
+      const hours = intParam(url, 'hours') ?? 168
+      const rows = listCacheUsage(runtime.db, { limit: intParam(url, 'limit') ?? 500, sinceHours: hours })
+      const samples = rows.map((row) => ({
+        at: row.at,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+        cacheReadTokens: row.cache_read_tokens,
+        cacheWriteTokens: row.cache_write_tokens,
+        ...(row.reasoning_tokens === null ? {} : { reasoningTokens: row.reasoning_tokens }),
+        missReason: row.miss_reason,
+      }))
+      const summary = summarizeCache(samples)
+
+      // 期望未命中数 = 首次 + 压缩次数 + 提示词编辑次数（验收口径）
+      const compactions = runtime.db.prepare("SELECT count(*) AS n FROM compaction_runs WHERE phase = 'committed'").get() as { n: number }
+      const edits = promptEditCount(runtime.db)
+      const expected = expectedMisses({ compactions: compactions.n, promptEdits: edits, samples: summary.samples })
+      const verdict = judgeCache(summary, expected)
+
+      return json({
+        ok: true,
+        windowHours: hours,
+        summary,
+        expected,
+        verdict,
+        // 曲线只给最近 60 个点：面板画的是趋势，不是审计明细
+        curve: cacheCurve(samples).slice(-60),
+        lastSampleAt: lastCacheUsageAt(runtime.db),
+        recent: rows.slice(-30).map((row) => ({
+          at: row.at,
+          input: row.input_tokens,
+          read: row.cache_read_tokens,
+          write: row.cache_write_tokens,
+          output: row.output_tokens,
+          reason: row.miss_reason,
+          source: row.source,
+        })),
+      })
+    }),
     // 健康与契约信息（面板首页用）
     get('/api/forlife/health', () => json({ ok: true, contracts: contractsSummary(), dbPath: runtime.dbPath })),
 
@@ -609,6 +655,7 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
 
 
 

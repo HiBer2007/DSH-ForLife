@@ -551,6 +551,47 @@ CREATE TABLE IF NOT EXISTS prompt_overrides (
 
 const m0009Checksum = createHash('sha256').update(m0009.sql).digest('hex')
 
+/**
+ * 迁移 10：缓存用量（阶段 4 交付物 6）。
+ *
+ * 数据来自宿主的 `assistant/message` 事件（`usage: TokenUsage`）。
+ * 四类 token 互不重叠（已在 `dsh-token-meter` 的 `usageTokens()` 里核实）：
+ * `inputTokens` 是**未命中**的输入，`cacheRead/cacheWrite` 分别是被读与写入缓存的量。
+ * 所以"提示词总 token = input + cacheRead + cacheWrite"，命中率按这个分母算。
+ *
+ * `miss_reason` 允许事后回填：归因要等压缩/编辑事件都落库了才算得准。
+ */
+const m0010 = {
+  version: 10,
+  name: '0010_cache_metrics',
+  sql: `
+CREATE TABLE IF NOT EXISTS cache_metrics (
+  id                 TEXT PRIMARY KEY,
+  session_id         TEXT,
+  turn               INTEGER,
+  step               INTEGER,
+  at                 TEXT NOT NULL,
+  input_tokens       INTEGER NOT NULL DEFAULT 0,  -- 未命中的输入
+  output_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens  INTEGER NOT NULL DEFAULT 0,  -- 命中缓存读到的
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,  -- 写进缓存的
+  reasoning_tokens   INTEGER,
+  source             TEXT NOT NULL DEFAULT 'session', -- session | compaction
+  miss_reason        TEXT,                        -- first-call | compaction | prompt-edit | unexplained
+  note               TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_cache_metrics_at ON cache_metrics (at DESC);
+CREATE INDEX IF NOT EXISTS idx_cache_metrics_session ON cache_metrics (session_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_cache_metrics_unexplained ON cache_metrics (cache_read_tokens, miss_reason);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0010.sql)
+  },
+} as const
+
+const m0010Checksum = createHash('sha256').update(m0010.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -607,10 +648,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0009Checksum,
     up: m0009.up,
   },
+  {
+    version: m0010.version,
+    name: m0010.name,
+    checksum: m0010Checksum,
+    up: m0010.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 

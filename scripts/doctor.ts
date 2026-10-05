@@ -258,6 +258,25 @@ const icon: Record<Level, string> = { ok: '✅', warn: '⚠️ ', fail: '❌' }
 const pad = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - [...s].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0)))
 
 console.log('\nDSH-ForLife · forlife doctor\n' + '─'.repeat(72))
+// ── 位置契约（阶段 4）────────────────────────────────────────────────────
+// 稳定前缀里混进动态内容 ⇒ 缓存永不命中，而且**功能上完全看不出来**。
+// 所以每次体检都跑一遍静态检查（它自己也有一条"故意违规必须报错"的自测）。
+{
+  const lintPath = join(REPO_ROOT, 'scripts', 'lint-prompt-positions.ts')
+  if (!existsSync(lintPath)) {
+    add({ level: 'fail', title: '位置契约', detail: '缺少 scripts/lint-prompt-positions.ts', fix: '它是防止动态内容进前缀的唯一守卫。' })
+  } else {
+    try {
+      const output = execFileSync(process.execPath, [lintPath], { encoding: 'utf8', cwd: REPO_ROOT, stdio: 'pipe' })
+      const scanned = /扫描到 (\d+) 个 section/.exec(output)?.[1] ?? '?'
+      add({ level: 'ok', title: '位置契约', detail: `前缀里无动态内容，order 无撞车（扫到 ${scanned} 个段）` })
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string }
+      const detail = `${err.stdout ?? ''}${err.stderr ?? ''}`.split('\n').filter((line) => line.includes('- ') || line.includes('违规')).slice(0, 3).join(' ')
+      add({ level: 'fail', title: '位置契约', detail: `检查未通过：${detail}`, fix: '动态内容必须走尾部注入，不能进稳定前缀。' })
+    }
+  }
+}
 // ── 客户端模块（手写 JS，没有编译期保护）────────────────────────────────
 // 加这条检查的原因：阶段 4 我在 client/index.js 里写了裸的 `p1-system:` 作为对象键，
 // TS 看不到它（那是要发布给浏览器的 JS），只有真去解析才发现。
@@ -342,6 +361,7 @@ function readdirSafe(dir: string): string[] {
     return []
   }
 }
+
 
 
 

@@ -22,6 +22,7 @@ import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
 import { seedDefaultPrompts } from './prompt-store.ts'
+import { collectUsageFromEvent } from './cache-collector.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -183,6 +184,34 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     }
   }
 
+  // ③b 缓存用量采集（阶段 4 交付物 6）
+  //
+  // 数据来源是宿主的 `assistant/message` 事件（带 `usage`）。
+  // 用 ctx.on 订阅会话事件 —— 这是第一方插件普遍的做法（已核实 dsh-token-meter 等）。
+  // 采集失败**不能让插件挂掉**：拿不到用量只是少了个指标，不该影响记忆本体。
+  const contextOn = ctx as unknown as { on?: (event: string, handler: (...args: unknown[]) => void) => (() => void) | undefined }
+  if (typeof contextOn.on === 'function') {
+    try {
+      const dispose = contextOn.on('session/event', (...args: unknown[]) => {
+        const session = args[0] as { id?: string } | undefined
+        const event = args[1]
+        try {
+          const result = collectUsageFromEvent(runtime.db, event, {
+            ...(typeof session?.id === 'string' ? { sessionId: session.id } : {}),
+          })
+          if (result.recorded && result.missReason === 'unexplained') {
+            always(`⚠️ 检测到一次无法解释的缓存未命中（前缀在无故漂移）：${result.id ?? ''}`)
+          }
+        } catch (error) {
+          log(`用量采集失败（已忽略）：${String(error)}`)
+        }
+      })
+      if (typeof dispose === 'function') disposers.push(dispose)
+      log('已订阅会话事件：采集缓存命中率')
+    } catch (error) {
+      always(`⚠️ 无法订阅会话事件（缓存指标不可用）：${String(error)}`)
+    }
+  }
   // ④ 面板接口**不在这里注册** —— 它需要 `connection` 服务，而该服务只由 `dsh-web-app` 提供。
   //    见 `./panel-plugin.ts`：那是独立的一行插件，由 web profile 显式挂载。
   //    这样主插件在 base / headless 宿主里照样能 apply（记忆本体不受影响）。
@@ -211,6 +240,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
 
 
 
