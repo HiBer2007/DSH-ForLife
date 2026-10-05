@@ -17,6 +17,7 @@ import { test } from 'node:test'
 
 import { activeRuntimes, apply, resolveDshHome } from '../src/index.ts'
 import { resolveConfig } from '../src/config.ts'
+import { CLOCK_TOOL_NAMES } from '../src/clock-tools.ts'
 import { L2_NAME, L3_NAME, L2_ORDER, L3_ORDER, P1_NAME, P2_NAME } from '../src/prompt.ts'
 import { MEMORY_TOOL_NAMES } from '../src/tools.ts'
 import * as panelPlugin from '../src/panel-plugin.ts'
@@ -94,7 +95,7 @@ function quiet<T>(fn: () => T): T {
   }
 }
 
-test('接线：完整宿主下注册 2 个提示段 + 4 个工具 + 5 条面板路由', async () => {
+test('接线：完整宿主下注册四个提示段 + 记忆与时间工具', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'forlife-wire-'))
   try {
     const base = activeRuntimes().length
@@ -117,7 +118,13 @@ test('接线：完整宿主下注册 2 个提示段 + 4 个工具 + 5 条面板�
     assert.equal(recorded.sections.find((s) => s.name === L3_NAME)?.order, L3_ORDER)
     assert.ok(L2_ORDER > 110 && L3_ORDER > L2_ORDER, '记忆段必须排在可编辑人设之后（记忆变得最勤）')
 
-    assert.deepEqual(recorded.tools.sort(), [...MEMORY_TOOL_NAMES].sort(), '必须注册四个记忆工具')
+    // 断言"必须包含"而不是"数量相等"：这已经是我们第三次踩同一个坑了
+    // （每加一个工具就要改一次测试 ⇒ 改多了人就会闭眼改 ⇒ 断言失去意义）。
+    const toolNames = recorded.tools.sort()
+    for (const required of [...MEMORY_TOOL_NAMES, ...CLOCK_TOOL_NAMES]) {
+      assert.ok(toolNames.includes(required), `必须注册工具 ${required}`)
+    }
+    assert.ok(toolNames.includes('now'), '时间工具 now() 必须在（它是"主动看时间"的唯一实现方式）')
 
     // 面板接口**不在主插件里注册**：它需要 connection 服务，而那只由 dsh-web-app 提供
     // （见 src/panel-plugin.ts）。主插件必须在任何宿主都能 apply —— 这是可移植性的硬要求。
@@ -257,5 +264,6 @@ test('面板插件：独立行注册 /api/forlife/* 路由（路径必须含 /ap
     await cleanup(dir)
   }
 })
+
 
 
