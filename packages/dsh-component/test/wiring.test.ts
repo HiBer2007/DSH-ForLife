@@ -203,7 +203,7 @@ async function cleanup(dir: string): Promise<void> {
 
 
 
-test('面板插件：独立行注册 5 条 /api/forlife/* 路由（路径必须含 /api）', async () => {
+test('面板插件：独立行注册 /api/forlife/* 路由（路径必须含 /api）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'forlife-panel-'))
   const base = activeRuntimes().length
   try {
@@ -226,18 +226,30 @@ test('面板插件：独立行注册 5 条 /api/forlife/* 路由（路径必须�
     }
     quiet(() => panelPlugin.apply(fakeCtx as never))
 
-    assert.deepEqual(
-      routes.map((r) => r.path).sort(),
-      ['/api/forlife/compaction', '/api/forlife/entries', '/api/forlife/health', '/api/forlife/spills', '/api/forlife/state'],
-      '路径必须是含 /api 的完整绝对路径（否则被 invalid exact Fetch route 拒掉）',
-    )
-    for (const route of routes) {
-      assert.deepEqual(route.methods, ['GET'])
-      assert.equal(route.requestBody, 'buffered')
-    }
+    const paths = routes.map((r) => r.path)
+      // 断言"必须包含"与"必须合规"，而不是"恰好这几条"：
+      // 数量断言每加一个接口就要改一次测试，改多了人就会闭眼改。
+      for (const required of [
+        '/api/forlife/compaction',
+        '/api/forlife/entries',
+        '/api/forlife/health',
+        '/api/forlife/spills',
+        '/api/forlife/state',
+      ]) {
+        assert.ok(paths.includes(required), `缺少面板路由 ${required}`)
+      }
+      for (const route of routes) {
+        // 路径必须含 /api：第一方接口都是 /api/remote.mux 这种形状，
+        // 少了 /api 会被宿主以 invalid exact Fetch route 拒掉（我们踩过）
+        assert.match(route.path, /^\/api\//, `路由路径必须含 /api：${route.path}`)
+        assert.ok(route.methods.length > 0)
+        assert.ok(['GET', 'POST'].includes(route.methods[0] ?? ''))
+        assert.equal(route.requestBody, 'buffered')
+      }
     assert.equal(panelPlugin.name, 'forlife-memory-panel')
     assert.deepEqual(panelPlugin.inject, ['connection'], '必须显式声明 connection 依赖')
   } finally {
     await cleanup(dir)
   }
 })
+

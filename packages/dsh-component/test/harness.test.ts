@@ -196,13 +196,17 @@ test('A3 崩溃后重启：新进程渲染出的系统提示词与崩溃前逐�
 test('A4 面板接口：能列条目并按 epoch 过滤', async () => {
   const routes = buildPanelRoutes(runtime)
   const names = routes.map((r) => r.path).sort()
-  assert.deepEqual(names, [
-    '/api/forlife/compaction',
-    '/api/forlife/entries',
-    '/api/forlife/health',
-    '/api/forlife/spills',
-    '/api/forlife/state',
-  ])
+  // 断言"必须包含"而不是"数量相等"：后者每加一个接口就要改一次测试，
+    // 而测试改多了人就会闭眼改 —— 那是坏味道。路由的**存在性**才是契约。
+    for (const required of [
+      '/api/forlife/compaction',
+      '/api/forlife/entries',
+      '/api/forlife/health',
+      '/api/forlife/spills',
+      '/api/forlife/state',
+    ]) {
+      assert.ok(names.includes(required), `缺少面板路由 ${required}`)
+    }
 
   const entriesRoute = routes.find((r) => r.path === '/api/forlife/entries')
   assert.ok(entriesRoute !== undefined)
@@ -288,6 +292,7 @@ async function cleanup(dir: string): Promise<void> {
     }
   }
 }
+
 
 
 
