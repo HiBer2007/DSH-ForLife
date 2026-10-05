@@ -129,13 +129,15 @@ export class MemoryRuntime {
 
   /** 写一条中期记忆（append 协议：表 + 修订号同事务）。 */
   append(input: {
+    /** 显式 id（压缩事务要**动手前**就知道 id 才能写回滚计划）；不传则自动生成。 */
+    readonly id?: string
     readonly summary: string
     readonly content?: string
     readonly entities?: readonly string[]
     readonly sourceScope?: string | null
     readonly sourceShortIds?: readonly string[]
   }): { readonly id: string; readonly revision: number; readonly windowOffset: number; readonly tokenCount: number } {
-    const id = `mid_${createHash('sha1').update(`${String(Date.now())}:${input.summary}`).digest('hex').slice(0, 12)}`
+    const id = input.id ?? `mid_${createHash('sha1').update(`${String(Date.now())}:${input.summary}`).digest('hex').slice(0, 12)}`
     const tokenCount = estimateTokens([input.summary, input.content ?? '', (input.entities ?? []).join(' ')].join(' '))
     const result = appendMidEntry(this.db, {
       id,
@@ -252,12 +254,20 @@ export class MemoryRuntime {
     }
   }
 
-  /** 面板用：列条目（可按 epoch / status 过滤）。 */
+  /**
+   * 列条目（**默认列全部 epoch**，可按 epoch / status 过滤）。
+   *
+   * 为什么默认不按 epoch 过滤：L3 是跨压缩累积的，`compaction_epoch` 只是"这条产生于哪次压缩"。
+   * 默认只列当前 epoch 会让"压缩后沉降旧条目"静默失效（旧条目在新 epoch 里根本找不到）——
+   * 这个坑在引擎测试里被真实踩到过一次。
+   */
   listEntries(options: { readonly epoch?: number; readonly status?: readonly ('active' | 'fragment' | 'fragmented' | 'archived')[] } = {}): readonly MidEntryRow[] {
-    const epoch = options.epoch ?? this.epoch()
-    const rows = this.db
-      .prepare('SELECT * FROM mid_memory_entries WHERE compaction_epoch = ? ORDER BY window_offset ASC')
-      .all(epoch) as unknown as MidEntryRow[]
+    const rows =
+      options.epoch === undefined
+        ? (this.db.prepare('SELECT * FROM mid_memory_entries ORDER BY window_offset ASC').all() as unknown as MidEntryRow[])
+        : (this.db
+            .prepare('SELECT * FROM mid_memory_entries WHERE compaction_epoch = ? ORDER BY window_offset ASC')
+            .all(options.epoch) as unknown as MidEntryRow[])
     const wanted = options.status
     if (wanted === undefined || wanted.length === 0) return rows
     const normalized = new Set(wanted.map((s) => (s === 'fragment' ? 'fragmented' : s)))
@@ -309,5 +319,7 @@ export function resolveDbPath(config: ForlifeConfig, dshHome: string): string {
   const root = isAbsolute(config.storageRoot) ? config.storageRoot : join(dshHome, config.storageRoot)
   return join(root, config.dbFile)
 }
+
+
 
 

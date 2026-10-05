@@ -13,7 +13,8 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./dsh-plugin.json": "./dsh-plugin.json",
     "./package.json": "./package.json",
-    "./panel": "./src/panel-plugin.ts"
+    "./panel": "./src/panel-plugin.ts",
+    "./compaction": "./src/compaction-engine.ts"
   },
   "files": [
     "src",

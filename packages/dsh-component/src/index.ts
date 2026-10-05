@@ -22,6 +22,7 @@ import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, type SystemPromptLike } from './prompt.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
+export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
 import { emitForlifeEvent, type SessionLike } from './events.ts'
 
@@ -204,6 +205,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   //    （面板、doctor、测试都从这里取，避免四处各自开库连接）
   log(`活动运行时登记：${dbPath}`)
 }
+
 
 
 

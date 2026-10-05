@@ -207,16 +207,16 @@ test('A4 面板接口：能列条目并按 epoch 过滤', async () => {
   const entriesRoute = routes.find((r) => r.path === '/api/forlife/entries')
   assert.ok(entriesRoute !== undefined)
 
-  // 不过滤：应列出全部条目
+  // 不过滤：默认列出**全部 epoch** 的条目（L3 是跨压缩累积的，默认只列当前 epoch 会误导）
   const all = (await (await entriesRoute.fetch(new Request('http://local/api/forlife/entries'))).json()) as {
     ok: boolean
-    epoch: number
+    epoch: number | null
     count: number
     entries: { id: string; epoch: number; summary: string }[]
   }
   assert.equal(all.ok, true)
   assert.ok(all.count >= 3, `应至少列出 3 条，实际 ${String(all.count)}`)
-  assert.equal(all.epoch, runtime.epoch())
+  assert.equal(all.epoch, null, '未按 epoch 过滤时应回显 null（而不是假装在用当前 epoch）')
 
   // 按 epoch 过滤：当前 epoch 有数据，别的 epoch 必须是空
   const other = (await (

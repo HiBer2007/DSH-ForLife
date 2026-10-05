@@ -80,7 +80,7 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
       })
       return json({
         ok: true,
-        epoch: epoch ?? runtime.epoch(),
+        epoch: epoch ?? null, // null = 未按 epoch 过滤（L3 是跨压缩累积的）
         count: entries.length,
         entries: entries.map((e) => ({
           id: e.id,
@@ -135,4 +135,5 @@ export function registerPanelRoutes(registry: FetchRegistryLike, runtime: Memory
     await Promise.all(disposers.map(async (dispose) => dispose()))
   }
 }
+
 

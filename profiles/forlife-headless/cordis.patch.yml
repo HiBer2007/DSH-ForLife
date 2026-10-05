@@ -4,3 +4,13 @@
   config:
     storageRoot: ./forlife
     verbose: true
+
+# 压缩引擎：禁用宿主的 compaction-basic，挂我们的结构化压缩实现。
+# 为什么必须替换而不是并存：`ctx.compaction` 是**单实现**服务
+# （CompactionEngine 基类构造函数里 super(ctx, "compaction")），两个实现会互相覆盖。
+- id: compaction-basic
+  disabled: true
+
+- insert:
+    - id: forlife-compaction
+      name: 'forlife-memory/compaction'
