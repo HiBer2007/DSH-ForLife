@@ -22,6 +22,29 @@ export {
   WAKE_CONDITIONS,
 } from './wake.ts'
 export type { PendingItem, WakeCondition, WakeDecisionOptions, WakeReason, WakeRequest, WakeRule, WakeVerdict } from './wake.ts'
+export {
+  claimPendingOutbound,
+  confirmOutbound,
+  enqueueOutbound,
+  failOutbound,
+  getOutbound,
+  listOutbound,
+  outboxStats,
+  reclaimStaleOutbound,
+  waitForConfirmation,
+} from './outbox.ts'
+export type { ConfirmationResult, EnqueueInput, OutboundKind, OutboxRow } from './outbox.ts'
+export {
+  FakeTurnDriver,
+  HeadlessTurnDriver,
+  LongConnectionTurnDriver,
+  createDriver,
+  newTurnId,
+  parseNdjson,
+} from './driver.ts'
+export type { FakeScript, HeadlessDriverOptions, LongConnectionDriverOptions } from './driver.ts'
+export { buildTurnPrompt, defaultConditionOf, defaultScopeOf, TurnRunner } from './turns.ts'
+export type { TurnDriver, TurnOutcome, TurnRequest, TurnRunResult, TurnRunnerOptions } from './turns.ts'
 export { conversationKey, parseConversationKey } from './transport.ts'
 export type {
   ConversationKind,
@@ -34,5 +57,7 @@ export type {
   TransportStatus,
 } from './transport.ts'
 export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, DebounceOptions } from './timing.ts'
+
+
 
 

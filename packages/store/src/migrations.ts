@@ -394,6 +394,48 @@ CREATE TABLE IF NOT EXISTS status_presets (
 
 const m0005Checksum = createHash('sha256').update(m0005.sql).digest('hex')
 
+/**
+ * 迁移 6：把 `qq_outbox` 变成**动作队列**。
+ *
+ * ## 为什么需要状态列
+ *
+ * 架构事实：**工具在 DSH 进程里执行，发送在网关进程里执行**，两者共享同一个 SQLite 文件
+ * （这正是阶段 1 选 WAL + busy_timeout 的原因）。于是需要一张"意图 → 认领 → 发送 → 确认"
+ * 的队列：模型调 `qq_reply` 只是**入队**，网关认领后才真的发出去，发完回填平台消息 id。
+ * 工具的"送达确认"（§2.17.9 的 3 秒窗口）就是等这一行的状态变化。
+ *
+ * `status` 的取值：`pending`（等认领）→ `sending`（已认领）→ `sent`（平台已确认）/ `failed`。
+ * 用 `PRAGMA table_info` 做守卫，保证迁移可重入。
+ */
+const m0006 = {
+  version: 6,
+  name: '0006_outbox_queue',
+  sql: `
+-- 这两条 ALTER 由 up() 里的守卫按需执行（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+`,
+  up(db: DatabaseSync): void {
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(qq_outbox)').all() as unknown as { name: string }[]).map((c) => c.name),
+    )
+    if (!columns.has('status')) {
+      db.exec("ALTER TABLE qq_outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+    }
+    if (!columns.has('claimed_at')) {
+      db.exec('ALTER TABLE qq_outbox ADD COLUMN claimed_at TEXT')
+    }
+    if (!columns.has('attempt')) {
+      db.exec('ALTER TABLE qq_outbox ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!columns.has('source')) {
+      // 谁发起的：model（工具）/ system（系统通知）/ admin（后台测试发送）
+      db.exec("ALTER TABLE qq_outbox ADD COLUMN source TEXT NOT NULL DEFAULT 'model'")
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_qq_outbox_status ON qq_outbox (status, sent_at)')
+  },
+} as const
+
+const m0006Checksum = createHash('sha256').update(m0006.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -426,10 +468,17 @@ export const MIGRATIONS: readonly Migration[] = [
     checksum: m0005Checksum,
     up: m0005.up,
   },
+  {
+    version: m0006.version,
+    name: m0006.name,
+    checksum: m0006Checksum,
+    up: m0006.up,
+  },
 ]
 
 /** 最新 schema 版本。 */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)
+
 
 
 
