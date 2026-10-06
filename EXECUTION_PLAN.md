@@ -2760,15 +2760,30 @@ HTTP 出口靠**路径**分流（`/svc/<name>/`），几十个服务能共用一
 但**不能假装已经接上了** —— 所以原因写进**代码注释**（`wake-system-hooks.ts` 与 `db.ts`），
 而不是只留在提交信息里（提交信息不会有人回头读，代码注释会）。
 
-**环境事实（2026-10-06 实测，更正我之前的判断）**
+**环境事实（2026-10-06 二次实测 —— 我第一次查错了，这里更正）**
 
 | 东西 | 实测结果 |
 |---|---|
-| **DSH 宿主** | ✅ **可用** —— `dsh` 已安装（`%APPDATA%\npm\dsh.ps1`）；仓库内已有 4 个 profile（`forlife` / `forlife-headless` / `forlife-qq` / `forlife-web`）|
-| **QQ** | ✅ 在跑（QQNT，6 个进程）|
-| **NapCat** | ❌ **未安装** —— 装的是**原版 QQNT**（`D:\Program Files\Tencent\QQNT\QQ.exe`），不是 NapCat 版；`:8080` 上听的是 QQ 自己的 `ApplicationWebServer`，**不是 OneBot 实现** |
+| **DSH 宿主** | ✅ 可用 —— `dsh` 已安装；仓库内 4 个 profile（`forlife` / `forlife-headless` / `forlife-qq` / `forlife-web`）|
+| **NapCat** | ✅ **可用且正在运行** —— **Docker 容器 `forlife-qq-1`**（镜像 `mlikiowa/napcat-docker:latest`），WebUI `:6099`，OneBot `:3001` |
+| **QQ** | ✅ 已登录（QQNT）|
+| **OneBot 连接** | ✅ **已连上** —— `Established 127.0.0.1:3010 ← 127.0.0.1:9074`（NapCat 反向 WS 连到 gateway 的 `:3010`）|
 
-**所以之前写的"三样都没有"是错的**：DSH 宿主**有**，缺的只是 **NapCat（OneBot 实现）**。
+**我第一次查错的原因（记下来，免得再犯）**：只查了进程名、几个常见端口、
+Windows 目录 —— **没查 Docker 容器、`:6099`、WSL，也没看我们自己的 `scripts/start-admin.ps1`**
+（那里明明写着 `FORLIFE_NAPCAT_WEBUI_PORT = 6099` 与 `FORLIFE_NAPCAT_TOKEN`）。
+**"我没找到"不等于"不存在"**；查环境应该**先看项目自己的配置与启动脚本**。
+
+**但这不等于端到端已经通了** —— 实测发现两个缺口：
+
+| 缺口 | 现状 |
+|---|---|
+| **唤醒桥环境变量未配** | `scripts/start-admin.ps1` 里**没有** `FORLIFE_WAKE_BRIDGE_URL` / `FORLIFE_WAKE_BRIDGE_SECRET` ⇒ 跑着的 gateway 里**唤醒引擎是禁用状态**（`disabledReason` 会说明缺哪个变量）|
+| **插件侧端点未挂载** | `packages/dsh-component/src/index.ts` 里 `registerWakeEndpoint` **只 import 了、从没调用** ⇒ 桥的另一端不存在 |
+
+**所以 ① 的"自主执行"仍差最后两处接线**（不是环境问题，是代码没接完）。
+NapCat 那一侧**已经就绪** —— ③ 的真机验证（真的停掉容器）**现在就能做**。
+
 要补真机证据，需要先装 NapCat（或其它 OneBot v11 实现）并连到 gateway 的 `/onebot`。
 
 **仍未验的部分（**环境依赖**，不是代码缺口）**
