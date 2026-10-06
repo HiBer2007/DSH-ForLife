@@ -133,6 +133,9 @@ export function watermarkConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Wa
     model,
     apiKey,
     baseUrl: env['FORLIFE_VISION_BASE_URL'] ?? 'https://opencode.ai/zen/go/v1',
-    ...(env['FORLIFE_VISION_SESSION'] === undefined ? {} : { sessionId: env['FORLIFE_VISION_SESSION'] }),
+    // OpenCode Go **要求**每个请求带 x-opencode-session（真实调用会 400 MissingSessionID）。
+    // 所以这里给一个**默认的稳定标识**而不是"没配就不发" ——
+    // 会话 id 的作用是让它做路由与提示词缓存，缺了它请求会被直接拒掉。
+    sessionId: env['FORLIFE_VISION_SESSION'] ?? 'dsh-forlife-vision',
   }
 }
