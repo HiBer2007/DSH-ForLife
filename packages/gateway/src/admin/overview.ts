@@ -12,6 +12,8 @@
 import { statSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 
+import type { DshStatus } from '../dsh-status.ts'
+
 import { LATEST_SCHEMA_VERSION } from '@forlife/store'
 
 /** 总览数据结构（与 `packages/admin-ui/src/api/types.ts` 一一对应）。 */
@@ -55,6 +57,14 @@ export interface Overview {
     readonly lastInboundAt?: string
     readonly lastTurnAt?: string
   }
+  /**
+   * DSH 后端连接状态。
+   *
+   * **为什么总览必须有它**：gateway 与 DSH 是两个进程、共享一个库。
+   * DSH 挂了时**面板看起来一切正常**（QQ 在收、库在写、图表在动），
+   * 但模型那一侧根本没在跑 —— 用户会以为"模型不回我"。
+   */
+  readonly dsh?: DshStatus
   readonly routing: {
     readonly endpoints: number
     readonly healthyEndpoints: number
@@ -112,6 +122,8 @@ export function buildOverview(
     readonly dbPath: string
     readonly startedAt: number
     readonly transportConnected?: boolean | undefined
+      /** DSH 状态（由异步的调用方先探好再传进来 —— buildOverview 是同步的）。 */
+      readonly dsh?: DshStatus
   },
 ): Overview {
   const now = Date.now()
@@ -199,6 +211,8 @@ export function buildOverview(
       // 权威时区是设计决定（计划 §7c：单一权威，不随浏览器变）。库里没有该键时用已定默认值。
       authorityTz,
       ...(lastReadingAt === undefined ? {} : { lastReadingAt }),
+    // DSH 状态：未探到时整个字段不出现（界面显示"—"而不是假的"连不上"）
+    ...(context.dsh === undefined ? {} : { dsh: context.dsh }),
     },
   }
 

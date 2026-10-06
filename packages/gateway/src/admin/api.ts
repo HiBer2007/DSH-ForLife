@@ -37,6 +37,7 @@ import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { queryWakes } from './queries-wakes.ts'
+import { createDshStatusProbe } from '../dsh-status.ts'
 import { createExternalWakeSource } from '../wake-external-source.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
 import { backupNow } from './storage-write.ts'
@@ -194,6 +195,10 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
 
   // 外部触发源（无状态，建一次即可）
   const externalSource = createExternalWakeSource({ db })
+
+  // DSH 后端状态探测（**短超时 + 缓存** —— 见 dsh-status.ts 的说明：
+  // DSH 挂掉时面板不能跟着卡住，那恰恰是最需要看面板的时候）。
+  const dshStatusProbe = createDshStatusProbe({ env: process.env })
   const limiter = new LoginRateLimiter()
   const ttlMs = options.sessionTtlMs ?? SESSION_TTL_MS
 
@@ -353,10 +358,11 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         json(
           res,
           200,
-          buildOverview(db, {
-            dbPath,
-            startedAt,
-            transportConnected: options.transportConnected?.(),
+            buildOverview(db, {
+              dbPath,
+              startedAt,
+              transportConnected: options.transportConnected?.(),
+              dsh: await dshStatusProbe(),
           }),
         )
         return true
