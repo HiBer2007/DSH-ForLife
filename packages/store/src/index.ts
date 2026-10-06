@@ -170,3 +170,12 @@ export {
 export type { ImageDescriptionRow } from './vision.ts'
 
 
+
+export {
+  getConversationProfile,
+  listConversationProfiles,
+  renderProfileForPrompt,
+  setConversationImpression,
+  setConversationNote,
+} from './conversation-profile.ts'
+export type { ConversationProfileRow } from './conversation-profile.ts'

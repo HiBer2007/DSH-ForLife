@@ -1109,6 +1109,44 @@ const m0019 = {
 
 const m0019Checksum = createHash('sha256').update(m0019.sql + m0019.name).digest('hex')
 
+/**
+ * 迁移 20：会话档案（备注 + AI 画像）。
+ *
+ * 备注与画像**分开两列**，因为权威性不同：
+ *  - `note` 是**用户写的** ⇒ 权威，模型不该改；
+ *  - `impression` 是**模型写的** ⇒ 可被用户修正，也允许模型自己更新。
+ * 合成一列的话，模型一次自动更新就会覆盖掉用户写的东西，且冲突时无从判断该信谁。
+ *
+ * 画像单独存（而不是塞进长期记忆）的理由：长期记忆回答"发生过什么"，
+ * 画像回答"这个人是谁"。混在一起时模型每次都要从事件里重新推断关系 ——
+ * 既慢又容易错，而且**错了没人能纠正**（它只是记忆里的一条）。
+ * 单独存之后它就能被直接编辑，也就有了纠正的入口。
+ */
+const m0020 = {
+  version: 20,
+  name: '0020_conversation_profiles',
+  sql: `
+CREATE TABLE IF NOT EXISTS conversation_profiles (
+  conversation_key  TEXT PRIMARY KEY,
+  -- 用户手写的说明（谁、什么关系、注意事项）。**只有人能写。**
+  note              TEXT,
+  -- AI 对这个会话/人的印象与画像（关系、说话习惯、禁忌、称呼偏好）。模型可写。
+  impression        TEXT,
+  -- 画像的来源：model（模型自己写的）| user（用户手写/修正过的）
+  impression_source TEXT NOT NULL DEFAULT 'model',
+  updated_by        TEXT NOT NULL DEFAULT 'user',
+  updated_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_profiles_updated ON conversation_profiles (updated_at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0020.sql)
+  },
+} as const
+
+const m0020Checksum = createHash('sha256').update(m0020.sql + m0020.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1224,6 +1262,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0019.name,
     checksum: m0019Checksum,
     up: m0019.up,
+  },
+  {
+    version: m0020.version,
+    name: m0020.name,
+    checksum: m0020Checksum,
+    up: m0020.up,
   },
 ]
 
