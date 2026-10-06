@@ -26,11 +26,12 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 
 import { createStickerService, createStickerVisionDescriber, visionConfigFromEnv, type StickerService } from '@forlife/gateway'
 
+import { buildStickerSaveTool, STICKER_SAVE_TOOL_NAME } from './sticker-save-tool.ts'
 import type { MemoryRuntime } from './runtime.ts'
 import type { DefineToolLike } from './tools.ts'
 
 /** 工具名（测试与文档共用一份）。 */
-export const STICKER_TOOL_NAMES = ['sticker_search', 'qq_send_sticker', 'sticker_import'] as const
+export const STICKER_TOOL_NAMES = ['sticker_search', 'qq_send_sticker', 'sticker_import', STICKER_SAVE_TOOL_NAME] as const
 
 /** 把文本包成内容块。 */
 function text(value: string): ContentBlock[] {
@@ -216,5 +217,5 @@ export function buildStickerTools(defineTool: DefineToolLike, runtime: MemoryRun
     },
   })
 
-  return [stickerSearch, sendSticker, importSticker]
+  return [stickerSearch, sendSticker, importSticker, buildStickerSaveTool(defineTool, runtime)]
 }
