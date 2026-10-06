@@ -27,6 +27,9 @@ import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
 import { buildPortTools, portToolOptionsFromEnv } from './port-tools.ts'
+import { getWakeTrigger, updateWakeTrigger } from '@forlife/store'
+import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
+import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -129,6 +132,28 @@ export function runtimeFor(dbPath: string): MemoryRuntime | undefined {
   return runtimeRegistry.get(dbPath)
 }
 
+/**
+ * 唤醒工具的宿主能力。
+ *
+ * `wake_now` **不直接调引擎** —— 工具跑在插件进程、引擎跑在 gateway 进程，
+ * 两者不能直接调函数。通道是**它们已经在共享的那个数据库**：
+ * 把 `next_fire_at` 设成"现在"，gateway 的下一次 tick（≤1 秒）就会扫到它。
+ * **不需要第二条通信路径** —— 多一条就多一处会不一致的地方。
+ */
+function wakeToolHost(runtime: MemoryRuntime): WakeToolHost {
+  return {
+    fireNow: async (triggerId) => {
+      const row = getWakeTrigger(runtime.db, triggerId)
+      if (row === undefined) return { decision: "failed", reason: `没有这条唤醒：${triggerId}` }
+      if (row.enabled !== 1) return { decision: "failed", reason: "这条唤醒已停用，先启用它" }
+      // 设成"现在" ⇒ 下一次 tick 就会扫到（对**所有类型**都有效，不只 timer）
+      updateWakeTrigger(runtime.db, triggerId, { nextFireAt: new Date().toISOString() })
+      return { decision: "fired", reason: "已请求立刻执行（gateway 侧下一次 tick 处理，≤1 秒）" }
+    },
+    // registerProgram 暂不提供 ⇒ register_watcher 会**明确拒绝**（不静默成功）
+  }
+}
+
 export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}): void {
   // volatile 字段在解析结果里是引用对象，必须先取快照再当纯数据用
   const config = resolveConfig(rawConfig)
@@ -207,6 +232,14 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     const dispose = tools.register(definition)
     disposers.push(dispose)
   }
+
+      // 唤醒工具（PLAN 阶段 8）。**总是注册** —— 它们只写数据库，不需要外部配置就能成功；
+      // "安排一个唤醒"在 gateway 侧引擎起来之前也是有效的，只是暂时不会响。
+      // （对比端口工具：没有 Caddy 时注定失败，所以那种才"没配就不注册"。）
+      for (const definition of buildWakeTools(defineToolImpl, runtime, wakeToolHost(runtime))) {
+        const dispose = tools.register(definition)
+        disposers.push(dispose)
+      }
       log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks / switch_model / revert_model / router_status')
     }
   }
