@@ -27,7 +27,16 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
-import { listModelRoutes, upsertModelRoute } from '@forlife/store'
+import {
+  endpointModelsJson,
+  OPENCODE_GO_BASE_URL,
+  OPENCODE_GO_KEY_ENV,
+  OPENCODE_GO_MODELS,
+  OPENCODE_GO_PROVIDER,
+  planOpenCodeGoRoutes,
+  usableModels,
+} from '@forlife/contracts'
+import { listModelRoutes, upsertEndpoint, upsertModelRoute } from '@forlife/store'
 
 /** 播种输入。 */
 export interface SeedRoutesInput {
@@ -92,6 +101,98 @@ export function seedDefaultRoutes(db: DatabaseSync, input: SeedRoutesInput): See
     seeded: true,
     count: tiers.length + 1,
     reason: `空表 ⇒ 播种 ${String(tiers.length + 1)} 行（L1/L2/L3/scorer → ${input.provider}/${input.model}）；视觉与嵌入需要你指定带 image 能力/给出维度的模型，所以刻意不猜`,
+  }
+}
+
+/**
+ * 播种 OpenCode Go 接入点（**新方式**，见 `@forlife/contracts/opencode-go`）。
+ *
+ * ## 为什么与 `seedDefaultRoutes` 分开
+ *
+ * 那个函数回答的是"宿主用哪个模型，我们就跟着用哪个"；这个回答的是
+ * "**我们自带一个可用的外部推理入口**"。两者的触发条件不同（前者总该跑，后者要先有 key），
+ * 混在一起会让"没配 key 却被播种了一堆用不了的模型"这种事发生。
+ *
+ * ## 两条硬规矩
+ *
+ * 1. **只补空表**：已有任何路由配置就完全不动（与 `seedDefaultRoutes` 同一原则）。
+ *    用户手工调过的档位映射比我们的默认值更权威。
+ * 2. **不可用的模型不进库**：免费模型一旦过期复核期，`planOpenCodeGoRoutes` 就不会给出它，
+ *    所以库里也不会留下一条"看起来能用、其实随时会计费"的候选。
+ *
+ * @param db - 数据库。
+ * @param input - 复核时间与密钥引用名。
+ * @returns 结果（含"为什么没播种"）。
+ */
+export function seedOpenCodeGoRoutes(
+  db: DatabaseSync,
+  input: { readonly now?: Date; readonly apiKeyRef?: string; readonly replace?: boolean } = {},
+): SeedRoutesResult & { readonly endpointId?: string; readonly replaced?: number } {
+  const now = input.now ?? new Date()
+  const existing = listModelRoutes(db)
+  let replaced = 0
+
+  if (existing.length > 0) {
+    if (input.replace !== true) {
+      return { seeded: false, count: 0, reason: `已有 ${String(existing.length)} 行路由配置，不覆盖（播种只补空表）` }
+    }
+    // **显式**切换供应商时才替换，而且只删我们自己播的种（`updated_by = 'system'`）。
+    // 手工在面板里配的行（updated_by = 'admin'）一律保留 —— 那才是人的意图。
+    const removed = db.prepare("DELETE FROM model_routes WHERE updated_by = 'system'").run()
+    replaced = Number(removed.changes)
+    const kept = listModelRoutes(db).length
+    if (kept > 0) {
+      return {
+        seeded: false,
+        count: 0,
+        replaced,
+        reason: `已清掉 ${String(replaced)} 行系统播种，但仍有 ${String(kept)} 行手工配置 ⇒ 不播种（避免与人的配置打架）`,
+      }
+    }
+  }
+
+  const plan = planOpenCodeGoRoutes(now)
+  if (plan.length === 0) {
+    return { seeded: false, count: 0, replaced, reason: '没有任何可用模型（免费模型可能已过复核期），不播种' }
+  }
+
+  for (const row of plan) {
+    upsertModelRoute(db, {
+      role: row.role,
+      rank: row.rank,
+      provider: OPENCODE_GO_PROVIDER,
+      model: row.model,
+      reasoningEffort: row.reasoningEffort,
+      note: row.note,
+      updatedBy: 'system',
+    })
+  }
+
+  // 端点也要登记：面板的"推理端点"表读的是这张表，
+  // 只在路由表里写模型、不登记端点的话，那一页会显示"0 个端点"却有用不完的候选 —— 自相矛盾。
+  const endpointId = upsertEndpoint(db, {
+    id: 'ep-opencode-go',
+    type: 'cloud-api',
+    mode: 'remote-api',
+    backend: 'cpu', // 云端托管，backend 对我们无意义；表要求非空，如实填 cpu
+    baseUrl: OPENCODE_GO_BASE_URL,
+    // **只存引用名**：密钥本身在环境变量/密钥库里，绝不进库
+    apiKeyRef: input.apiKeyRef ?? OPENCODE_GO_KEY_ENV,
+    models: endpointModelsJson(now).map((model) => ({ ...model })),
+    limits: { note: '月度额度按模型计（Go 计划），详见 OpenCode Console' },
+    enabled: true,
+  })
+
+  const freeSkipped = OPENCODE_GO_MODELS.filter((model) => model.free !== undefined).length - usableModels(now).filter((m) => m.free !== undefined).length
+  return {
+    seeded: true,
+    count: plan.length,
+    endpointId,
+    replaced,
+    reason:
+      `播种 ${String(plan.length)} 行（L1/L2/L3/scorer 的降级链）+ 登记端点 ${endpointId}` +
+      (replaced > 0 ? `；替换掉 ${String(replaced)} 行旧的系统播种` : '') +
+      (freeSkipped > 0 ? `；${String(freeSkipped)} 个免费模型因超出复核期被排除` : ''),
   }
 }
 

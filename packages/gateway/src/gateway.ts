@@ -49,6 +49,12 @@ export interface GatewayOptions {
   readonly now?: () => number
   /** 后台对话轮次用哪个"会话"（默认 panel:admin，与 QQ 会话区分开）。 */
   readonly adminConversationKey?: string
+  /**
+   * 接管模式的读取器（每次入站都问一次，所以开关改动**立即生效**，不需要重启）。
+   *
+   * 不传 = 永远不接管（默认行为不变）。
+   */
+  readonly takeover?: (() => boolean) | undefined
 }
 
 /** 网关状态（面板用）。 */
@@ -164,6 +170,13 @@ export class Gateway {
     }
     this.persistInbound(message)
     const key = conversationKey(message.conversation)
+      // 接管模式（qq_takeover）：消息**照常入库**（运维要看得到），但**不进模型** ——
+      // 也不推给防抖器，于是不会产生轮次、`processed` 保持 0。
+      // 这样面板上的"待处理入站"正好变成运维的待办箱，而不是一个只增不减的计数器。
+      if (this.options.takeover?.() === true) {
+        this.log(`接管模式：${key} 的消息只入库、不路由给模型（等人工处理）`)
+        return
+      }
     const list = this.buffered.get(key)
     if (list === undefined) this.buffered.set(key, [message])
     else list.push(message)

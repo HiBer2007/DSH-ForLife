@@ -18,6 +18,8 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
+import { FLAG_QQ_TAKEOVER, getFlag } from '@forlife/store'
+
 import { FakeTurnDriver, HeadlessTurnDriver, type FakeScript } from './driver.ts'
 import { Gateway, type GatewayState } from './gateway.ts'
 import { createOneBotTransport, type OneBotTransport } from './onebot.ts'
@@ -138,6 +140,8 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     transport,
     runner,
     log,
+    // 接管开关每次入站都从库里读 ⇒ 面板一拨就生效，不用重启服务
+    takeover: () => getFlag(options.db, FLAG_QQ_TAKEOVER),
     ...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
     ...(options.outboxPollMs === undefined ? {} : { outboxPollMs: options.outboxPollMs }),
   })

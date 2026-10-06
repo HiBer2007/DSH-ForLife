@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { openDatabase } from '@forlife/store'
+import { FLAG_QQ_TAKEOVER, openDatabase, setFlag } from '@forlife/store'
 import { WebSocket } from 'ws'
 
 import { startGatewayRuntime, type RunningGatewayRuntime } from '../src/runtime.ts'
@@ -42,6 +42,82 @@ function count(db: ReturnType<typeof openDatabase>['db'], sql: string): number {
   return row?.v ?? 0
 }
 
+test('接管模式：消息只入库、不产生轮次，且保持"待人工处理"', async () => {
+  // 这条守的是"接管"这个功能的核心承诺：**模型完全不参与**。
+  // 如果接管开着却仍然跑了轮次，用户会以为"接管了"，实际模型还在回话 —— 那是最糟的失败方式。
+  const opened = openDatabase({ file: ':memory:' })
+  const db = opened.db
+  let runtime: RunningGatewayRuntime | undefined
+  let client: WebSocket | undefined
+
+  try {
+    setFlag(db, FLAG_QQ_TAKEOVER, true)
+    runtime = await startGatewayRuntime({
+      db,
+      log: () => {},
+      onebot: { port: PORT + 1, host: '127.0.0.1', path: '/', accessToken: TOKEN },
+      driver: 'fake',
+      disableNoiseFilter: true,
+      debounceMs: 30,
+      outboxPollMs: 40,
+      random: () => 0,
+    })
+
+    client = new WebSocket(`ws://127.0.0.1:${String(PORT + 1)}/`, { headers: { authorization: `Bearer ${TOKEN}` } })
+    await new Promise<void>((resolve, reject) => {
+      client?.once('open', () => resolve())
+      client?.once('error', (error) => reject(error instanceof Error ? error : new Error(String(error))))
+    })
+
+    client.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'private',
+        sub_type: 'friend',
+        time: Math.floor(Date.now() / 1000),
+        self_id: 3112546448,
+        user_id: 10001,
+        message_id: 80001,
+        message: [{ type: 'text', data: { text: '这条应该被接管' } }],
+        sender: { nickname: '海波_HiBer' },
+      }),
+    )
+
+    // 消息必须入库（运维要看得到）
+    await waitFor('接管下消息仍入库', () => count(db, 'SELECT COUNT(*) AS v FROM qq_inbox') === 1)
+    // 给足时间让"本该发生"的轮次发生 —— 它不该发生
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    assert.equal(count(db, 'SELECT COUNT(*) AS v FROM qq_turns'), 0, '接管模式下**绝不能**产生轮次')
+    assert.equal(count(db, 'SELECT COUNT(*) AS v FROM qq_outbox'), 0, '接管模式下模型不该发出任何消息')
+    assert.equal(
+      count(db, 'SELECT COUNT(*) AS v FROM qq_inbox WHERE processed = 0'),
+      1,
+      'processed 必须保持 0：它是运维的待办箱，不能被标成"已处理"',
+    )
+
+    // 关掉开关后应当立刻恢复（读取器是每次入站都问一次，不需要重启）
+    setFlag(db, FLAG_QQ_TAKEOVER, false)
+    client.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'private',
+        sub_type: 'friend',
+        time: Math.floor(Date.now() / 1000),
+        self_id: 3112546448,
+        user_id: 10001,
+        message_id: 80002,
+        message: [{ type: 'text', data: { text: '这条应该恢复路由' } }],
+        sender: { nickname: '海波_HiBer' },
+      }),
+    )
+    await waitFor('关掉接管后恢复路由', () => count(db, 'SELECT COUNT(*) AS v FROM qq_turns') === 1)
+  } finally {
+    client?.close()
+    await runtime?.stop()
+    db.close()
+  }
+})
 test('整条链：模拟 NapCat → 入库 → 轮次 → 出站 → 确认', async () => {
   const opened = openDatabase({ file: ':memory:' })
   const db = opened.db

@@ -15,6 +15,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
+import { FLAG_QQ_TAKEOVER, getFlag, setFlag } from '@forlife/store'
+
 import {
   audit,
   createSession,
@@ -30,6 +32,7 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
+import { enqueueOutbound } from '../outbox.ts'
 import { queryCompaction, queryMemory } from './queries-memory.ts'
 import { queryConversations, queryWake } from './queries-qq.ts'
 import { queryPrompts, queryRouting } from './queries-model.ts'
@@ -361,6 +364,80 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
           // 真实连接状态：undefined = 本服务没接管，前端显示"未知"而不是"离线"
           ...(status === undefined ? {} : { connected: status }),
         })
+        return true
+      }
+
+      // ── 手动发消息（接管模式下运维自己回复，也是"用 QQ 通知人"的通路）──────
+      if (route === '/send' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const conversationKey = stringField(body, 'conversationKey').trim()
+        const text = stringField(body, 'text')
+        if (conversationKey === '' || text.trim() === '') {
+          json(res, 400, { error: 'conversationKey 与 text 都必填' })
+          return true
+        }
+        // 会话类型从会话表读（出站表那一列 NOT NULL，猜错会让平台侧行为不对）
+        const known = db.prepare('SELECT kind FROM qq_sessions WHERE conversation_key = ?').get(conversationKey) as
+          | { kind: string }
+          | undefined
+        const kind = known?.kind ?? (conversationKey.includes(':group') ? 'group' : 'private')
+        const id = enqueueOutbound(db, {
+          conversationKey,
+          kind: 'text',
+          payload: { segments: [{ kind: 'text', text }] },
+          conversationKind: kind === 'group' ? 'group' : 'private',
+          source: 'admin',
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `手动发送到 ${conversationKey}` })
+        json(res, 200, { ok: true, id })
+        return true
+      }
+
+      // ── 接管模式：消息只入库、不路由给模型（运维手动处理）──────────────
+      if (route === '/takeover' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const changedAt = db.prepare('SELECT value FROM forlife_state WHERE key = ?').get(`${FLAG_QQ_TAKEOVER}_changed_at`) as
+          | { value?: string }
+          | undefined
+        json(res, 200, {
+          on: getFlag(db, FLAG_QQ_TAKEOVER),
+          ...(changedAt?.value === undefined ? {} : { changedAt: changedAt.value }),
+        })
+        return true
+      }
+
+      if (route === '/takeover' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        if (typeof body['on'] !== 'boolean') {
+          json(res, 400, { error: 'on 必须是布尔值' })
+          return true
+        }
+        setFlag(db, FLAG_QQ_TAKEOVER, body['on'], `by ${session.id.slice(0, 8)}`)
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `接管模式 → ${body['on'] ? '开' : '关'}`,
+        })
+        log?.(`[admin] 接管模式 ${body['on'] ? '已开启' : '已关闭'}`)
+        json(res, 200, { on: body['on'] })
         return true
       }
 
