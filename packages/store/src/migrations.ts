@@ -1182,6 +1182,35 @@ CREATE INDEX IF NOT EXISTS idx_published_ports_expires ON published_ports (expir
 
 const m0021Checksum = createHash('sha256').update(m0021.sql + m0021.name).digest('hex')
 
+/**
+ * 迁移 22：TCP 出口的对外端口（PLAN 阶段 7 交付物 4b）。
+ *
+ * 为什么单独一列：TCP **没有路径可以分流**，每个服务独占一个对外端口，
+ * 所以"目标端口"与"对外端口"是两个不同的数。
+ *
+ * 为什么用**唯一索引**而不是只靠应用层检查：
+ * 两个发布用同一个对外端口时，后一个会**静默顶掉**前一个的 Caddy server，
+ * 而前一个的使用者只会觉得"服务挂了"。应用层检查有竞态（并发发布），
+ * 唯一索引是**数据库层**的保证，不依赖调用顺序。
+ */
+const m0022 = {
+  version: 22,
+  name: '0022_tcp_listen_port',
+  sql: `
+ALTER TABLE published_ports ADD COLUMN listen_port INTEGER;
+
+-- 部分唯一索引：只对**有对外端口**的行（即 TCP 发布）生效。
+-- HTTP 发布这一列为 NULL，不参与唯一性判断。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_published_ports_listen
+  ON published_ports (listen_port) WHERE listen_port IS NOT NULL;
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0022.sql)
+  },
+} as const
+
+const m0022Checksum = createHash('sha256').update(m0022.sql + m0022.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1309,6 +1338,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0021.name,
     checksum: m0021Checksum,
     up: m0021.up,
+  },
+  {
+    version: m0022.version,
+    name: m0022.name,
+    checksum: m0022Checksum,
+    up: m0022.up,
   },
 ]
 

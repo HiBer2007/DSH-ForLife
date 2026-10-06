@@ -78,6 +78,8 @@ export interface PublishedPortRow {
   readonly id: string
   readonly name: string
   readonly target_port: number
+  /** TCP 发布的**对外端口**（HTTP 发布为 null）。 */
+  readonly listen_port: number | null
   readonly protocol: string
   readonly caddy_route_id: string | null
   readonly ttl_seconds: number | null
@@ -91,6 +93,8 @@ export interface PublishedPortRow {
 export interface PublishPortInput {
   readonly name: string
   readonly targetPort: number
+  /** TCP 必填：对外监听的端口（**白名单判的是它**）。 */
+  readonly listenPort?: number | null
   readonly protocol?: 'http' | 'tcp'
   readonly ttlSeconds?: number | null
   readonly approvedBy: string
@@ -117,6 +121,33 @@ export function publishPort(db: DatabaseSync, input: PublishPortInput): PublishP
   const nameCheck = checkRouteName(input.name)
   if (!nameCheck.ok) return { ok: false, reason: nameCheck.reason }
 
+  const protocol = input.protocol ?? 'http'
+  const listenPort = input.listenPort ?? null
+
+  // **TCP 要判的是对外端口，不是目标端口。**
+  // 判错的话 publish_port(targetPort=8080, listenPort=22) 会通过
+  // （8080 在白名单里），而实际把 22 端口暴露了出去。
+  if (protocol === 'tcp') {
+    if (listenPort === null) {
+      return { ok: false, reason: 'TCP 发布必须给 listenPort（对外监听的端口）' }
+    }
+    const listenCheck = checkPortAllowed(listenPort, input.whitelist ?? DEFAULT_PORT_WHITELIST)
+    if (!listenCheck.ok) return { ok: false, reason: `对外端口不合法：${listenCheck.reason}` }
+
+    // 对外端口**必须唯一**。这里查一次给出友好错误；真正的保证是数据库的
+    // 部分唯一索引（应用层检查有竞态：并发发布时两边都可能查到"没占用"）。
+    const taken = db.prepare('SELECT name FROM published_ports WHERE listen_port = ?').get(listenPort) as
+      | { name: string }
+      | undefined
+    if (taken !== undefined) {
+      return { ok: false, reason: `对外端口 ${String(listenPort)} 已被「${taken.name}」占用（TCP 没有路径分流，端口不能共用）` }
+    }
+  } else if (listenPort !== null) {
+    // HTTP 发布不该带对外端口 —— 它的对外端口由 Caddy 的监听决定，不是每条路由自己定。
+    // 允许传的话，会让人以为"我能选 HTTP 用哪个端口"，而实际不能。
+    return { ok: false, reason: 'HTTP 发布不接受 listenPort（对外端口由 Caddy 的监听决定）' }
+  }
+
   const portCheck = checkPortAllowed(input.targetPort, input.whitelist ?? DEFAULT_PORT_WHITELIST)
   if (!portCheck.ok) return { ok: false, reason: portCheck.reason }
 
@@ -135,9 +166,9 @@ export function publishPort(db: DatabaseSync, input: PublishPortInput): PublishP
   const id = `pp_${randomUUID()}`
   db.prepare(
     `INSERT INTO published_ports
-       (id, name, target_port, protocol, caddy_route_id, ttl_seconds, expires_at, approved_by, note, created_at)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
-  ).run(id, input.name, input.targetPort, input.protocol ?? 'http', ttl, expiresAt, input.approvedBy, input.note ?? null, now)
+       (id, name, target_port, listen_port, protocol, caddy_route_id, ttl_seconds, expires_at, approved_by, note, created_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+  ).run(id, input.name, input.targetPort, listenPort, protocol, ttl, expiresAt, input.approvedBy, input.note ?? null, now)
 
   const row = db.prepare('SELECT * FROM published_ports WHERE id = ?').get(id) as unknown as PublishedPortRow
   return { ok: true, reason: '已登记', row }
