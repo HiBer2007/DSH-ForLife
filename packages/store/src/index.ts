@@ -236,3 +236,13 @@ export type {
   WakeTriggerKind,
   WakeTriggerRow,
 } from './wake-triggers.ts'
+
+// ── 存储分层（PLAN 阶段 9 交付物 1）────────────────────────────────
+export {
+  DEFAULT_SETTLE_POLICY,
+  decideSettle,
+  resolveTierRoots,
+  settlePolicyFromEnv,
+  STORAGE_TIERS,
+} from './storage-tiers.ts'
+export type { SettleCandidate, SettleDecision, SettlePolicy, StorageTier, TierRoots } from './storage-tiers.ts'
