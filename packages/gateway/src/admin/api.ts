@@ -43,6 +43,14 @@ export interface AdminApiOptions {
   readonly log?: (message: string) => void
   /** 由服务进程提供：是否已接管 QQ 连接（没接管就别猜）。 */
   readonly transportConnected?: (() => boolean | undefined) | undefined
+  /**
+   * NapCat 的 WebUI 位置（用于面板里的「NapCat」页）。
+   *
+   * 为什么由服务端告诉前端，而不是前端写死：前端不知道"用户是从哪台机器访问的"。
+   * 手机访问时 `127.0.0.1:6099` 指的是**手机自己**，必然打不开 ——
+   * 所以只回端口与 token，主机名由前端按当前地址栏推导。
+   */
+  readonly napcat?: { readonly webuiPort: number; readonly token?: string | undefined } | undefined
   /** 会话时长（测试可缩短）。 */
   readonly sessionTtlMs?: number
 }
@@ -339,6 +347,20 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const session = requireSession(req, res, path)
         if (session === undefined) return true
         json(res, 200, DATA_ROUTES[route]!(db))
+        return true
+      }
+
+      // ── NapCat 面板页所需的信息（同源策略下前端自己拼不出正确主机名）──────
+      if (route === '/napcat' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const status = options.transportConnected?.()
+        json(res, 200, {
+          webuiPort: options.napcat?.webuiPort ?? 6099,
+          ...(options.napcat?.token === undefined ? {} : { token: options.napcat.token }),
+          // 真实连接状态：undefined = 本服务没接管，前端显示"未知"而不是"离线"
+          ...(status === undefined ? {} : { connected: status }),
+        })
         return true
       }
 

@@ -13,7 +13,7 @@
 import { computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
-import type { MemoryOverview } from '../api/types.ts'
+import type { MemoryEntryRow, MemoryOverview } from '../api/types.ts'
 import AsyncSection from '../components/AsyncSection.vue'
 import DataTable, { type TableColumn } from '../components/DataTable.vue'
 import PanelCard from '../components/PanelCard.vue'
@@ -69,7 +69,15 @@ const columns: TableColumn<Record<string, unknown>>[] = [
   { key: 'windowOffset', label: '窗口位', numeric: true, narrow: true },
   { key: 'compactionEpoch', label: '世代', numeric: true, narrow: true },
   { key: 'sourceScope', label: '来源', mono: true, narrow: true },
-  { key: 'lastAccessedAt', label: '最后访问', narrow: true, value: (row) => (row['lastAccessedAt'] === undefined ? '—' : formatRelative(String(row['lastAccessedAt']))) },
+  {
+    key: 'lastAccessedAt',
+    label: '最后访问',
+    narrow: true,
+    value: (row) =>
+      row['lastAccessedAt'] === undefined || row['lastAccessedAt'] === null
+        ? '—'
+        : formatRelative(String(row['lastAccessedAt'])),
+  },
   { key: 'id', label: 'ID', mono: true },
 ]
 </script>

@@ -34,6 +34,8 @@ export interface AdminServerOptions {
   readonly port?: number
   readonly log?: (message: string) => void
   readonly sessionTtlMs?: number
+  /** NapCat WebUI 的位置（面板里内嵌它做扫码登录）。 */
+  readonly napcat?: { readonly webuiPort: number; readonly token?: string | undefined } | undefined
   /**
    * 给了就同时起 QQ 链路（OneBot 反向 WS + 网关 + 轮次）。
    * 不给则只跑管理后台 —— 两种模式都能单独工作，排障时能分清是谁的问题。
@@ -52,26 +54,42 @@ export interface AdminServerOptions {
     | undefined
 }
 
-/** 严进严出的安全头（每个请求都加）。 */
+/** 严进严出的安全头（每个请求都加）。CSP 单独构造，见 `buildCsp`。 */
 const SECURITY_HEADERS: Record<string, string> = {
-  'content-security-policy': [
-    "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
-    "font-src 'self' data:",
-    "connect-src 'self'",
-    "object-src 'none'",
-    "base-uri 'none'",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
-  ].join('; '),
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
   // 面板不需要这些能力，直接关掉（能用就用不上，关掉更安全）
   'permissions-policy': 'geolocation=(), camera=(), microphone=(), payment=()',
   'cross-origin-opener-policy': 'same-origin',
+}
+
+/**
+ * 构造 CSP。
+ *
+ * `frame-src` 要放行 NapCat 的 WebUI（面板里内嵌了它），但**必须按当前主机名精确放行**：
+ * 图省事写 `frame-src http:` 等于允许页面嵌入任意站点，那就白设了。
+ * 主机名取自请求的 `Host`，所以手机访问时放行的正是手机能访问到的那个地址。
+ */
+function buildCsp(hostname: string, napcatPort: number | undefined): string {
+  const frameSrc =
+    napcatPort === undefined
+      ? "'self'"
+      : `'self' http://${hostname}:${String(napcatPort)} http://127.0.0.1:${String(napcatPort)}`
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    `frame-src ${frameSrc}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    // 我们自己绝不被任何站点套框（注意与 frame-src 是两件事）
+    "frame-ancestors 'none'",
+  ].join('; ')
 }
 
 /** 已启动的服务。 */
@@ -129,12 +147,15 @@ export function createAdminServer(options: AdminServerOptions): {
         log,
         // 真实连接状态：没有 runtime 时返回 undefined（= 本服务没接管，界面显示"—"而不是"离线"）
         transportConnected: runtime === undefined ? undefined : () => runtime.transport.status().connected,
+        ...(options.napcat === undefined ? {} : { napcat: options.napcat }),
         ...(options.sessionTtlMs === undefined ? {} : { sessionTtlMs: options.sessionTtlMs }),
       })
 
       const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         // 安全头先写，任何分支（含 404/500）都带上
         for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value)
+        const hostname = (req.headers.host ?? 'localhost').split(':')[0] ?? 'localhost'
+        res.setHeader('content-security-policy', buildCsp(hostname, options.napcat?.webuiPort))
 
         void (async () => {
           try {
@@ -195,6 +216,7 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env): {
   distRoot: string
   host: string
   port: number
+  napcat?: { webuiPort: number; token?: string | undefined }
   onebot?: {
     port: number
     host: string
@@ -218,9 +240,21 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env): {
     port: Number(env['FORLIFE_ADMIN_PORT'] ?? '8081'),
   }
 
+  // NapCat 的 WebUI 位置：面板里内嵌它做扫码登录。
+  // 给了端口就同时放行 CSP 的 frame-src（见 buildCsp）—— 没给则 CSP 保持最严。
+  const napcatPort = Number(env['FORLIFE_NAPCAT_WEBUI_PORT'] ?? '0')
+  const napcatToken = env['FORLIFE_NAPCAT_TOKEN']
+  const napcat =
+    napcatPort > 0
+      ? {
+          webuiPort: napcatPort,
+          ...(napcatToken === undefined || napcatToken === '' ? {} : { token: napcatToken }),
+        }
+      : undefined
+
   // QQ 链路默认**不开**：只有显式设置 FORLIFE_ONEBOT=1 才起。
   // 这样"只想看面板"的场景不会因为 QQ 连不上而受影响。
-  if (env['FORLIFE_ONEBOT'] !== '1') return base
+  if (env['FORLIFE_ONEBOT'] !== '1') return { ...base, ...(napcat === undefined ? {} : { napcat }) }
 
   const token = env['FORLIFE_ONEBOT_TOKEN']
   const dshHome = env['FORLIFE_DSH_HOME']
@@ -228,6 +262,7 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env): {
   const timeout = Number(env['FORLIFE_TURN_TIMEOUT_MS'] ?? '0')
   return {
     ...base,
+    ...(napcat === undefined ? {} : { napcat }),
     onebot: {
       port: Number(env['FORLIFE_ONEBOT_PORT'] ?? '3010'),
       // 默认绑 0.0.0.0：NapCat 在容器里，必须能从外面连进来（accessToken 是唯一门槛）

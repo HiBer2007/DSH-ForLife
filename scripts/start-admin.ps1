@@ -27,6 +27,10 @@ $env:FORLIFE_DRIVER = if ($env:FORLIFE_DRIVER) { $env:FORLIFE_DRIVER } else { 'f
 # 联调期关掉噪音过滤：确保测试消息一定产生轮次，便于观察链路
 $env:FORLIFE_NOISE = if ($env:FORLIFE_NOISE) { $env:FORLIFE_NOISE } else { 'off' }
 
+# NapCat 自己的 WebUI token（内嵌页面要用它自动登录；不是 OneBot 的 accessToken）
+$env:FORLIFE_NAPCAT_WEBUI_PORT = '6099'
+$env:FORLIFE_NAPCAT_TOKEN = 'b3bc4acb0f4a'
+
 Set-Location $root
 Write-Output "FORLIFE_DB=$env:FORLIFE_DB"
 Write-Output "监听=$env:FORLIFE_ADMIN_HOST`:$env:FORLIFE_ADMIN_PORT"

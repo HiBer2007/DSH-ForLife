@@ -31,22 +31,23 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   {
     label: '对话',
     items: [
-      { path: '/conversations', title: '会话与队列', icon: 'chat', pending: true },
-      { path: '/wake', title: '唤醒与自唤醒', icon: 'routing', pending: true },
+      { path: '/conversations', title: '会话与队列', icon: 'chat' },
+      { path: '/napcat', title: 'NapCat', icon: 'external' },
+      { path: '/wake', title: '唤醒与自唤醒', icon: 'routing' },
     ],
   },
   {
     label: '记忆',
     items: [
-      { path: '/memory', title: '记忆条目', icon: 'memory', pending: true },
-      { path: '/compaction', title: '压缩日志', icon: 'compaction', pending: true },
+      { path: '/memory', title: '记忆条目', icon: 'memory' },
+      { path: '/compaction', title: '压缩日志', icon: 'compaction' },
     ],
   },
   {
     label: '模型',
     items: [
-      { path: '/routing', title: '路由与端点', icon: 'endpoint', pending: true },
-      { path: '/prompts', title: '提示词', icon: 'prompt', pending: true },
+      { path: '/routing', title: '路由与端点', icon: 'endpoint' },
+      { path: '/prompts', title: '提示词', icon: 'prompt' },
     ],
   },
   {
@@ -67,12 +68,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 
 const routes: readonly RouteRecordRaw[] = [
   { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue'), meta: { title: '运行总览' } },
-  { path: '/conversations', name: 'conversations', component: () => import('./views/ComingSoonView.vue'), meta: { title: '会话与队列' } },
-  { path: '/wake', name: 'wake', component: () => import('./views/ComingSoonView.vue'), meta: { title: '唤醒与自唤醒' } },
-  { path: '/memory', name: 'memory', component: () => import('./views/ComingSoonView.vue'), meta: { title: '记忆条目' } },
-  { path: '/compaction', name: 'compaction', component: () => import('./views/ComingSoonView.vue'), meta: { title: '压缩日志' } },
-  { path: '/routing', name: 'routing', component: () => import('./views/ComingSoonView.vue'), meta: { title: '路由与端点' } },
-  { path: '/prompts', name: 'prompts', component: () => import('./views/ComingSoonView.vue'), meta: { title: '提示词' } },
+  { path: '/conversations', name: 'conversations', component: () => import('./views/ConversationsView.vue'), meta: { title: '会话与队列' } },
+  { path: '/wake', name: 'wake', component: () => import('./views/WakeView.vue'), meta: { title: '唤醒与自唤醒' } },
+  { path: '/memory', name: 'memory', component: () => import('./views/MemoryView.vue'), meta: { title: '记忆条目' } },
+  { path: '/routing', name: 'routing', component: () => import('./views/RoutingView.vue'), meta: { title: '路由与端点' } },
+  { path: '/compaction', name: 'compaction', component: () => import('./views/CompactionView.vue'), meta: { title: '压缩日志' } },
+  { path: '/prompts', name: 'prompts', component: () => import('./views/PromptsView.vue'), meta: { title: '提示词' } },
+  { path: '/napcat', name: 'napcat', component: () => import('./views/NapcatView.vue'), meta: { title: 'NapCat' } },
   { path: '/media', name: 'media', component: () => import('./views/ComingSoonView.vue'), meta: { title: '表情与媒体' } },
   { path: '/storage', name: 'storage', component: () => import('./views/ComingSoonView.vue'), meta: { title: '存储与迁移' } },
   { path: '/logs', name: 'logs', component: () => import('./views/ComingSoonView.vue'), meta: { title: '实时日志' } },
