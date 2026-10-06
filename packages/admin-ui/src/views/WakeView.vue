@@ -9,17 +9,101 @@
  * 真正回答"为什么没醒"的是**留痕**，不是规则表：一条 skip 留痕会写明是规则停用、
  * 概率未命中、静默期、频率限制还是预算不足；规则表只说明"配了什么"。
  */
-import { computed, ref } from 'vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
+import { computed, reactive, ref } from 'vue'
 
 import { api } from '../api/client.ts'
 import type { WakeEventItem, WakeGroup, WakeOverview } from '../api/types-wake.ts'
 import AsyncSection from '../components/AsyncSection.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import DataTable, { type TableColumn } from '../components/DataTable.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatCard from '../components/StatCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatDateTime, formatDuration, formatNumber, formatPercent, formatRelative } from '../utils/format.ts'
+
+/**
+ * 编辑与右键菜单。
+ *
+ * 两个刻意的做法：
+ *  - **菜单动作与页面按钮调用同一个函数**（都走 openEdit / toggleRule）。
+ *    分成两套的话，菜单里改了 A、按钮里改了 B，最后没人知道哪个是对的。
+ *  - 菜单项里带上"当前状态"作为 hint（如"当前已启用"），
+ *    这样菜单本身就说明了它会对什么生效，不用先去看表格。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+
+const editing = ref<Record<string, unknown> | null>(null)
+const saving = ref(false)
+const saveError = ref('')
+const form = reactive({ enabled: false, probability: 0, minIntervalSeconds: 0, dailyLimit: 0 })
+
+function ruleKey(row: Record<string, unknown>): string {
+  return `${String(row['scope'])}/${String(row['condition'])}`
+}
+
+/** 打开编辑弹层（菜单与按钮共用）。 */
+function openEdit(row: Record<string, unknown>): void {
+  editing.value = row
+  saveError.value = ''
+  form.enabled = row['enabled'] === true
+  form.probability = Number(row['probability'])
+  form.minIntervalSeconds = Math.round(Number(row['minIntervalMs']) / 1000)
+  form.dailyLimit = Number(row['dailyLimit'])
+}
+
+/** 快速切换启用（菜单与按钮共用）。 */
+async function toggleRule(row: Record<string, unknown>): Promise<void> {
+  await postRule(row, { enabled: row['enabled'] !== true })
+}
+
+/** 真正落库。 */
+async function postRule(row: Record<string, unknown>, patch: Record<string, unknown>): Promise<void> {
+  saving.value = true
+  saveError.value = ''
+  try {
+    await api.post('/wake-rule', { scope: row['scope'], condition: row['condition'], ...patch })
+    editing.value = null
+    state.refresh()
+  } catch (error) {
+    // **必须显示错误**：静默失败会让用户以为保存成功了
+    saveError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function saveRule(): Promise<void> {
+  if (editing.value === null) return
+  await postRule(editing.value, {
+    enabled: form.enabled,
+    probability: form.probability,
+    minIntervalMs: Math.max(0, Math.round(form.minIntervalSeconds * 1000)),
+    dailyLimit: form.dailyLimit,
+  })
+}
+
+/** 右键/长按菜单项（与按钮共用同一批函数）。 */
+function ruleMenuItems(row: Record<string, unknown>): ContextMenuItem[] {
+  const enabled = row['enabled'] === true
+  return [
+    { key: 'edit', label: '编辑…', hint: '改概率/间隔/日限', run: () => openEdit(row) },
+    {
+      key: 'toggle',
+      label: enabled ? '停用' : '启用',
+      hint: enabled ? '当前已启用' : '当前已停用',
+      run: () => toggleRule(row),
+    },
+    {
+      key: 'copy',
+      label: '复制条件名',
+      run: () => {
+        void navigator.clipboard?.writeText(String(row['condition']))
+      },
+    },
+  ]
+}
 
 const state = useAsyncData<WakeOverview>(() => api.get<WakeOverview>('/wake'))
 
@@ -265,13 +349,37 @@ const ruleColumns: TableColumn<Record<string, unknown>>[] = [
         <!-- ② 规则明细：分组里放不下的字段（最小间隔、日限、静默期）在这里 -->
         <PanelCard
           title="唤醒规则明细"
-          :subtitle="`共 ${formatNumber(ruleRows.length)} 条（作用域 × 条件），按作用域排序`"
+          :subtitle="`共 ${formatNumber(ruleRows.length)} 条（作用域 × 条件）· 右键或长按可操作`"
         >
-          <DataTable
-            :columns="ruleColumns"
-            :rows="ruleRows"
-            empty-text="还没有唤醒规则。一条规则都没有时，任何消息都不会触发主动回复 —— 去网关写规则，或先看它是不是连库都没连上。"
-          />
+          <p v-if="ruleRows.length === 0" class="rules-empty">
+            还没有唤醒规则。一条规则都没有时，任何消息都不会触发主动回复 ——
+            去网关写规则，或先看它是不是连库都没连上。
+          </p>
+
+          <ul v-else class="rules">
+            <li
+              v-for="row in ruleRows"
+              :key="ruleKey(row)"
+              class="rule"
+              :data-disabled="row['enabled'] !== true"
+              @contextmenu="onContextMenu($event, ruleMenuItems(row), row)"
+              v-on="touchHandlers(ruleMenuItems(row), row)"
+            >
+              <div class="rule-head">
+                <span class="mono rule-scope">{{ row['scope'] }}</span>
+                <span class="mono rule-cond">{{ row['condition'] }}</span>
+                <StatusBadge :tone="row['enabled'] === true ? 'ok' : 'muted'" dot>
+                  {{ row['enabled'] === true ? '启用' : '停用' }}
+                </StatusBadge>
+              </div>
+              <div class="rule-facts">
+                <span>概率 {{ formatPercent(Number(row['probability']) / 100, 0) }}</span>
+                <span>最小间隔 {{ formatDuration(Number(row['minIntervalMs']) / 1000) }}</span>
+                <span>日限 {{ Number(row['dailyLimit']) === 0 ? '不限' : formatNumber(Number(row['dailyLimit'])) }}</span>
+              </div>
+              <button type="button" class="rule-edit" @click="openEdit(row)">编辑</button>
+            </li>
+          </ul>
 
           <template #footer>
             <p class="muted legend">
@@ -353,6 +461,45 @@ const ruleColumns: TableColumn<Record<string, unknown>>[] = [
       </template>
     </AsyncSection>
   </div>
+
+      <!-- 编辑弹层：后端接口已通（POST /api/admin/wake-rule） -->
+      <div v-if="editing !== null" class="edit-mask" @click.self="editing = null">
+        <div class="edit-box" role="dialog" aria-modal="true" aria-label="编辑唤醒规则">
+          <h3 class="edit-title">编辑唤醒规则</h3>
+          <p class="mono edit-subject">{{ editing.scope }} / {{ editing.condition }}</p>
+
+          <label class="edit-field">
+            <span>启用</span>
+            <input v-model="form.enabled" type="checkbox" />
+          </label>
+          <label class="edit-field">
+            <span>概率（%）</span>
+            <input v-model.number="form.probability" type="number" min="0" max="100" />
+          </label>
+          <label class="edit-field">
+            <span>最小间隔（秒）</span>
+            <input v-model.number="form.minIntervalSeconds" type="number" min="0" />
+          </label>
+          <label class="edit-field">
+            <span>日限（0 = 不限）</span>
+            <input v-model.number="form.dailyLimit" type="number" min="0" />
+          </label>
+
+          <p v-if="saveError !== ''" class="edit-error">{{ saveError }}</p>
+          <p class="edit-hint muted">
+            作用域 <span class="mono">*</span> 就是**全局默认** —— 改这里会影响所有会话。
+          </p>
+
+          <div class="edit-actions">
+            <button type="button" class="btn" @click="editing = null">取消</button>
+            <button type="button" class="btn primary" :disabled="saving" @click="saveRule()">
+              {{ saving ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
@@ -569,5 +716,151 @@ const ruleColumns: TableColumn<Record<string, unknown>>[] = [
   align-items: center;
   gap: 6px;
   font-size: var(--t-xs);
+}
+
+.rules {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+.rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--touch-min, 44px);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  cursor: context-menu;
+}
+.rule:hover {
+  background: var(--c-surface-2);
+}
+.rule[data-disabled='true'] .rule-cond {
+  color: var(--c-text-3);
+}
+.rule-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.rule-scope {
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.rule-cond {
+  color: var(--c-text);
+  font-size: var(--t-sm);
+}
+.rule-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin-left: auto;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.rule-edit {
+  min-height: 28px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text-2);
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+.rule-edit:hover {
+  border-color: var(--c-brand);
+  color: var(--c-brand);
+}
+.rules-empty {
+  padding: var(--s-5) 0;
+  color: var(--c-text-3);
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  text-align: center;
+}
+
+.edit-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  padding: var(--s-4);
+  background: rgb(0 0 0 / 45%);
+}
+.edit-box {
+  width: min(420px, 100%);
+  max-height: 88vh;
+  overflow: auto;
+  padding: var(--s-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2, 0 12px 32px rgb(0 0 0 / 24%));
+}
+.edit-title {
+  font-size: var(--t-md);
+}
+.edit-subject {
+  margin-top: 4px;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.edit-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+  font-size: var(--t-sm);
+}
+.edit-field input[type='number'] {
+  width: 110px;
+  min-height: 34px;
+  padding: 0 var(--s-2);
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-sm);
+  color: var(--c-text);
+  text-align: right;
+}
+.edit-error {
+  margin-top: var(--s-3);
+  color: var(--c-err, #d9534f);
+  font-size: var(--t-xs);
+}
+.edit-hint {
+  margin-top: var(--s-3);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+}
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+.btn {
+  min-height: var(--touch-min, 44px);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text);
+  cursor: pointer;
+}
+.btn.primary {
+  border-color: transparent;
+  background: var(--c-brand);
+  color: #fff;
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 </style>
