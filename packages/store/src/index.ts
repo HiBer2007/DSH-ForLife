@@ -218,6 +218,7 @@ export {
   getWakeTrigger,
   isWakePaused,
   listDueTriggers,
+  markSystemTriggersDue,
   listWakeEvents,
   listWakeTriggers,
   markFired,

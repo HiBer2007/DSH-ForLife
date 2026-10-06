@@ -30,7 +30,8 @@ import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
 import { buildPortTools, portToolOptionsFromEnv } from './port-tools.ts'
-import { getWakeTrigger, updateWakeTrigger } from '@forlife/store'
+import { getWakeTrigger, markSystemTriggersDue, updateWakeTrigger } from '@forlife/store'
+import { onCompactionFailure } from './compaction-engine.ts'
 import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
@@ -281,6 +282,24 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         const dispose = tools.register(definition)
         disposers.push(dispose)
       }
+
+      // 压缩事务失败 ⇒ **直接写库**（数据库即通道）。
+      //
+      // 为什么不能调 gateway 的 systemHooks：压缩发生在**插件进程**，
+      // 而 systemHooks 在 **gateway 进程** —— 两者不能直接调函数。
+      // 通道是它们共享的那个数据库：把匹配的 system 触发器标记为"到点"，
+      // gateway 的下一次 tick（≤1 秒）就会扫到。与 wake_now 走的是同一条路。
+      onCompactionFailure((detail) => {
+        try {
+          const marked = markSystemTriggersDue(runtime.db, 'compaction.failed')
+          if (marked.triggered.length > 0) {
+            always(`压缩失败已触发 ${String(marked.triggered.length)} 条唤醒：${detail.slice(0, 120)}`)
+          }
+        } catch (error) {
+          // **观察者不能带崩压缩流程** —— 回滚已经做完了，那比上报重要
+          always(`压缩失败上报失败（已忽略）：${String(error).slice(0, 160)}`)
+        }
+      })
       log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks / switch_model / revert_model / router_status')
     }
   }

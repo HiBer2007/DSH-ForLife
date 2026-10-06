@@ -398,3 +398,42 @@ export function isWakePaused(db: DatabaseSync): boolean {
 export function setWakePaused(db: DatabaseSync, paused: boolean): void {
   setState(db, WAKE_PAUSED_KEY, paused ? '1' : '0')
 }
+
+/**
+ * 把匹配某个系统事件的触发器标记为"到点"。
+ *
+ * ## 为什么放在 store（而不是 gateway）
+ *
+ * **两侧都要用它**：
+ *  - gateway 侧的事件源（QQ 掉线、端点不可用…）观察到自己进程里的事；
+ *  - **插件侧**观察到的事（如压缩事务失败）在**另一个进程**里 ——
+ *    它拿不到 gateway 的 `systemHooks`，但**共享同一个数据库**。
+ *
+ * 所以"标记到点"这个动作必须在两边都能调用的地方。
+ * **数据库就是通道** —— 与 `wake_now`、监视源走的是同一条路。
+ *
+ * @returns 被标记的触发器 id（**未绑会话的会被跳过**，因为唤醒了也没处去）。
+ */
+export function markSystemTriggersDue(
+  db: DatabaseSync,
+  eventName: string,
+  now: Date = new Date(),
+): { readonly triggered: readonly string[]; readonly skipped: readonly { readonly id: string; readonly reason: string }[] } {
+  const triggered: string[] = []
+  const skipped: { id: string; reason: string }[] = []
+  for (const row of listWakeTriggers(db)) {
+    if (row.kind !== 'system') continue
+    let event: unknown
+    try {
+      event = (JSON.parse(row.spec) as { event?: unknown }).event
+    } catch {
+      continue
+    }
+    if (event !== eventName) continue
+    if (row.enabled !== 1) { skipped.push({ id: row.id, reason: '已停用' }); continue }
+    if (row.scope === '*' || row.scope.trim() === '') { skipped.push({ id: row.id, reason: '没有绑定会话（scope=*）' }); continue }
+    updateWakeTrigger(db, row.id, { nextFireAt: now.toISOString() }, now)
+    triggered.push(row.id)
+  }
+  return { triggered, skipped }
+}

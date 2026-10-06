@@ -72,6 +72,23 @@ import { activeRuntimes, type MemoryRuntime } from './index.ts'
 import { emitForlifeEvent } from './events.ts'
 
 /**
+ * 压缩失败观察者（由 gateway 注册）。
+ *
+ * **为什么用模块级注册而不是参数**：压缩的入口是 DSH 宿主的子类钩子
+ * （`summarize()`），调用链由宿主控制 —— 我们**没有地方传参数进去**。
+ * 模块级注册是这里唯一可行的接法。
+ *
+ * **观察者不能带崩压缩流程** —— 上报失败被吞掉，因为"回滚已经做完了"
+ * 这个事实比"有没有上报成功"重要得多。
+ */
+let compactionFailureObserver: ((detail: string) => void) | undefined
+
+/** 注册/注销压缩失败观察者（传 undefined 注销）。 */
+export function onCompactionFailure(fn: ((detail: string) => void) | undefined): void {
+  compactionFailureObserver = fn
+}
+
+/**
  * 注册我们的消息来源类型。
  *
  * 为什么必须有：`createUserMessage` 的 `source` 是必填，而**项目铁律**是
@@ -280,9 +297,17 @@ export function applyCompactionDecision(
   } catch (error) {
     // 回滚：删掉本次新写的、恢复碎片、epoch 退回
     rollbackCompactionRun(db, run)
+    // **上报压缩失败** —— 压缩失败最容易丢数据，模型该知道。
+    // 吞掉观察者的异常：它是观察者，不是压缩流程的一部分。
+    try {
+      compactionFailureObserver?.(String(error).slice(0, 300))
+    } catch {
+      // 上报失败不该影响"回滚已经做完了"这个事实
+    }
     throw error
   }
 }
+
 
 /** 引擎可选注入（测试可替换）。 */
 export interface EngineHooks {
