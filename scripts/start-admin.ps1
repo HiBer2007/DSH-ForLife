@@ -16,6 +16,31 @@ $root = 'D:\DSH-ForLife'
 #
 # 真机证据（2026-10-06）：开发机的 `DSH_HOME` 是 `C:Users<用户>.dsh`，
 # 而 gateway 直接继承了它 ⇒ 切到 headless 驱动就会写宿主的 dsh 目录。
+# ── provider 密钥（OpenCode Go）─────────────────────────────────────────
+#
+# 用户给了三个 key：GO / QQ / CL（**CL 最后用**）。三个都落在 .runtime/
+# （gitignored），这里按优先级挑**第一个存在且非空**的。
+#
+# **库里只存引用名**（inference_endpoints.api_key_ref = FORLIFE_OPENCODE_GO_KEY），
+# 值只在本机文件/环境变量里 —— 这是项目硬约束。
+#
+# 注意：这里只做"挑第一个存在的"，**不做额度判断** ——
+# 脚本只在启动时跑一次，而额度是会变的。真正的"按额度选 key"
+# 属于**端点层**（建多个端点各带 key_ref，让路由/健康机制去挑）。
+$keyFiles = @(
+  "$root\.runtime\provider-key-GO.txt",
+  "$root\.runtime\provider-key-QQ.txt",
+  "$root\.runtime\provider-key-CL.txt"
+)
+if (-not $env:FORLIFE_OPENCODE_GO_KEY) {
+  foreach ($kf in $keyFiles) {
+    if (Test-Path $kf) {
+      $v = (Get-Content $kf -Raw).Trim()
+      if ($v) { $env:FORLIFE_OPENCODE_GO_KEY = $v; break }
+    }
+  }
+}
+
 # 用 `FORLIFE_DSH_HOME` 显式覆盖，默认指向仓库内。
 $env:FORLIFE_DSH_HOME = if ($env:FORLIFE_DSH_HOME) { $env:FORLIFE_DSH_HOME } else { "$root\.runtime\dsh" }
 $env:FORLIFE_DB = "$root\.runtime\dsh\forlife\db\forlife.sqlite"
