@@ -2550,6 +2550,50 @@ sticker_save / qq_mention_all / qq_group_notice）、「图片存为表情包」
 
 **仍未做**：TCP layer4 穿透（需自建 Caddy 镜像，含 layer4 模块）。
 按 PLAN 允许走 fallback，但**差异与代价要在文档里写明** —— 留待下一轮。
+#### 2.14.16 TCP 出口（layer4）：**代码就绪，真机未验收**（2026-10-06）
+
+**状态：诚实标注为"未完成真机验收"。** 已做的是配置生成 + Dockerfile + 差异文档；
+没做的是"真机跑通" —— 因为本机**没有 Go / xcaddy**，构建不了含 `layer4` 的 Caddy，
+而 Docker Hub 在当前网络也不可达。
+
+**TCP 与 HTTP 的本质差别（这条决定了三个设计）**
+
+HTTP 出口靠**路径**分流（`/svc/<name>/`），几十个服务能共用一个对外端口。
+**TCP 没有这层信息** —— 连接进来时还不知道对端要说什么 —— 所以每个 TCP 服务
+**必须独占一个对外端口**。由此：
+
+1. **白名单要判的是"对外端口"**（`listenPort`），不是目标端口；判错就等于开了任意端口；
+2. **对外端口不能重复**：两个发布用同一个对外端口时，后一个必须被拒 ——
+   否则它会**静默顶掉**前一个，而前一个的使用者只会觉得"服务挂了"；
+3. layer4 的一个 server 只有一个 `listen` 列表 ⇒ **server 名要带端口**
+   （`forlife-l4-<port>`），否则不同发布的 listen 会互相覆盖。
+
+**已交付**
+- `packages/gateway/src/caddy-tcp.ts`：`buildTcpRoute` / `tcpServerName` / `caddyTcpRouteId`；
+- `packages/gateway/test/caddy-tcp.test.ts`：4 个用例（含"server 名带端口"那条）；
+- `deploy/caddy/Dockerfile.forlife`：用 xcaddy 把 `caddy-l4` 编进 Caddy，
+  版本**全部固定**（xcaddy / caddy / caddy-l4）—— 不固定的话"部署用的是哪个版本"会查不清；
+  入口用 `--resume`：**否则进程一重启，所有已发布的路由就没了**，
+  而数据库里还记着它们（表现为"库里有、实际不通"）。
+
+**差异与代价（相对 HTTP 出口）**
+
+| 维度 | HTTP 出口 | TCP 出口 |
+|---|---|---|
+| Caddy 镜像 | **官方镜像即可** | **必须自建**（含 layer4 模块） |
+| 对外端口 | 多个服务共用一个 | **每个服务独占一个** |
+| 升级 Caddy | 改 tag 即可 | **必须重新构建** |
+| 构建依赖 | 无 | Go 工具链 + Go module 代理可达 |
+| 验收状态 | ✅ **真机 9/9 通过** | ⚠️ **仅配置层证据** |
+
+**若不想自建镜像**：只做 HTTP 出口即可 —— 它功能完整且已真机验收。
+**代价是**：数据库、SSH、任意 TCP 协议类服务无法发布出去。
+
+**待办（下一轮或部署时）**
+1. 构建镜像：`docker build -f deploy/caddy/Dockerfile.forlife -t forlife/caddy-l4:2.11 .`；
+2. 把 `port-service` 接上 TCP 分支（`protocol: 'tcp'` ⇒ `PUT /config/apps/layer4/servers/<srv>`）；
+3. 迁移加 `listen_port` 列（对外端口要能单独记，且要**唯一**约束）；
+4. 对着真机跑：`tcp://…:<port>` 能连通、取消后立即拒绝连接、TTL 回收后 `GET /config/` 无残留。
 ### 阶段 8 · 触发与自唤醒引擎（预计 6–10 天）
 
 **依赖**：阶段 7 的工作区沙箱（监视程序跑在里面）。

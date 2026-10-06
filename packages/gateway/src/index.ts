@@ -129,3 +129,5 @@ export { checkPortAllowed, checkRouteName, DEFAULT_PORT_WHITELIST, listActivePor
 export type { PublishedPortRow } from './ports.ts'
 export { createPortService } from './port-service.ts'
 export type { PortService } from './port-service.ts'
+export { buildTcpRoute, caddyTcpRouteId, tcpServerName, TCP_SERVER_NAME } from './caddy-tcp.ts'
+export type { TcpRouteInput } from './caddy-tcp.ts'
