@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { isInside, resolveInWorkspace } from '../src/workspace.ts'
+import { hasDotOnlySegment, isInside, resolveInWorkspace } from '../src/workspace.ts'
 
 /** 造一个工作区 + 一个"外面"的目录。 */
 function setup(): { root: string; outside: string; cleanup: () => void } {
@@ -129,4 +129,32 @@ test('isInside：边界正确（前缀相同但不同目录不算之内）', () 
   // `/ws-evil` 以 `/ws` 为前缀，但**不在** `/ws` 之内 —— 少了分隔符判断就会误判
   const sibling = process.platform === 'win32' ? 'C:\\ws-evil\\a.txt' : '/ws-evil/a.txt'
   assert.equal(isInside(base, sibling), false, '同前缀的兄弟目录不算之内')
+})
+
+
+test('★ 只由点组成的段被拒（旧检查会放行的那批）', () => {
+  const { root, cleanup } = setup()
+  try {
+    // 这些**旧字符串检查全部放行**（它只匹配 === '..' 与 startsWith('..' + sep)）。
+    // 本机实测文件系统把它们当字面目录名（不是真绕过），
+    // 但那是 Win32 版本相关行为 —— 部分 API 会剥掉段末尾的空格与点。
+    for (const sneaky of ['.. ', '..  ', '...', 'a/.. ', './...', '....']) {
+      const result = resolveInWorkspace(root, sneaky)
+      assert.equal(result.ok, false, `应拒绝：${JSON.stringify(sneaky)}`)
+    }
+  } finally {
+    cleanup()
+  }
+})
+
+test('hasDotOnlySegment：判定边界（正常文件名不受影响）', () => {
+  assert.equal(hasDotOnlySegment('..'), true)
+  assert.equal(hasDotOnlySegment('.. '), true, '尾空格要剥掉再判')
+  assert.equal(hasDotOnlySegment('...'), true)
+  assert.equal(hasDotOnlySegment('a/../b'), true)
+  // 正常文件名不该被误伤
+  assert.equal(hasDotOnlySegment('a.txt'), false)
+  assert.equal(hasDotOnlySegment('.hidden'), false, '点开头的隐藏文件是正常的')
+  assert.equal(hasDotOnlySegment('notes/readme.md'), false)
+  assert.equal(hasDotOnlySegment('a.b.c'), false)
 })

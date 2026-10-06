@@ -56,7 +56,13 @@ export function resolveInWorkspace(root: string, relativePath: string): Workspac
   // Windows 盘符形式（`C:foo` 这种"相对当前盘"的写法 isAbsolute 会返回 false）
   if (/^[a-zA-Z]:/.test(relativePath)) return { ok: false, reason: `不接受盘符路径：${relativePath}` }
 
-  // ③ 提前给出更好的错误（**不作为安全依据**）
+  // ③ "只由点组成"的段：遍历与 Win32 歧义写法都拒。
+  //    放在字符串检查**之前**：它接住的正是字符串检查漏掉的那批（'.. ' / '...'）。
+  if (hasDotOnlySegment(relativePath)) {
+    return { ok: false, reason: `路径含"只由点组成"的段（遍历或 Win32 歧义写法）：${relativePath}` }
+  }
+
+  // ④ 提前给出更好的错误（**不作为安全依据**）
   const normalizedInput = normalize(relativePath)
   if (normalizedInput === '..' || normalizedInput.startsWith(`..${sep}`)) {
     return { ok: false, reason: `路径越出工作区：${relativePath}` }
@@ -91,6 +97,25 @@ export function resolveInWorkspace(root: string, relativePath: string): Workspac
   }
 
   return { ok: true, absolutePath: candidate }
+}
+
+
+/**
+ * 是否存在"只由点组成"的路径段（剥掉尾部空格后）。
+ *
+ * 为什么要单独判这个：原来的检查只匹配 `..`，于是 `'.. '` / `'...'` / `'a/.. '`
+ * **全部放行**。本机实测它们被文件系统当作字面目录名（不是真绕过），
+ * 但那是 **Win32 版本相关**的行为 —— 部分 Win32 API 会剥掉路径段末尾的空格与点。
+ * 一旦走到那条路径上，放行的路径就变成真实逃逸。
+ *
+ * 规则：**只由点组成的段，要么是遍历，要么是 Win32 歧义写法，两种都拒。**
+ * 正常文件名不会只由点组成，所以不会误伤。
+ */
+export function hasDotOnlySegment(input: string): boolean {
+  return input
+    .split(/[\\/]+/)
+    .filter((segment) => segment !== '')
+    .some((segment) => /^\.+$/.test(segment.replace(/ +$/, '')))
 }
 
 /** 判断 `child` 是否在 `parent` 之下（含等于）。Windows 上大小写不敏感。 */
