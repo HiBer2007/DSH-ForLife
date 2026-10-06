@@ -59,7 +59,9 @@ export function buildStickerVisionRequest(input: {
   const mime = input.mime.split(';')[0]?.trim().toLowerCase() ?? 'image/png'
   return {
     model: input.model,
-    max_tokens: input.maxTokens ?? 300,
+        // 默认给足预算：这个模型是**推理模型**，max_tokens 给小了会把预算全花在 reasoning 上，
+    // 正文返回**空字符串**（HTTP 仍是 200，不是报错）。300 时实测必空，2000 才稳。
+    max_tokens: input.maxTokens ?? 2000,
     messages: [
       {
         role: 'user',

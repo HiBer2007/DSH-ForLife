@@ -117,7 +117,14 @@ export function upsertStickerAsset(db: DatabaseSync, input: UpsertStickerInput):
   const existing = findStickerBySha(db, input.sha256)
   if (existing !== undefined) {
     const scopes = input.scope === null || input.scope === undefined ? existing.scopes : withScope(existing.scopes, input.scope)
-    db.prepare('UPDATE sticker_assets SET scopes = ?, last_used_at = ? WHERE id = ?').run(scopes, now, existing.id)
+    // ★ 复活被拒过的行：sha256 是 UNIQUE，所以同一张图再次入库时会走到这里。
+    //   如果只更新 scopes/last_used_at，那一行会**永远停在 rejected** ——
+    //   哪怕当初的拒绝只是暂时的（例如水印检查那次调用输出为空）。
+    //   症状是静默的：add() 报告 created，但资产存不进、搜不到、发不出。
+    //   能走到这里说明本次入库已通过全部校验（水印闸门在调用方），所以状态以本次为准。
+    db.prepare(
+      "UPDATE sticker_assets SET scopes = ?, last_used_at = ?, status = 'active', reject_reason = NULL, storage_path = ?, mime = ?, size_bytes = ? WHERE id = ?",
+    ).run(scopes, now, input.storagePath, input.mime, input.sizeBytes, existing.id)
     return { id: existing.id, created: false, asset: { ...existing, scopes, last_used_at: now } }
   }
 

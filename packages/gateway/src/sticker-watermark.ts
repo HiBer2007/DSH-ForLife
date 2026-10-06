@@ -64,7 +64,7 @@ export function createWatermarkChecker(options: WatermarkCheckerOptions): Waterm
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
 
   return async (bytes, mime): Promise<WatermarkVerdict> => {
-    const body = buildStickerVisionRequest({ model: options.model, imageBase64: Buffer.from(bytes).toString('base64'), mime, maxTokens: 400 })
+    const body = buildStickerVisionRequest({ model: options.model, imageBase64: Buffer.from(bytes).toString('base64'), mime, maxTokens: 2000 })
     // 用同一个请求构造器，但把提示词换成水印判断（避免重复实现 data URI 那套易错逻辑）
     const messages = body['messages'] as { content: { type: string; text?: string }[] }[]
     const first = messages[0]
