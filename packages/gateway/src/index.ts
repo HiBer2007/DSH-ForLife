@@ -118,3 +118,14 @@ export { loadSearchable, scoreSticker, searchStickers, tokenize } from './sticke
 export type { ScoredSticker, SearchableSticker, StickerHit } from './sticker-search.ts'
 export { buildStickerVisionRequest, createStickerVisionDescriber, parseStickerVisionResponse, visionConfigFromEnv } from './sticker-vision.ts'
 export type { StickerVisionDescriber, StickerVisionOptions, StickerVisionResult } from './sticker-vision.ts'
+
+// ── 端口出口（PLAN 阶段 7）──────────────────────────────────────────
+// 为什么插件侧也要用：整套逻辑**只依赖 node:sqlite / node:crypto / fetch**，
+// 没有 DSH 依赖，所以插件可以自己造一个实例，与网关写同一个库、配同一个 Caddy。
+// （这点和压缩引擎不同 —— 那个深度绑定 DSH，网关跑不了。）
+export { createCaddyClient, buildHttpRoute, caddyRouteId } from './caddy.ts'
+export type { CaddyClient, CaddyClientOptions, CaddyResult } from './caddy.ts'
+export { checkPortAllowed, checkRouteName, DEFAULT_PORT_WHITELIST, listActivePorts, publishPort, removePort } from './ports.ts'
+export type { PublishedPortRow } from './ports.ts'
+export { createPortService } from './port-service.ts'
+export type { PortService } from './port-service.ts'

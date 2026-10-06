@@ -26,6 +26,7 @@ import { seedDefaultRoutes } from './route-seed.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
+import { buildPortTools, portToolOptionsFromEnv } from './port-tools.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -199,6 +200,13 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         const dispose = tools.register(definition)
         disposers.push(dispose)
       }
+
+  // 端口出口工具（PLAN 阶段 7）。**未配置 Caddy 时返回空数组** ——
+  // 注册了只会让模型调用一个注定失败的工具，而它会把这个失败当成"我操作错了"，反复重试。
+  for (const definition of buildPortTools(defineToolImpl, runtime, portToolOptionsFromEnv(process.env))) {
+    const dispose = tools.register(definition)
+    disposers.push(dispose)
+  }
       log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks / switch_model / revert_model / router_status')
     }
   }
