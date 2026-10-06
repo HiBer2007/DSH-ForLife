@@ -21,6 +21,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { FakeTurnDriver, HeadlessTurnDriver, type FakeScript } from './driver.ts'
 import { Gateway, type GatewayState } from './gateway.ts'
 import { createOneBotTransport, type OneBotTransport } from './onebot.ts'
+import { enqueueOutbound } from './outbox.ts'
+import { conversationKey } from './transport.ts'
 import { defaultConditionOf, defaultScopeOf, TurnRunner, type TurnDriver } from './turns.ts'
 
 /** 运行时选项。 */
@@ -46,6 +48,9 @@ export interface GatewayRuntimeOptions {
   /** 关掉噪音过滤（默认开）。**只用于排障**：正常该让不值得回复的消息不进记忆系统。 */
   readonly disableNoiseFilter?: boolean
   readonly debounceMs?: number
+  readonly outboxPollMs?: number
+  /** 注入随机数（**测试用**）：唤醒判定有概率规则，不注入就没法稳定断言。 */
+  readonly random?: (() => number) | undefined
 }
 
 /** 运行中的网关。 */
@@ -56,14 +61,37 @@ export interface RunningGatewayRuntime {
   stop: () => Promise<void>
 }
 
-/** 联调用剧本：把收到的消息原样回执，并**明确标注这是脚本**。 */
-const fakeScript: FakeScript = (request) => {
-  const texts = request.messages.map((message) => message.text.trim()).filter((text) => text !== '')
-  const excerpt = texts.join(' / ').slice(0, 120)
-  return {
-    segments: [`【联调脚本】收到 ${request.messages.length} 条消息：${excerpt === '' ? '(无文本)' : excerpt}`],
-    tokensIn: 0,
-    tokensOut: 0,
+/**
+ * 联调用剧本：把收到的消息回执出去，并**明确标注这是脚本**。
+ *
+ * ## 为什么脚本必须自己入队出站（而不是只返回 segments）
+ *
+ * `TurnRunner` **刻意不做出站**：出站动作是**模型通过工具**产出的（`qq_reply` 之类），
+ * 发送归网关的 outbox 消费者。这是好设计（"模型说了什么"与"平台收到什么"分开，各自可重试），
+ * 但它有个直接后果：**只返回文本的驱动永远不会产生回复** ——
+ * 我第一版就是只返回 `segments`，于是"消息进了、轮次跑了、但没有回话"，
+ * 现场看就是"出站队列是空的"。
+ *
+ * 所以这里补上工具层该做的那一步：把回执写进 outbox。
+ * 这样联调时"收到 → 轮次 → 出站 → 平台确认"整条链都能被真实走通。
+ */
+function makeFakeScript(db: DatabaseSync, log: (message: string) => void): FakeScript {
+  return (request) => {
+    const texts = request.messages.map((message) => message.text.trim()).filter((text) => text !== '')
+    const excerpt = texts.join(' / ').slice(0, 120)
+    const reply = `【联调脚本】收到 ${String(request.messages.length)} 条消息：${excerpt === '' ? '(无文本)' : excerpt}`
+    try {
+      enqueueOutbound(db, {
+        conversationKey: conversationKey(request.conversation),
+        kind: 'text',
+        payload: { segments: [{ kind: 'text', text: reply }] },
+        conversationKind: request.conversation.kind,
+      })
+    } catch (error) {
+      // 入队失败不能让轮次崩掉：它已经跑完了，报出去比抛出去有用
+      log(`[gateway] fake 驱动入队出站失败：${String(error)}`)
+    }
+    return { segments: [reply], tokensIn: 0, tokensOut: 0 }
   }
 }
 
@@ -82,7 +110,7 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
   let driver: TurnDriver
   if (options.driver === 'fake') {
     log('[gateway] ⚠ 驱动 = fake：回复由脚本生成（联调用），**不是模型输出**')
-    driver = new FakeTurnDriver(fakeScript)
+    driver = new FakeTurnDriver(makeFakeScript(options.db, log))
   } else {
     const headless = options.headless ?? {}
     log(`[gateway] 驱动 = headless（profile=${headless.profile ?? 'forlife-headless'}）`)
@@ -102,6 +130,7 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     conditionOf: defaultConditionOf,
     log,
     ...(options.disableNoiseFilter === true ? { disableNoiseFilter: true } : {}),
+    ...(options.random === undefined ? {} : { random: options.random }),
   })
 
   const gateway = new Gateway({
@@ -110,6 +139,7 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     runner,
     log,
     ...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
+    ...(options.outboxPollMs === undefined ? {} : { outboxPollMs: options.outboxPollMs }),
   })
 
   return {

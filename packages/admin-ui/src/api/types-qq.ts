@@ -7,6 +7,15 @@
  * 跨包引源码会把服务端依赖扯进前端构建。抄一份 = 前端自己的契约：服务端多给字段无所谓，
  * 少给或改了可空性必须在这里编译失败，而不是等到页面上某个格子悄悄空掉。
  *
+ * ## 为什么全是 `type` 而不是 `interface`
+ *
+ * 字段定义与 gateway 逐条对齐，只有关键字不同 —— 这是 TS 的硬规则而不是风格偏好：
+ * **隐式索引签名只给"对象字面量类型"（含 `type` 别名），不给 `interface`**，
+ * 于是 `interface X {…}` 赋不给 `Record<string, unknown>`，`type X = {…}` 可以。
+ * 面板的表格是**字典视角**（列定义里一律写 `row['foo']`），行类型要能直接落到
+ * `Record<string, unknown>` 的用法上，否则每个调用方都得多写一层 `as unknown as` 强转。
+ * 换关键字零成本，字段一个字没改。
+ *
  * ## 可空字段：`?:`（整个键缺席）而不是 `| null`
  *
  * 服务端对可空**文本**列的规矩是"NULL ⇒ 整个键省略"（`optionalText`），
@@ -23,11 +32,11 @@
  */
 
 /** 一个会话（`qq_sessions` 一行 + 该会话未处理的入站条数）。 */
-export interface ConversationSession {
+export type ConversationSession = {
   readonly conversationKey: string
   readonly platform: string
   readonly chatId: string
-  /** `private` | `group` | `temp`；列不是枚举，保住 `string`。 */
+  /** `private` | `group` | `temp`；列不是枚举，所以保住 `string`。 */
   readonly kind: string
   readonly title?: string
   readonly lastMessageAt?: string
@@ -36,7 +45,7 @@ export interface ConversationSession {
 }
 
 /** 入站队列里的一条消息（`qq_inbox` 一行）。 */
-export interface InboxItem {
+export type InboxItem = {
   readonly id: string
   readonly conversationKey: string
   readonly senderName?: string
@@ -53,7 +62,7 @@ export interface InboxItem {
 }
 
 /** 入站队列计数（全库口径）。 */
-export interface QueueStats {
+export type QueueStats = {
   readonly pending: number
   readonly total: number
   /** 有 `error` 的行数——含重试中仍留有错误文本的。 */
@@ -61,7 +70,7 @@ export interface QueueStats {
 }
 
 /** 一轮（`qq_turns` 一行）。 */
-export interface TurnItem {
+export type TurnItem = {
   readonly id: string
   readonly conversationKey: string
   /** 取值域由迁移 5 的列注释钉死。 */
@@ -77,7 +86,7 @@ export interface TurnItem {
 }
 
 /** 轮次计数（全库口径）。 */
-export interface TurnStats {
+export type TurnStats = {
   readonly running: number
   readonly done: number
   readonly failed: number
@@ -92,7 +101,7 @@ export interface TurnStats {
 }
 
 /** 出站记录（`qq_outbox` 一行）。 */
-export interface OutboxItem {
+export type OutboxItem = {
   readonly id: string
   readonly conversationKey: string
   /** `text` | `image` | `file` | `sticker` | `notice` | `mention_all` | … 开放集合。 */
@@ -106,7 +115,7 @@ export interface OutboxItem {
 }
 
 /** 出站计数（全库口径）。 */
-export interface OutboxStats {
+export type OutboxStats = {
   readonly pending: number
   /** 只看终态 `status = 'failed'`；重试中的行不算，否则一条最终成功的消息会永远躺在"失败"里。 */
   readonly failed: number
@@ -114,7 +123,7 @@ export interface OutboxStats {
 }
 
 /** 有界待读池里的一条（`pending_messages` 一行）。 */
-export interface PendingItem {
+export type PendingItem = {
   readonly id: string
   /** `'*'` 或具体会话；决定这条待读给谁看。 */
   readonly scope: string
@@ -126,7 +135,7 @@ export interface PendingItem {
 }
 
 /** `GET /api/admin/conversations` 的响应（= 服务端 `ConversationsOverview`，一一对应）。 */
-export interface ConversationsOverview {
+export type ConversationsOverview = {
   readonly sessions: readonly ConversationSession[]
   readonly queue: readonly InboxItem[]
   readonly queueStats: QueueStats

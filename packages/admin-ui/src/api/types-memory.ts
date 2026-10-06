@@ -11,13 +11,12 @@
  *
  * ## 为什么全是 `type` 而不是 `interface`
  *
- * 字段定义和 gateway 那边一模一样，只有关键字不同 —— 这不是风格偏好，是 TS 的一条硬规则：
- * **隐式索引签名只给"对象字面量类型"（含 `type` 别名），不给 `interface`**。
+ * 字段定义和 gateway 那边逐条一样，只有关键字不同 —— 这不是风格偏好，是 TS 的一条硬规则：
+ * **隐式索引签名只给"对象字面量类型"（含 `type` 别名），不给 `interface`**，
  * 于是 `interface X {…}` 赋不给 `Record<string, unknown>`，`type X = {…}` 可以。
- * 而 DataTable 是泛型组件，列/行类型两个方向都会撞上这条规则
- * （`readonly X[] → readonly Record<string, unknown>[]`，以及列定义 `value` 参数的逆变检查），
- * 用 `interface` 时两种写法里总有一种过不了 vue-tsc，只能在调用方写 `as unknown as` 强转——
- * 那就等于把这一层的类型保护全关了。关键字换一下，换来的是干净的绑定。
+ * 面板的表格是**字典视角**（列定义里一律写 `row['foo']`），行类型要能直接落到
+ * `Record<string, unknown>` 的用法上，否则每个调用方都得多写一层 `as unknown as` 强转。
+ * 换关键字零成本，字段一个字没改。
  *
  * ## 可空字段写成 `?:` 而不是 `| null`
  *
