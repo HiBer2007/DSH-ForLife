@@ -21,6 +21,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { buildHttpRoute, caddyRouteId, type CaddyClient } from './caddy.ts'
+import { buildTcpRoute, caddyTcpRouteId, tcpServerName } from './caddy-tcp.ts'
 import { listExpiredPorts, listActivePorts, publishPort, removePort, setCaddyRouteId, type PublishedPortRow } from './ports.ts'
 
 /** 一次操作的结果。 */
@@ -54,6 +55,8 @@ export interface PortService {
   readonly publish: (input: {
     readonly name: string
     readonly targetPort: number
+    /** TCP 必填：对外监听的端口（**白名单判的是它**）。HTTP 不要传。 */
+    readonly listenPort?: number | null
     readonly protocol?: 'http' | 'tcp'
     readonly ttlSeconds?: number | null
     readonly approvedBy: string
@@ -80,6 +83,7 @@ export function createPortService(options: PortServiceOptions): PortService {
     const registered = publishPort(db, {
       name: input.name,
       targetPort: input.targetPort,
+      listenPort: input.listenPort ?? null,
       ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
       ttlSeconds: input.ttlSeconds ?? null,
       approvedBy: input.approvedBy,
@@ -91,12 +95,26 @@ export function createPortService(options: PortServiceOptions): PortService {
     if (!registered.ok || registered.row === undefined) return { ok: false, reason: registered.reason }
     const row = registered.row
 
-    // ② 配 Caddy
-    const routeId = caddyRouteId(row.name)
-    const written = await caddy.upsertRoute(
-      routeId,
-      buildHttpRoute({ host: options.host, name: row.name, targetPort: row.target_port, upstreamHost }),
-    )
+    // ② 配 Caddy —— **HTTP 与 TCP 走不同结构**
+    // HTTP：路由要插进 routes **数组**（有顺序语义），所以客户端那边是两步。
+    // TCP：layer4 的 server 是**按名字索引的对象**（无顺序语义），
+    //      一次 POST 就是"creates or replaces"，本身幂等。
+    const isTcp = row.protocol === 'tcp'
+    const routeId = isTcp ? caddyTcpRouteId(row.name) : caddyRouteId(row.name)
+    const written = isTcp
+      ? await caddy.upsertLayer4Server(
+          tcpServerName(row.listen_port ?? 0),
+          buildTcpRoute({
+            listenPort: row.listen_port ?? 0,
+            targetPort: row.target_port,
+            routeId,
+            upstreamHost,
+          }),
+        )
+      : await caddy.upsertRoute(
+          routeId,
+          buildHttpRoute({ host: options.host, name: row.name, targetPort: row.target_port, upstreamHost }),
+        )
 
     if (!written.ok) {
       // ③ **回滚登记**：失败时不能留下"看起来发布了"的记录。
@@ -107,9 +125,11 @@ export function createPortService(options: PortServiceOptions): PortService {
       return { ok: false, reason: `Caddy 配置失败，已回滚：${written.reason}` }
     }
 
-    setCaddyRouteId(db, row.id, routeId)
-    log(`已发布 ${row.name} → ${String(row.target_port)}（路由 ${routeId}）`)
-    return { ok: true, reason: `已发布：${urlFor(row)}`, row: { ...row, caddy_route_id: routeId } }
+    // **TCP 记 server 名**（回收/取消时要按它删 layer4 server，而不是删路由 id）
+    const handle = isTcp ? tcpServerName(row.listen_port ?? 0) : routeId
+    setCaddyRouteId(db, row.id, handle)
+    log(`已发布 ${row.name} → ${String(row.target_port)}（${isTcp ? 'TCP' : 'HTTP'} ${handle}）`)
+    return { ok: true, reason: `已发布：${urlFor(row)}`, row: { ...row, caddy_route_id: handle } }
   }
 
   const unpublish: PortService['unpublish'] = async (id) => {
@@ -118,11 +138,13 @@ export function createPortService(options: PortServiceOptions): PortService {
 
     // 删 Caddy 路由。**必须成功**才删记录 —— 否则会留下一条孤儿公开路由
     // （面板上看不到它，所以永远不会有人去清理）。
-    const routeId = row.caddy_route_id ?? caddyRouteId(row.name)
-    const deleted = await caddy.deleteRoute(routeId)
+    // TCP 删的是 layer4 server；HTTP 删的是路由。库里的 caddy_route_id 记的就是对应的那个句柄。
+    const handle = row.caddy_route_id ?? (row.protocol === 'tcp' ? caddyTcpRouteId(row.name) : caddyRouteId(row.name))
+    const deleted =
+      row.protocol === 'tcp' ? await caddy.deleteLayer4Server(handle) : await caddy.deleteRoute(handle)
     if (!deleted.ok) {
       log(`取消 ${row.name} 失败，**保留记录**以便重试：${deleted.reason}`)
-      return { ok: false, reason: `Caddy 路由删除失败，已保留记录以便重试：${deleted.reason}` }
+      return { ok: false, reason: `Caddy 删除失败，已保留记录以便重试：${deleted.reason}` }
     }
 
     removePort(db, id)
@@ -134,8 +156,8 @@ export function createPortService(options: PortServiceOptions): PortService {
     const reclaimed: string[] = []
     const failed: string[] = []
     for (const row of listExpiredPorts(db, now())) {
-      const routeId = row.caddy_route_id ?? caddyRouteId(row.name)
-      const deleted = await caddy.deleteRoute(routeId)
+      const handle = row.caddy_route_id ?? (row.protocol === 'tcp' ? caddyTcpRouteId(row.name) : caddyRouteId(row.name))
+      const deleted = row.protocol === 'tcp' ? await caddy.deleteLayer4Server(handle) : await caddy.deleteRoute(handle)
       if (!deleted.ok) {
         // **保留记录**：下次还会被扫到。删了的话就永远不知道还有条路由在外面。
         failed.push(`${row.name}：${deleted.reason}`)

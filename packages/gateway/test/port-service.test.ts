@@ -24,9 +24,11 @@ import type { PublishedPortRow } from '../src/ports.ts'
 function fakeCaddy(options: { failUpsert?: boolean; failDelete?: boolean } = {}): {
   client: CaddyClient
   routes: Map<string, unknown>
+  layer4: Map<string, boolean>
   deleted: string[]
 } {
   const routes = new Map<string, unknown>()
+  const layer4 = new Map<string, boolean>()
   const deleted: string[] = []
   const client: CaddyClient = {
     upsertRoute: async (id: string, route: unknown): Promise<CaddyResult> => {
@@ -42,8 +44,21 @@ function fakeCaddy(options: { failUpsert?: boolean; failDelete?: boolean } = {})
     },
     listRouteIds: async () => ({ ok: true, ids: [...routes.keys()], reason: 'ok' }),
     getConfig: async () => ({ ok: true, config: {}, reason: 'ok' }),
+    // 替身**必须跟上真实接口** —— 这个坑已经踩过 4 次了：
+    // 给 CaddyClient 加方法时，忘了同步替身，编译就红。
+    // （换个角度说，这其实是好事：它逼着替身与真实接口保持一致。）
+    upsertLayer4Server: async (serverName: string): Promise<CaddyResult> => {
+      if (options.failUpsert === true) return { ok: false, reason: 'Caddy 说不行' }
+      layer4.set(serverName, true)
+      return { ok: true, reason: 'ok' }
+    },
+    deleteLayer4Server: async (serverName: string): Promise<CaddyResult> => {
+      if (options.failDelete === true) return { ok: false, reason: 'Caddy 删不掉' }
+      layer4.delete(serverName)
+      return { ok: true, reason: 'ok' }
+    },
   }
-  return { client, routes, deleted }
+  return { client, routes, layer4, deleted }
 }
 
 function setup(caddyOptions: { failUpsert?: boolean; failDelete?: boolean } = {}): {

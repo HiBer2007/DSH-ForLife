@@ -65,6 +65,16 @@ export interface CaddyClient {
   readonly listRouteIds: () => Promise<{ readonly ok: boolean; readonly ids: readonly string[]; readonly reason: string }>
   /** 原始配置（排障用）。 */
   readonly getConfig: () => Promise<{ readonly ok: boolean; readonly config: unknown; readonly reason: string }>
+  /**
+   * 幂等写入一个 layer4 server（TCP 出口用）。
+   *
+   * 用 `POST /config/apps/layer4/servers/<name>` —— 文档说对**对象**它是
+   * "creates or replaces"，所以一次请求就同时覆盖两种情况（layer4 的 server
+   * 是按名字索引的对象，没有数组顺序语义，因此不需要 HTTP 那边那套两步）。
+   */
+  readonly upsertLayer4Server: (serverName: string, server: unknown) => Promise<CaddyResult>
+  /** 删除一个 layer4 server，并**确认删干净**。 */
+  readonly deleteLayer4Server: (serverName: string) => Promise<CaddyResult>
 }
 
 
@@ -201,7 +211,43 @@ export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
     }
   }
 
-  return { upsertRoute, deleteRoute, listRouteIds, getConfig }
+
+  const layer4Path = (serverName: string): string =>
+    `/config/apps/layer4/servers/${encodeURIComponent(serverName)}`
+
+  const upsertLayer4Server = async (serverName: string, server: unknown): Promise<CaddyResult> => {
+    if (serverName.trim() === '') return { ok: false, reason: 'serverName 不能为空' }
+    // POST 到对象路径 = creates or replaces（见接口上的说明）
+    const result = await call('POST', layer4Path(serverName), server)
+    if (!result.ok) {
+      return {
+        ok: false,
+        reason:
+          `Caddy 拒绝 layer4 配置（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}` +
+          `　—— 若提示未知模块，说明这个 Caddy 没编入 layer4（需自建镜像，见 deploy/caddy/Dockerfile.forlife）`,
+        status: result.status,
+      }
+    }
+    return { ok: true, reason: '已写入', status: result.status }
+  }
+
+  const deleteLayer4Server = async (serverName: string): Promise<CaddyResult> => {
+    if (serverName.trim() === '') return { ok: false, reason: 'serverName 不能为空' }
+    const result = await call('DELETE', layer4Path(serverName))
+    // 404 算成功：目标就是"它不存在"
+    if (!result.ok && result.status !== 404) {
+      return { ok: false, reason: `删除 layer4 server 失败（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}`, status: result.status }
+    }
+
+    // **确认删干净**：留下的不是 404 的路由，而是一条**还在监听端口**的转发
+    const after = await call('GET', layer4Path(serverName))
+    if (after.ok) {
+      return { ok: false, reason: `删除后 layer4 server「${serverName}」仍在配置里 —— 视为失败（否则端口还开着）` }
+    }
+    return { ok: true, reason: '已删除', status: result.status }
+  }
+
+  return { upsertRoute, deleteRoute, listRouteIds, getConfig, upsertLayer4Server, deleteLayer4Server }
 }
 
 /** 拼一条 HTTP 映射路由：`https://<host>/svc/<name>/*` → 工作区里的 `<targetPort>`。 */
