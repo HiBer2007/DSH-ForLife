@@ -16,6 +16,7 @@
  *
  * @module @forlife/gateway/runtime
  */
+import { startEndpointHealthLoop } from './endpoint-health.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { FLAG_QQ_TAKEOVER, getFlag } from '@forlife/store'
@@ -93,6 +94,11 @@ function makeFakeScript(db: DatabaseSync, log: (message: string) => void): FakeS
       // 入队失败不能让轮次崩掉：它已经跑完了，报出去比抛出去有用
       log(`[gateway] fake 驱动入队出站失败：${String(error)}`)
     }
+  // 端点健康探测：启动时立刻探一次 + 之后定时。
+  // 不做这一步的话，面板上的「健康/已登记」永远显示 0/N ——
+  // 因为 health_ok 从没被写过（探测以前只能手动触发）。
+  const stopHealthLoop = startEndpointHealthLoop({ db, log })
+
     return { segments: [reply], tokensIn: 0, tokensOut: 0 }
   }
 }

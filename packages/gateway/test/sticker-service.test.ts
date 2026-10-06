@@ -283,7 +283,7 @@ test('★ 学来的可以提升为「我们的」（先学来、后收藏是最�
     // ① 先作为「学来的」入库（别人发的图）
     const learned = await service.add({ bytes: fakeImage(512, 11), mime: 'image/png', source: 'learned', ours: false })
     assert.equal(learned.status, 'created')
-    const oursAfterLearn = (db.prepare('SELECT ours FROM sticker_assets WHERE id = ?').get(learned.assetId) as { ours: number }).ours
+    const oursAfterLearn = (db.prepare('SELECT ours FROM sticker_assets WHERE id = ?').get(learned.assetId ?? '') as { ours: number }).ours
     assert.equal(oursAfterLearn, 0, '学来的应为 ours=0')
 
     // 学来的默认发不出去
@@ -292,7 +292,7 @@ test('★ 学来的可以提升为「我们的」（先学来、后收藏是最�
     // ② 用户明确收藏它 ⇒ 必须能提升
     const saved = await service.add({ bytes: fakeImage(512, 11), mime: 'image/png', source: 'manual', ours: true })
     assert.equal(saved.assetId, learned.assetId, '同一张图应复用同一行（指纹去重）')
-    const oursAfterSave = (db.prepare('SELECT ours FROM sticker_assets WHERE id = ?').get(learned.assetId) as { ours: number }).ours
+    const oursAfterSave = (db.prepare('SELECT ours FROM sticker_assets WHERE id = ?').get(learned.assetId ?? '') as { ours: number }).ours
     assert.equal(oursAfterSave, 1, '收藏后必须提升为 ours=1 —— 否则主流程（把喜欢的图存为表情包）半通')
 
     // ③ 现在应该发得出去
