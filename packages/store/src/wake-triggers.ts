@@ -141,12 +141,21 @@ export function listWakeTriggers(db: DatabaseSync, scope?: string): readonly Wak
   ) as unknown as WakeTriggerRow[]
 }
 
-/** 列出**到点该醒**的 timer 触发器。 */
-export function listDueTimers(db: DatabaseSync, now: Date = new Date()): readonly WakeTriggerRow[] {
+/**
+ * 列出**到点该醒**的触发器（**不限制 kind**）。
+ *
+ * `next_fire_at` 的语义是"下次该醒的时刻"：
+ *  - timer 用它排周期；
+ *  - 其它类型用它表达"现在就想醒"（`wake_now` 就是这么实现的）。
+ *
+ * 只看 kind='timer' 的话，对 watcher/system 的"立刻执行"会**静默失效** ——
+ * 设了 next_fire_at 但没人看。
+ */
+export function listDueTriggers(db: DatabaseSync, now: Date = new Date()): readonly WakeTriggerRow[] {
   return db
     .prepare(
       `SELECT * FROM wake_triggers
-       WHERE enabled = 1 AND kind = 'timer' AND next_fire_at IS NOT NULL AND next_fire_at <= ?
+       WHERE enabled = 1 AND next_fire_at IS NOT NULL AND next_fire_at <= ?
        ORDER BY next_fire_at`,
     )
     .all(now.toISOString()) as unknown as WakeTriggerRow[]

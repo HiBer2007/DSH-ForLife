@@ -18,7 +18,7 @@ import {
   deleteWakeTrigger,
   getWakeTrigger,
   isWakePaused,
-  listDueTimers,
+  listDueTriggers,
   listWakeEvents,
   listWakeTriggers,
   markFired,
@@ -206,7 +206,7 @@ test('负数配置被夹到 0（负数会让"是否超限"的比较全部反过�
   }
 })
 
-test('listDueTimers：只给到点的、且只给 enabled 的', () => {
+test('listDueTriggers：只给到点的、且只给 enabled 的', () => {
   const opened = openDatabase({ file: ':memory:' })
   try {
     const mk = (title: string, nextFireAt: string) =>
@@ -219,7 +219,7 @@ test('listDueTimers：只给到点的、且只给 enabled 的', () => {
     const disabled = mk('已到点但停用', '2026-10-06T11:00:00.000Z')
     updateWakeTrigger(opened.db, disabled.row!.id, { enabled: false }, AT)
 
-    const due = listDueTimers(opened.db, AT)
+    const due = listDueTriggers(opened.db, AT)
     assert.deepEqual(due.map((r) => r.title), ['已到点'])
   } finally {
     opened.db.close()

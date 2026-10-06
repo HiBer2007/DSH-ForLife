@@ -30,7 +30,7 @@ import {
   DEFAULT_MERGE_WINDOW_MS,
   getWakeTrigger,
   isWakePaused,
-  listDueTimers,
+  listDueTriggers,
   markFired,
   recordWakeEvent,
   type WakeTriggerRow,
@@ -181,7 +181,7 @@ export function createWakeEngine(options: WakeEngineOptions): WakeEngine {
     const outcomes: TickOutcome[] = []
     const at = now()
 
-    for (const trigger of listDueTimers(db, at)) {
+    for (const trigger of listDueTriggers(db, at)) {
       const spec = safeParse(trigger.spec)
       // **错过触发的策略**：到这里说明它已经到点（可能迟到很久）。
       // 只醒一次，并把"迟到了多久"写进 payload —— 用户能看出这不是准点提醒。
