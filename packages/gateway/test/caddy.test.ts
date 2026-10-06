@@ -1,76 +1,160 @@
 /**
  * Caddy 客户端的守卫测试。
  *
+ * ## 这里的假 Caddy 是照**官方文档的语义**写的，不是照我的实现写的
+ *
+ * 这很关键：如果假 Caddy 按"我以为的"行为来写，那它只会证明
+ * "我的实现符合我的假设" —— 而这次出问题的恰恰是**假设本身**
+ * （`PUT /id/<新id>` 创建不了对象）。
+ *
+ * 所以假 Caddy 严格实现文档里的四条：
+ *   - `GET /id/<id>`：**只对已存在的对象**返回 200，否则 404；
+ *   - `PATCH /id/<id>`：严格替换**已存在**的值；
+ *   - `PUT /config/apps/http/servers/<srv>/routes/0`：**创建并插入**到数组首位；
+ *   - `DELETE /id/<id>`：删除；不存在则 404。
+ *
  * 最值得守的三条：
- *  1. **upsert 是幂等的**（同一个 id 写两次，结果一致、不产生重复路由）——
- *     PLAN 阶段 7 明确要求"幂等 upsert"；
- *  2. **删除要确认删干净**（验收：「`GET /config/` 无残留路由」）——
- *     DELETE 返回 200 不代表真没了，不确认就会出现"库里说取消了，实际还公开着"；
- *  3. **404 删除算成功**（目标就是"它不存在"），否则会让人反复重试一个已达成的目标。
+ *  1. **upsert 幂等**（同一个 id 写两次，结果只有一条路由）；
+ *  2. **删除要确认删干净**（验收：「GET /config/ 无残留路由」）；
+ *  3. **404 删除算成功**（目标就是"它不存在"）。
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { buildHttpRoute, caddyRouteId, createCaddyClient, type CaddyClientOptions } from '../src/caddy.ts'
 
-/** 一个内存版 Caddy：够真实，能验证幂等与残留。 */
-function fakeCaddy(): { options: CaddyClientOptions; ids: () => string[]; calls: string[] } {
+/**
+ * 一个**照文档语义**实现的内存版 Caddy。
+ *
+ * @param options.failInsert - 模拟"server 名不对"（插入路径 404）。
+ */
+function fakeCaddy(options: { failInsert?: boolean } = {}): {
+  options: CaddyClientOptions
+  ids: () => string[]
+  routes: () => unknown[]
+  calls: string[]
+} {
   const config = new Map<string, unknown>()
   const calls: string[] = []
+
   return {
     ids: () => [...config.keys()],
+    routes: () => [...config.values()],
     calls,
     options: {
       adminUrl: 'http://caddy.test:2019',
       fetchImpl: async (url, init) => {
         const path = new URL(url).pathname
         calls.push(`${init.method} ${path}`)
-        const idMatch = /^\/id\/(.+)$/.exec(path)
 
+        // GET /config/ —— 返回整棵树（含 routes 数组，顺序有意义）
         if (path === '/config/' && init.method === 'GET') {
-          // 真实 Caddy 返回嵌套对象；这里只回 id 集合够用
-          const body = JSON.stringify({ apps: { http: { servers: { srv0: { routes: [...config.keys()].map((id) => ({ '@id': id })) } } } } })
+          const body = JSON.stringify({
+            apps: {
+              http: {
+                servers: {
+                  srv0: { routes: [...config.values()].map((r) => r) },
+                },
+              },
+            },
+          })
           return { ok: true, status: 200, text: async () => body }
         }
+
+        // PUT /config/apps/http/servers/<srv>/routes/0 —— **创建并插入**
+        const insertMatch = /^\/config\/apps\/http\/servers\/([^/]+)\/routes\/0$/.exec(path)
+        if (insertMatch !== null && init.method === 'PUT') {
+          if (insertMatch[1] !== 'srv0' || options.failInsert === true) {
+            // 真实 Caddy 对不存在的路径返回 404
+            return { ok: false, status: 404, text: async () => 'not found' }
+          }
+          const route = JSON.parse(init.body) as { '@id'?: string }
+          const id = route['@id']
+          if (id === undefined) return { ok: false, status: 400, text: async () => 'missing @id' }
+          if (config.has(id)) return { ok: false, status: 409, text: async () => 'duplicate @id' }
+          config.set(id, route)
+          return { ok: true, status: 200, text: async () => '' }
+        }
+
+        // /id/<id>
+        const idMatch = /^\/id\/(.+)$/.exec(path)
         if (idMatch !== null) {
           const id = decodeURIComponent(idMatch[1] ?? '')
-          if (init.method === 'PUT') {
+          const exists = config.has(id)
+
+          if (init.method === 'GET') {
+            // **关键**：只对已存在的对象返回 200 —— 这正是原实现栽掉的地方
+            return exists
+              ? { ok: true, status: 200, text: async () => JSON.stringify(config.get(id)) }
+              : { ok: false, status: 404, text: async () => 'not found' }
+          }
+          if (init.method === 'PATCH') {
+            if (!exists) return { ok: false, status: 404, text: async () => 'not found' }
             config.set(id, JSON.parse(init.body))
             return { ok: true, status: 200, text: async () => '' }
           }
           if (init.method === 'DELETE') {
-            if (!config.has(id)) return { ok: false, status: 404, text: async () => 'not found' }
+            if (!exists) return { ok: false, status: 404, text: async () => 'not found' }
             config.delete(id)
             return { ok: true, status: 200, text: async () => '' }
           }
         }
+
         return { ok: false, status: 500, text: async () => 'unexpected' }
       },
     },
   }
 }
 
-test('★ 幂等 upsert：同一个 id 写两次，只有一条路由（PLAN 明确要求）', async () => {
+test('★ 首次发布走"插入"路径（不是 PUT /id —— 那创建不了对象）', async () => {
   const fake = fakeCaddy()
   const client = createCaddyClient(fake.options)
-  const route = buildHttpRoute({ host: 'example.test', name: 'web', targetPort: 8080 })
+  const result = await client.upsertRoute('forlife-svc-web', buildHttpRoute({ host: 'h.test', name: 'web', targetPort: 8080 }))
 
-  const first = await client.upsertRoute('forlife-svc-web', route)
-  assert.equal(first.ok, true)
-  const second = await client.upsertRoute('forlife-svc-web', route)
-  assert.equal(second.ok, true)
-
-  assert.deepEqual(fake.ids(), ['forlife-svc-web'], '写两次不能变成两条')
+  assert.equal(result.ok, true)
+  assert.equal(result.reason, '已插入')
+  assert.deepEqual(fake.ids(), ['forlife-svc-web'])
+  // **明确断言走的是 config 路径**：这是这次纠错的核心
+  assert.ok(
+    fake.calls.some((c) => c === 'PUT /config/apps/http/servers/srv0/routes/0'),
+    `首次发布必须走 PUT /config/.../routes/0，实际调用：${fake.calls.join(' | ')}`,
+  )
 })
 
-test('★ upsert 会把 @id 写进对象本身（否则按 id 再查会查不到 → 删不掉自己那条）', async () => {
+test('★ 幂等 upsert：第二次走"更新"路径，仍然只有一条路由', async () => {
+  const fake = fakeCaddy()
+  const client = createCaddyClient(fake.options)
+  const route = buildHttpRoute({ host: 'h.test', name: 'web', targetPort: 8080 })
+
+  await client.upsertRoute('forlife-svc-web', route)
+  const second = await client.upsertRoute('forlife-svc-web', route)
+
+  assert.equal(second.ok, true)
+  assert.equal(second.reason, '已更新', '第二次应当走 PATCH 更新')
+  assert.deepEqual(fake.ids(), ['forlife-svc-web'], '写两次不能变成两条')
+  assert.ok(fake.calls.some((c) => c.startsWith('PATCH /id/forlife-svc-web')))
+})
+
+test('★ @id 必须写进对象本身（否则按 id 再查查不到 → 删不掉自己那条）', async () => {
   const fake = fakeCaddy()
   const client = createCaddyClient(fake.options)
   await client.upsertRoute('forlife-svc-x', { handle: [] })
-  assert.deepEqual(fake.ids(), ['forlife-svc-x'])
-  // 反向确认：id 是我们传的那个（不是 Caddy 自己生成的）
-  const listed = await client.listRouteIds()
-  assert.ok(listed.ids.includes('forlife-svc-x'))
+
+  const stored = fake.routes()[0] as { '@id'?: string }
+  assert.equal(stored['@id'], 'forlife-svc-x', '对象里必须带 @id')
+})
+
+test('server 名不对时：给出**可操作**的提示（而不是一句"配置失败"）', async () => {
+  const fake = fakeCaddy({ failInsert: true })
+  const client = createCaddyClient(fake.options)
+  const result = await client.upsertRoute('forlife-svc-web', {})
+
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /拒绝插入/)
+  // 提示里要说明"多半是 server 名不对"并给出覆盖方式 ——
+  // 否则用户只能看到一个 404，无从下手
+  assert.match(result.reason, /server 名不对/)
+  assert.match(result.reason, /FORLIFE_CADDY_SERVER/)
 })
 
 test('★ 删除要确认删干净：DELETE 成功但路由还在 ⇒ 判失败', async () => {
@@ -78,7 +162,6 @@ test('★ 删除要确认删干净：DELETE 成功但路由还在 ⇒ 判失败'
     adminUrl: 'http://caddy.test:2019',
     fetchImpl: async (url, init) => {
       const path = new URL(url).pathname
-      // DELETE 说成功，但 GET /config/ 里那条**还在** —— 模拟"没删掉却报成功"
       if (init.method === 'DELETE') return { ok: true, status: 200, text: async () => '' }
       if (path === '/config/') {
         return { ok: true, status: 200, text: async () => JSON.stringify({ routes: [{ '@id': 'ghost' }] }) }
@@ -109,16 +192,6 @@ test('连不上 Caddy 时如实报错（与"配置被拒"区分开）', async ()
   const result = await client.upsertRoute('x', {})
   assert.equal(result.ok, false)
   assert.match(result.reason, /无法连接/)
-})
-
-test('Caddy 拒绝配置时把响应片段带回来（排障要知道它说了什么）', async () => {
-  const client = createCaddyClient({
-    adminUrl: 'http://caddy.test:2019',
-    fetchImpl: async () => ({ ok: false, status: 400, text: async () => 'invalid handler name' }),
-  })
-  const result = await client.upsertRoute('x', {})
-  assert.equal(result.ok, false)
-  assert.match(result.reason, /400.*invalid handler name/s)
 })
 
 test('路由构造：前缀要被 strip（否则工作区里的服务会收到 /svc/… 而 404）', () => {

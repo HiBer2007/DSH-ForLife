@@ -1,27 +1,32 @@
 /**
  * Caddy Admin API 客户端（PLAN 阶段 7 交付物 3）。
  *
- * ## 幂等怎么做：靠 `@id`，不靠"先查再决定"
+ * ## ⚠️ 一次真实的纠错（靠读官方文档发现的）
  *
- * Caddy 支持给配置对象打 `@id` 标记，并提供 `/id/<id>` 端点。
- * 于是 upsert 就是一句 **`PUT /id/<id>`** —— 存在则替换、不存在则创建，
- * **同一个请求同时覆盖两种情况**。
+ * 最初我把 upsert 写成一句 `PUT /id/<id>`，以为它能"存在则替换、不存在则创建"。
+ * **这是错的。** 官方文档（https://caddyserver.com/docs/api）写得很清楚：
  *
- * 为什么不用"先 GET 看有没有，再 POST 或 PATCH"：
- * 那是**两次请求之间的竞态**（并发发布同名服务时，两边都看到"不存在"，
- * 于是都去创建，最后一条覆盖另一条，而两边都以为成功了）。
- * 而且它有两种失败模式要处理，代码量更大。
+ * > **Using `@id` in JSON** — make a request to the `/id/` API endpoint
+ * > **in the same way you would to the corresponding `/config/` endpoint**.
  *
- * ## 为什么删除也要能按 id
+ * 也就是说 `/id/<id>` 只是**配置路径的快捷方式**，用来访问**已经存在**的对象 ——
+ * 它**不能创建**新对象。而创建要用：
  *
- * 回收/取消时若不能**精确删掉自己那条**，就只能"重建整个 config" ——
- * 那会把别人的路由一起卷进来（多个人同时发布时互相踩）。
+ * > **PUT /config/[path]** — *Creates new object; inserts into array*
  *
- * ## 为什么要"确认删除干净"
+ * 所以正确做法是两步（但语义仍然是幂等的）：
+ *   1. `GET /id/<id>` —— 存在 ⇒ `PATCH /id/<id>` 替换；
+ *   2. 不存在（404）⇒ `PUT /config/apps/http/servers/<server>/routes/0` 插入（对象里带 `@id`）。
  *
- * Caddy 的 DELETE 返回 200 不代表路由真的没了（可能 id 拼错、或它本来就不存在）。
- * 验收里有一条是「`GET /config/` 无残留路由」，所以这里删完**再查一次**，
- * 查得到就算失败 —— 否则会出现"库里说取消了，实际还公开着"。
+ * **这个错误只有两种方式能发现：真跑一次 Caddy，或者读文档。**
+ * 我这次是因为 Docker Hub 拉不动镜像才去读的文档 —— 否则它会一直躺在代码里，
+ * 直到部署当天表现为"发布成功但访问不通"。
+ *
+ * ## 删除为什么要"确认删干净"
+ *
+ * 验收有一条是「`GET /config/` 无残留路由」。DELETE 返回 200 **不代表**路由真的没了。
+ * 所以删完**再查一次**，查得到就判失败 —— 否则会出现"库里说取消了，实际还公开着"，
+ * 而那是最危险的状态（**没人知道它还在**）。
  *
  * @module @forlife/gateway/caddy
  */
@@ -38,13 +43,21 @@ export interface CaddyResult {
 export interface CaddyClientOptions {
   /** Admin API 地址，如 `http://127.0.0.1:2019`。 */
   readonly adminUrl: string
+  /**
+   * 路由要插进哪个 HTTP server 的 `routes`。
+   *
+   * 必须能配：`PUT /config/…` 需要**完整路径**，而 server 名由部署方的
+   * Caddyfile/JSON 决定（Caddyfile 适配出来的通常叫 `srv0`）。
+   * 猜错的表现是"发布返回成功但访问不通"。
+   */
+  readonly serverName?: string
   readonly fetchImpl?: FetchLike
   readonly timeoutMs?: number
 }
 
 /** Caddy 客户端。 */
 export interface CaddyClient {
-  /** 幂等 upsert 一条路由（`PUT /id/<id>`）。 */
+  /** 幂等 upsert 一条路由。 */
   readonly upsertRoute: (routeId: string, route: unknown) => Promise<CaddyResult>
   /** 按 id 删除一条路由，并**确认删干净**。 */
   readonly deleteRoute: (routeId: string) => Promise<CaddyResult>
@@ -59,6 +72,7 @@ export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
   const base = options.adminUrl.replace(/\/$/, '')
   const doFetch = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   const timeout = options.timeoutMs ?? 5000
+  const serverName = options.serverName ?? 'srv0'
 
   const call = async (method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; text: string }> => {
     try {
@@ -77,14 +91,37 @@ export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
 
   const upsertRoute = async (routeId: string, route: unknown): Promise<CaddyResult> => {
     if (routeId.trim() === '') return { ok: false, reason: 'routeId 不能为空' }
-    // 把 @id 写进对象本身：Caddy 的 /id/<id> 端点要求对象里也带 @id，
-    // 否则 PATCH/PUT 之后按 id 再查会查不到（表现为"删不掉自己那条"）
+
+    // `@id` 必须写进**对象本身**：否则按 id 再查查不到 —— 表现为"删不掉自己那条"
     const withId = { ...(route as Record<string, unknown>), '@id': routeId }
-    const result = await call('PUT', `/id/${encodeURIComponent(routeId)}`, withId)
-    if (!result.ok) {
-      return { ok: false, reason: `Caddy 拒绝配置（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}`, status: result.status }
+    const encoded = encodeURIComponent(routeId)
+
+    // ① 先看它是不是已经存在
+    const existing = await call('GET', `/id/${encoded}`)
+    if (existing.ok) {
+      // ② 存在 ⇒ 替换（PATCH 严格替换已存在的值）
+      const patched = await call('PATCH', `/id/${encoded}`, withId)
+      if (!patched.ok) {
+        return { ok: false, reason: `Caddy 拒绝更新（HTTP ${String(patched.status)}）：${patched.text.slice(0, 200)}`, status: patched.status }
+      }
+      return { ok: true, reason: '已更新', status: patched.status }
     }
-    return { ok: true, reason: '已写入', status: result.status }
+
+    // ③ 不存在 ⇒ **插入到 routes 数组最前面**（PUT 到下标 0 = 插入）。
+    //    放最前是有意的：我们发布的路由应当**优先于**部署方自己的兜底路由
+    //    （否则会被一条 `handle` 全接走，表现为"发布成功但访问到的是别的东西"）。
+    const insertPath = `/config/apps/http/servers/${encodeURIComponent(serverName)}/routes/0`
+    const inserted = await call('PUT', insertPath, withId)
+    if (!inserted.ok) {
+      return {
+        ok: false,
+        reason:
+          `Caddy 拒绝插入（HTTP ${String(inserted.status)}）：${inserted.text.slice(0, 200)}` +
+          `　—— 若提示找不到路径，多半是 server 名不对（当前用「${serverName}」，可用 FORLIFE_CADDY_SERVER 覆盖）`,
+        status: inserted.status,
+      }
+    }
+    return { ok: true, reason: '已插入', status: inserted.status }
   }
 
   const listRouteIds = async (): Promise<{ readonly ok: boolean; readonly ids: readonly string[]; readonly reason: string }> => {
