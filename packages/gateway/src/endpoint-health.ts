@@ -59,6 +59,13 @@ export interface EndpointHealthOptions {
   readonly quotaFetchImpl?: QuotaFetch | undefined
   /** 取 key 的环境变量表（默认 process.env）。 */
   readonly env?: NodeJS.ProcessEnv
+  /**
+   * 每次探测完一个端点后回调（可选）。
+   *
+   * 给唤醒引擎用：端点不可用/恢复要能转成 system 触发。
+   * **它是观察者，不是链路的一部分** —— 抛异常会被吞掉，不影响探测。
+   */
+  readonly onProbeResult?: ((endpointName: string, ok: boolean, error?: string) => void) | undefined
 }
 
 /** 探测一个端点。 */
@@ -89,6 +96,22 @@ export async function probeEndpoint(baseUrl: string, options: { readonly fetchIm
  * 只探启用的：停用的端点探了也没意义，反而会让"健康数"虚高，
  * 让人以为有更多可用后端。
  */
+/**
+ * 通知探测结果（给唤醒引擎用）。
+ *
+ * **吞掉观察者的异常** —— 它是观察者，不是链路的一部分。
+ * 让"上报端点挂了"的失败带崩整个探测循环的话，面板会永久停在旧值上，且没人知道。
+ */
+function notifyProbe(options: EndpointHealthOptions, endpointName: string, ok: boolean, error?: string): void {
+  const callback = options.onProbeResult
+  if (callback === undefined) return
+  try {
+    callback(endpointName, ok, error)
+  } catch (error_) {
+    ;(options.log ?? ((): void => {}))(`端点健康观察者抛异常（已忽略）：${String(error_)}`)
+  }
+}
+
 export async function probeAllEndpoints(options: EndpointHealthOptions): Promise<readonly EndpointProbeResult[]> {
   const log = options.log ?? ((): void => {})
   const rows = options.db
@@ -124,11 +147,13 @@ export async function probeAllEndpoints(options: EndpointHealthOptions): Promise
       recordEndpointHealth(options.db, row.id, { ok: quotaOk, latencyMs: probe.latencyMs, note })
       recordEndpointProbe(options.db, { endpointId: row.id, model: null, ok: quotaOk, latencyMs: probe.latencyMs, note, models: probe.models })
       log(`端点 ${row.id} ${quotaOk ? '健康' : '额度用尽'}（${String(probe.latencyMs)}ms）；${describeQuota(quota)}`)
+      notifyProbe(options, row.id, quotaOk, quotaOk ? undefined : '额度用尽')
       results.push({ endpointId: row.id, ok: quotaOk, latencyMs: probe.latencyMs, models: probe.models, note })
     } else {
       recordEndpointHealth(options.db, row.id, { ok: false, latencyMs: probe.latencyMs, note: probe.error })
       recordEndpointProbe(options.db, { endpointId: row.id, model: null, ok: false, latencyMs: probe.latencyMs, note: probe.error })
       log(`端点 ${row.id} 不健康：${probe.error}`)
+      notifyProbe(options, row.id, false, probe.error)
       results.push({ endpointId: row.id, ok: false, latencyMs: probe.latencyMs, error: probe.error })
     }
   }
