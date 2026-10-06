@@ -20,6 +20,7 @@ import { startEndpointHealthLoop } from './endpoint-health.ts'
 import { createSystemEventHooks } from './wake-system-hooks.ts'
 import { monitorConfigFromEnv, startSystemMonitor } from './wake-system-monitor.ts'
 import { createWakeRuntime } from './wake-runtime.ts'
+import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { FLAG_QQ_TAKEOVER, getFlag } from '@forlife/store'
@@ -28,7 +29,7 @@ import { FakeTurnDriver, HeadlessTurnDriver, type FakeScript } from './driver.ts
 import { Gateway, type GatewayState } from './gateway.ts'
 import { createOneBotTransport, type OneBotTransport } from './onebot.ts'
 import { enqueueOutbound } from './outbox.ts'
-import { conversationKey } from './transport.ts'
+import { conversationKey, parseConversationKey } from './transport.ts'
 import { defaultConditionOf, defaultScopeOf, TurnRunner, type TurnDriver } from './turns.ts'
 
 /** 运行时选项。 */
@@ -108,7 +109,53 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
 
   // 唤醒引擎（PLAN 阶段 8）。没配桥时 engine 为 undefined —— 功能**明确禁用**，
   // 而不是等一次失败去推断。
-  const wake = createWakeRuntime({ db: options.db, env: process.env, log })
+  // **延迟引用 driver** —— 它在下面才建（L166+），而唤醒引擎在这里就要装配。
+  // 用闭包捕获一个 `let`：等真的有唤醒要跑时，driver 早就绪了。
+  let wakeDriver: TurnDriver | undefined
+
+  const wake = createWakeRuntime({
+    db: options.db,
+    env: process.env,
+    log,
+    // **唤醒走 gateway 自己的 driver** —— 和普通 QQ 轮次完全相同的一条路。
+    //
+    // 真机发现：QQ 的每一轮是 gateway 起 `dsh headless` 子进程跑的，
+    // **不是** web app 的会话；而唤醒轮询器在 web app 里 —— 两者没有交集。
+    runTurn: async ({ conversationKey, prompt, sourceKind, summary }) => {
+      if (wakeDriver === undefined) {
+        return { ok: false, reason: '驱动还没就绪（gateway 仍在启动），稍后重试' }
+      }
+      const parsed = parseConversationKey(conversationKey)
+      // 键不合法 ⇒ 明确失败。**不能猜一个会话去跑** ——
+      // 那会让唤醒发到错误的会话里，而用户完全不知道。
+      if (parsed === undefined) {
+        return { ok: false, reason: `会话键不合法：${conversationKey}` }
+      }
+      // 会话类型从库里查（影响提示词里的会话标签）
+      const known = options.db
+        .prepare('SELECT kind FROM qq_sessions WHERE conversation_key = ?')
+        .get(conversationKey) as { kind?: string } | undefined
+      const kind = known?.kind === 'group' ? 'group' : 'private'
+      const outcome = await wakeDriver.run({
+        turnId: `wake-${randomUUID()}`,
+        conversation: { platform: parsed.platform, chatId: parsed.chatId, ...(parsed.threadId === undefined ? {} : { threadId: parsed.threadId }), kind },
+        // **没有入站消息** —— 这是"自己醒过来"，不是"有人说话"
+        messages: [],
+        prompt,
+        signal: AbortSignal.timeout(5 * 60_000),
+      })
+      if (outcome.error !== undefined) return { ok: false, reason: `轮次失败：${outcome.error}` }
+      const text = (outcome.segments ?? []).join('\n').trim()
+      return {
+        ok: true,
+        reason: `${summary}：模型已执行（工具调用 ${String(outcome.toolCalls ?? 0)} 次）`,
+        ...(text === '' ? {} : { modelDid: text.slice(0, 200) }),
+        ...(outcome.tokensIn === undefined && outcome.tokensOut === undefined
+          ? {}
+          : { costTokens: (outcome.tokensIn ?? 0) + (outcome.tokensOut ?? 0) }),
+      }
+    },
+  })
 
   // 端点健康探测：启动时立刻探一次 + 之后定时。
   // 不做这一步的话，面板上的「健康/已登记」永远显示 0/N ——
@@ -178,6 +225,9 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
       log,
     })
   }
+
+  // 现在 driver 就绪了 —— 唤醒可以开始跑轮次
+  wakeDriver = driver
 
   const runner = new TurnRunner({
     db: options.db,

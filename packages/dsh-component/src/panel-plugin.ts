@@ -20,6 +20,7 @@
  */
 import { registerPanelRoutes, type FetchRegistryLike } from './api.ts'
 import { registerWakeRoute } from './wake-route.ts'
+import { startWakePoller, type WakeDeliveryHost, type WakePoller } from './wake-poller.ts'
 import { whenRuntimeReady } from './index.ts'
 
 /** Cordis 插件名。 */
@@ -62,6 +63,7 @@ export function apply(ctx: {
   // 主插件与面板插件谁先 apply 由服务依赖决定，顺序不保证 ⇒ 等运行时就绪再注册
   let disposeRoutes: (() => Promise<void>) | undefined
   let disposeWake: (() => Promise<void>) | undefined
+  let wakePoller: WakePoller | undefined
   const disposeWait = whenRuntimeReady((runtime) => {
     disposeRoutes = registerPanelRoutes(registry, runtime)
 
@@ -73,42 +75,60 @@ export function apply(ctx: {
     // 而那个异常冒泡到 apply() ⇒ **整个 panel-plugin 挂掉**（面板接口全没了）。
     // 唤醒桥是个附加功能，它坏了不该带走面板。
     try {
+        const wakeHost: WakeDeliveryHost = {
+          // 冷会话会被 resume —— 这是"给一个很久没说话的会话安排唤醒"能工作的前提
+          resolveAgent: async (sessionId: string) => {
+            const sc = safeCtx<{ resolveAgent(id: string): Promise<unknown> }>('sessionController')
+            if (sc === undefined) return undefined
+            const resolved = (await sc.resolveAgent(sessionId)) as
+              | { agent?: { status?: string; followup?: (m: unknown) => void; session?: unknown } }
+              | undefined
+            const agent = resolved?.agent
+            if (agent === undefined || typeof agent.followup !== 'function') return undefined
+            return {
+              agent: {
+                status: String(agent.status ?? 'idle'),
+                followup: agent.followup.bind(agent),
+                session: agent.session,
+              },
+            }
+          },
+          flush: async (session: unknown) => {
+            const ss = safeCtx<{ flush(s: unknown): Promise<boolean> }>('sessions')
+            return ss === undefined ? false : ss.flush(session)
+          },
+          // **构造一条"不是用户发的"消息** —— sourceKind 由调用方给。
+          // 绝不用 sessionController.prompt()：它把 source 硬编码成 {kind:'user'}。
+          createMessage: (input) => ({
+            text: input.text,
+            source: { kind: input.sourceKind, summary: input.summary },
+          }),
+          withoutInitiator: async (fn) => {
+            const ag = safeCtx<{ withoutInitiator<T>(f: () => Promise<T>): Promise<T> }>('agents')
+            return ag === undefined ? fn() : ag.withoutInitiator(fn)
+          },
+        },
+
     disposeWake = registerWakeRoute(registry, {
+      host: wakeHost,
       secret: process.env.FORLIFE_WAKE_BRIDGE_SECRET,
       log: (m) => { console.log(`[forlife] ${m}`) },
-      host: {
-        // 冷会话会被 resume —— 这是"给一个很久没说话的会话安排唤醒"能工作的前提
-        resolveAgent: async (sessionId: string) => {
-          const sc = safeCtx<{ resolveAgent(id: string): Promise<unknown> }>('sessionController')
-          if (sc === undefined) return undefined
-          const resolved = (await sc.resolveAgent(sessionId)) as
-            | { agent?: { status?: string; followup?: (m: unknown) => void; session?: unknown } }
-            | undefined
-          const agent = resolved?.agent
-          if (agent === undefined || typeof agent.followup !== 'function') return undefined
-          return {
-            agent: {
-              status: String(agent.status ?? 'idle'),
-              followup: agent.followup.bind(agent),
-              session: agent.session,
-            },
-          }
-        },
-        flush: async (session: unknown) => {
-          const ss = safeCtx<{ flush(s: unknown): Promise<boolean> }>('sessions')
-          return ss === undefined ? false : ss.flush(session)
-        },
-        // **构造一条"不是用户发的"消息** —— sourceKind 由调用方给。
-        // 绝不用 sessionController.prompt()：它把 source 硬编码成 {kind:'user'}。
-        createMessage: (input) => ({
-          text: input.text,
-          source: { kind: input.sourceKind, summary: input.summary },
-        }),
-        withoutInitiator: async (fn) => {
-          const ag = safeCtx<{ withoutInitiator<T>(f: () => Promise<T>): Promise<T> }>('agents')
-          return ag === undefined ? fn() : ag.withoutInitiator(fn)
-        },
-      },
+    })
+
+    // ── 唤醒轮询器（**主路径**）──────────────────────────────────────
+    //
+    // 为什么不走 HTTP：DSH 注册的路由是在**它自己鉴权之后**才被调用的
+    // （dsh-client-connection/lib/types/rpc.d.ts:118），而它的 token 重启即失效 ——
+    // gateway 拿不到稳定凭据（真机实测 401）。
+    //
+    // 所以改成：gateway 写一行 wake_requests，**这里轮询认领并直接执行**。
+    // 没有 HTTP、没有鉴权、没有 token 轮换。
+    wakePoller = startWakePoller({
+      db: runtime.db,
+      host: wakeHost,
+      claimer: `plugin-${String(process.pid)}`,
+      intervalMs: 1000,
+      log: (m) => { console.log(`[forlife] ${m}`) },
     })
     } catch (error) {
       console.error(`[forlife] 唤醒桥注册失败（面板不受影响）：${String(error).slice(0, 200)}`)
@@ -118,6 +138,7 @@ export function apply(ctx: {
   // 反注册（宿主卸载本行时）
   return (): void => {
     void disposeWait()
+    wakePoller?.stop()
     if (disposeWake !== undefined) void disposeWake()
   }
 }

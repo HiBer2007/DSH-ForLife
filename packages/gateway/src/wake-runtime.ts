@@ -46,6 +46,28 @@ export interface WakeRuntimeOptions {
   readonly setIntervalImpl?: (fn: () => void, ms: number) => { unref?: () => void }
   readonly clearIntervalImpl?: (handle: unknown) => void
   readonly now?: () => Date
+  /**
+   * 跑一轮的入口（**gateway 自己的 driver**）。
+   *
+   * **为什么需要它**：真机发现 QQ 的每一轮是 gateway 起 `dsh headless`
+   * 子进程跑的（driver.ts:64），**不是** web app 的会话。
+   * 而唤醒轮询器在 web app 里 —— 两者没有交集，
+   * `resolveAgent("onebot11:*")` 永远失败。
+   *
+   * 唤醒的目标是 QQ 会话，那就该走**和普通 QQ 轮次完全相同**的路径。
+   * 没有它时退回队列（那条路是给"唤醒 web app 会话"用的）。
+   */
+  readonly runTurn?: (input: {
+    readonly conversationKey: string
+    readonly prompt: string
+    readonly sourceKind: string
+    readonly summary: string
+  }) => Promise<{
+    readonly ok: boolean
+    readonly reason: string
+    readonly modelDid?: string
+    readonly costTokens?: number
+  }>
 }
 
 /** 装配结果。 */
@@ -88,6 +110,7 @@ export function wakeConfigFromEnv(env: Record<string, string | undefined>): {
 /** 装配唤醒引擎与三个事件源。 */
 export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
   const { db, log } = options
+  const runTurn = options.runTurn
   const config = wakeConfigFromEnv(options.env)
 
   // **密钥必须是 latin-1**（它要当 HTTP 头发出去）。
@@ -185,6 +208,16 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
     // 原始 SQLite 错误（如 "no such table"）看不出是"入队失败"，
     // 而"入队失败"和"派发失败"要采取的措施完全不同。
     let requestId: string
+    // **优先走 gateway 自己的 driver**（和普通 QQ 轮次同一条路）。
+    if (runTurn !== undefined) {
+      return await runTurn({
+        conversationKey: trigger.scope,
+        prompt,
+        sourceKind: `wake-${trigger.kind}`,
+        summary: trigger.title,
+      })
+    }
+
     try {
     const requestId = enqueueWakeRequest(db, {
     triggerId: trigger.id,
