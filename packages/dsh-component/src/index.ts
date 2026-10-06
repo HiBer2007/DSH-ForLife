@@ -162,6 +162,7 @@ function wakeToolHost(runtime: MemoryRuntime): WakeToolHost {
       if (root === undefined || root === "") {
         return { ok: false, reason: "未配置 FORLIFE_WORKSPACE_ROOT，无法登记监视程序（路径没有沙箱根可比）" }
       }
+
       const resolved = resolveInWorkspace(root, input.path)
       if (!resolved.ok) return { ok: false, reason: `路径不合法：${resolved.reason}` }
 
@@ -194,6 +195,83 @@ function wakeToolHost(runtime: MemoryRuntime): WakeToolHost {
       return { ok: true, reason: `已登记（指纹 ${sha256.slice(0, 12)}…）` }
     },
   }
+}
+
+/**
+ * 挂上唤醒桥端点（**缺任何一样就不挂**）。
+ *
+ * 为什么 fail-closed：这个端点的作用是"叫醒模型并让它执行一段提示词"，
+ * 而 `ctx.webServer` 自身无 TLS、无认证 —— 没有密钥校验的话，
+ * 它是**本机任何进程都能利用的提权入口**。
+ *
+ * 缺服务时挂上去也没用（只会让 gateway 收到一堆 500，
+ * 而那看起来像"桥不通"，排查方向会完全错），所以**明确不挂 + 说清缺什么**。
+ */
+function registerWakeBridge(
+  ctx: ContextLike,
+  disposers: (() => void | Promise<void>)[],
+  log: (message: string) => void,
+): void {
+  const secret = process.env.FORLIFE_WAKE_BRIDGE_SECRET
+  if (secret === undefined || secret.trim() === '') {
+    log('⚠️ 未配置 FORLIFE_WAKE_BRIDGE_SECRET：唤醒桥端点未挂载（没有密钥的唤醒端点 = 本机提权入口）。')
+    return
+  }
+
+  const webServer = ctx.get('webServer') as
+    | { register(route: unknown): () => void }
+    | undefined
+  if (webServer === undefined) {
+    log('⚠️ 未找到 webServer 服务：唤醒桥端点未挂载（gateway 无法唤醒模型）。')
+    return
+  }
+
+  const sessionController = ctx.get('sessionController') as
+    | { resolveAgent(sessionId: string): Promise<unknown> }
+    | undefined
+  const sessions = ctx.get('sessions') as { flush(session: unknown): Promise<boolean> } | undefined
+  const agents = ctx.get('agents') as { withoutInitiator<T>(fn: () => Promise<T>): Promise<T> } | undefined
+  const missing = [
+    ...(sessionController === undefined ? ['sessionController'] : []),
+    ...(sessions === undefined ? ['sessions'] : []),
+    ...(agents === undefined ? ['agents'] : []),
+  ]
+  if (missing.length > 0) {
+    log(`⚠️ 缺少服务 ${missing.join('、')}：唤醒桥端点未挂载（挂上去也只会让 gateway 收到一堆 500）。`)
+    return
+  }
+
+  const dispose = registerWakeEndpoint(webServer as never, {
+    secret,
+    log,
+    host: {
+      // 冷会话会被 resume —— 这是"给一个很久没说话的会话安排唤醒"能工作的前提
+      resolveAgent: async (sessionId: string) => {
+        const resolved = (await sessionController!.resolveAgent(sessionId)) as
+          | { agent?: { status?: string; followup?: (m: unknown) => void; session?: unknown } }
+          | undefined
+        const agent = resolved?.agent
+        if (agent === undefined || typeof agent.followup !== 'function') return undefined
+        return {
+          agent: {
+            status: String(agent.status ?? 'idle'),
+            followup: agent.followup.bind(agent),
+            session: agent.session,
+          },
+        }
+      },
+      flush: (session: unknown) => sessions!.flush(session),
+      // **构造一条"不是用户发的"消息** —— sourceKind 由调用方给（wake-timer 等）。
+      // 绝不用 sessionController.prompt()：它把 source 硬编码成 {kind:'user'}。
+      createMessage: (input) => ({
+        text: input.text,
+        source: { kind: input.sourceKind, summary: input.summary },
+      }),
+      withoutInitiator: (fn) => agents!.withoutInitiator(fn),
+    },
+  })
+  disposers.push(dispose)
+  log(`✅ 唤醒桥端点已挂载：${process.env.FORLIFE_WAKE_BRIDGE_PATH ?? '/forlife/wake'}`)
 }
 
 export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}): void {
@@ -282,6 +360,12 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         const dispose = tools.register(definition)
         disposers.push(dispose)
       }
+
+      // 唤醒桥端点（PLAN 阶段 8）。**缺任何一样就不挂** ——
+      // 这个端点的作用是"叫醒模型并让它执行一段提示词"，
+      // 而 ctx.webServer 自身无 TLS、无认证：没有密钥校验的话，
+      // 它是**本机任何进程都能利用的提权入口**。
+      registerWakeBridge(ctx, disposers, always)
 
       // 压缩事务失败 ⇒ **直接写库**（数据库即通道）。
       //

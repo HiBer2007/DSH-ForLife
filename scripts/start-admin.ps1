@@ -22,6 +22,22 @@ if (Test-Path "$root\.runtime\onebot-token.txt") {
   $env:FORLIFE_ONEBOT_TOKEN = (Get-Content "$root\.runtime\onebot-token.txt" -Raw).Trim()
 }
 
+# ── 唤醒引擎（PLAN 阶段 8）────────────────────────────────────────────────
+# 桥的两端：gateway 发（FORLIFE_WAKE_BRIDGE_URL），插件侧收（同名的 SECRET 校验）。
+# 不配的话 gateway 侧**明确禁用**唤醒引擎（不会假装能唤醒）。
+if (Test-Path "$root\.runtime\wake-bridge-secret.txt") {
+  $env:FORLIFE_WAKE_BRIDGE_SECRET = (Get-Content "$root\.runtime\wake-bridge-secret.txt" -Raw).Trim()
+  # 插件侧的端点路径要与这里一致（默认 /forlife/wake）
+  $env:FORLIFE_WAKE_BRIDGE_URL = if ($env:FORLIFE_WAKE_BRIDGE_URL) { $env:FORLIFE_WAKE_BRIDGE_URL } else { 'http://127.0.0.1:3080/forlife/wake' }
+}
+
+# 监视条件的沙箱根（不配则监视源明确禁用 —— 路径没有沙箱根可比）
+$env:FORLIFE_WORKSPACE_ROOT = if ($env:FORLIFE_WORKSPACE_ROOT) { $env:FORLIFE_WORKSPACE_ROOT } else { "$root\.runtime\workspace" }
+
+# 存储分层（PLAN 阶段 9）。只配 hot 也能跑 —— warm/cold 会退回它，
+# 且 gateway 会把"退回了哪几层"报出来（不会让人以为真的分了三层在放）。
+$env:FORLIFE_ROOT_HOT = if ($env:FORLIFE_ROOT_HOT) { $env:FORLIFE_ROOT_HOT } else { "$root\.runtime\dsh\forlife\blobs" }
+
 # 驱动：联调阶段用 fake（回复由脚本生成，日志会大声标注）；生产改 headless
 $env:FORLIFE_DRIVER = if ($env:FORLIFE_DRIVER) { $env:FORLIFE_DRIVER } else { 'fake' }
 # 联调期关掉噪音过滤：确保测试消息一定产生轮次，便于观察链路
