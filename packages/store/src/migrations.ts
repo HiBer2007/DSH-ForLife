@@ -1297,6 +1297,44 @@ CREATE INDEX IF NOT EXISTS idx_wake_trigger_events_trigger ON wake_trigger_event
 
 const m0023Checksum = createHash('sha256').update(m0023.sql + m0023.name).digest('hex')
 
+const m0024 = {
+  version: 24,
+  name: '0024_wake_requests',
+  sql: `
+-- 唤醒请求队列（PLAN 阶段 8 的**方向性调整**）。
+--
+-- 原设计是 gateway 通过 HTTP 调 DSH 的 /api/forlife/wake，但真机卡在
+-- **DSH 自己的鉴权**上（注册的路由是在 DSH 鉴权**之后**才被调用的，没法绕过；
+-- 而它的 token 是"基于时间的 HMAC，重启后立即失效"）。
+--
+-- 改成：gateway 写一行，插件（DSH 进程内）轮询认领并直接调 agent.followup()。
+-- **没有 HTTP、没有鉴权、没有 token 轮换**，与本项目到处在用的
+-- "数据库即通道"完全一致。
+CREATE TABLE IF NOT EXISTS wake_requests (
+  id           TEXT PRIMARY KEY,
+  trigger_id   TEXT NOT NULL,
+  session_id   TEXT NOT NULL,          -- 要唤醒哪个会话
+  text         TEXT NOT NULL,          -- 已经组装好的提示词
+  source_kind  TEXT NOT NULL,          -- wake-timer / wake-system…（**绝不是 user**）
+  summary      TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',   -- pending | claimed | done
+  created_at   TEXT NOT NULL,
+  claimed_at   TEXT,                   -- 认领时间（超时可回收）
+  claimed_by   TEXT,                   -- 谁认领的（排障用）
+  done_at      TEXT,
+  result       TEXT                    -- 完成/失败说明
+);
+
+-- 认领查询走这个索引（status + created_at 的顺序扫描）
+CREATE INDEX IF NOT EXISTS idx_wake_requests_pending ON wake_requests (status, created_at) WHERE status != 'done';
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0024.sql)
+  },
+} as const
+
+const m0024Checksum = createHash('sha256').update(m0024.sql + m0024.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1436,6 +1474,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0023.name,
     checksum: m0023Checksum,
     up: m0023.up,
+  },
+  {
+    version: m0024.version,
+    name: m0024.name,
+    checksum: m0024Checksum,
+    up: m0024.up,
   },
 ]
 

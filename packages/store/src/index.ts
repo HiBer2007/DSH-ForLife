@@ -246,3 +246,14 @@ export {
   STORAGE_TIERS,
 } from './storage-tiers.ts'
 export type { SettleCandidate, SettleDecision, SettlePolicy, StorageTier, TierRoots } from './storage-tiers.ts'
+
+// ── 唤醒请求队列（PLAN 阶段 8 方向性调整）────────────────────────────
+export {
+  CLAIM_TIMEOUT_MS,
+  claimWakeRequests,
+  completeWakeRequest,
+  countPendingWakeRequests,
+  enqueueWakeRequest,
+  listWakeRequests,
+} from './wake-requests.ts'
+export type { WakeRequestRow } from './wake-requests.ts'
