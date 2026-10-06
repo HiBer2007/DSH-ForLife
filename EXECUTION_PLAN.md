@@ -2730,10 +2730,10 @@ HTTP 出口靠**路径**分流（`/svc/<name>/`），几十个服务能共用一
 - [x] **与 QQ 真实联通**（2026-10-06 实测）：私聊与群聊消息入库 → 会话登记 → 轮次 done →
       出站 `status=sent confirmed=1`（平台回执确认），防抖合并生效（4 条合成一轮）
 - [x] 通过 QQ 与运维双向通信：接管模式下读入站表，用 `/api/admin/send` 或直接入队回复（实测 confirmed=1）
-- [ ] 提示词**编辑**（当前只读展示；编辑与保存接口未做）
+- [x] 提示词**编辑**。　**证据**：`GET /prompt-text`（取**全文**，不是截断预览）+ `POST /prompt-revision`（保存新版本）+ `POST /prompt-rollback`（版本回滚）；界面在 `PromptsView.vue`。逻辑已下沉到 `@forlife/store`（插件与网关共用同一份，见 §2.14.13）。
 - [ ] 部署：多阶段 Dockerfile（构建前端 → 运行服务）+ compose 接线 + Caddy 反代验证
 - [ ] 服务端事件推送（SSE）替代轮询
-- [ ] 端口出口页（PLAN 阶段 7 的沙箱工作区，尚未开始 —— 与后台面板不是同一件事）
+- [x] 端口出口页。　**证据**：`PortsView.vue`（协议选择、TTL、右键/长按菜单、未启用时禁用按钮并显示原因）；接口 `/ports` `/port-publish` `/port-unpublish`；模型侧工具 `publish_port` / `unpublish_port` / `list_ports`。真机验收 HTTP 9/9 + TCP 11/11（见 §2.14.15、§2.14.16）。
 
 **QQ 链路排障记（都写进了代码注释，因为每一条都花了时间）**
 - **轮次刻意不做出站**：出站动作由**模型通过工具**产出，发送归 outbox 消费者。
