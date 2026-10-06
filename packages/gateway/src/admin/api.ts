@@ -512,6 +512,19 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         return true
       }
 
+      // ── 日志：清空缓冲（危险操作，必须留痕）──────────────────────
+      if (route === '/logs-clear' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const removed = options.logBuffer?.clear() ?? 0
+        // 日志是排障依据，清空会**销毁证据** ⇒ 必须落审计（谁、何时、清了多少）
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `清空日志缓冲（${String(removed)} 条）` })
+        json(res, 200, { ok: true, removed })
+        return true
+      }
+
       // ── 提示词：取某个槽位的**全文**（编辑前必须拿全文，不能拿预览）──
       if (route === '/prompt-text' && method === 'GET') {
         const session = requireSession(req, res, path)

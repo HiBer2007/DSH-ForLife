@@ -58,6 +58,21 @@ export class LogBuffer {
   }
 
   /** 取最近若干条（按时间正序返回，便于直接从上往下读）。 */
+  /**
+   * 清空缓冲。
+   *
+   * **序号继续递增**（不归零）：前端靠 `since(seq)` 增量拉取，
+   * 序号归零会让它以为"所有日志都是新的"，于是把旧内容又拉一遍 ——
+   * 表现为"清空之后日志反而变多了"。
+   *
+   * @returns 清掉的条数（审计要用）。
+   */
+  clear(): number {
+    const removed = this.#lines.length
+    this.#lines.length = 0
+    return removed
+  }
+
   tail(limit = 200): readonly LogLine[] {
     const count = Math.min(Math.max(1, limit), this.#capacity)
     return this.#lines.slice(-count)
