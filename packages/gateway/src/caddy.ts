@@ -215,16 +215,49 @@ export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
   const layer4Path = (serverName: string): string =>
     `/config/apps/layer4/servers/${encodeURIComponent(serverName)}`
 
+
+  /**
+   * 确保 `apps/layer4` 存在。
+   *
+   * Caddy 的配置 API **不能穿过不存在的路径** —— Caddyfile 里没声明 layer4 app 时，
+   * `POST /config/apps/layer4/servers/<name>` 会报
+   * `invalid traversal path`。所以先把它建出来。
+   */
+  const ensureLayer4App = async (): Promise<CaddyResult> => {
+    const existing = await call('GET', '/config/apps/layer4')
+    if (existing.ok) return { ok: true, reason: 'layer4 app 已存在' }
+    const created = await call('POST', '/config/apps/layer4', { servers: {} })
+    if (!created.ok) {
+      return {
+        ok: false,
+        reason: `无法创建 layer4 app（HTTP ${String(created.status)}）：${created.text.slice(0, 160)}`,
+        status: created.status,
+      }
+    }
+    return { ok: true, reason: '已创建 layer4 app' }
+  }
+
   const upsertLayer4Server = async (serverName: string, server: unknown): Promise<CaddyResult> => {
     if (serverName.trim() === '') return { ok: false, reason: 'serverName 不能为空' }
     // POST 到对象路径 = creates or replaces（见接口上的说明）
-    const result = await call('POST', layer4Path(serverName), server)
+    let result = await call('POST', layer4Path(serverName), server)
+
+    // **父路径不存在**时会报 invalid traversal path（真机踩到的）：
+    // Caddyfile 里没声明 layer4 app 时，apps/layer4 这个键根本不存在。
+    // 这时先建出父路径再重试 —— 而不是让部署方记得在 Caddyfile 里写一段空的 layer4 配置。
+    if (!result.ok && result.text.includes('invalid traversal path')) {
+      const ensured = await ensureLayer4App()
+      if (!ensured.ok) return ensured
+      result = await call('POST', layer4Path(serverName), server)
+    }
+
     if (!result.ok) {
       return {
         ok: false,
         reason:
           `Caddy 拒绝 layer4 配置（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}` +
-          `　—— 若提示未知模块，说明这个 Caddy 没编入 layer4（需自建镜像，见 deploy/caddy/Dockerfile.forlife）`,
+          `　—— 若提示「unknown module: layer4」，说明这个 Caddy 没编入 layer4（需自建镜像，见 deploy/caddy/Dockerfile.forlife）；` +
+          `若提示某个「layer4.matchers.*」未知，则是路由里用了不存在的 matcher（layer4 的 matcher 全是协议专属的，通用转发应**不写 match**）`,
         status: result.status,
       }
     }
@@ -239,10 +272,22 @@ export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
       return { ok: false, reason: `删除 layer4 server 失败（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}`, status: result.status }
     }
 
-    // **确认删干净**：留下的不是 404 的路由，而是一条**还在监听端口**的转发
-    const after = await call('GET', layer4Path(serverName))
-    if (after.ok) {
-      return { ok: false, reason: `删除后 layer4 server「${serverName}」仍在配置里 —— 视为失败（否则端口还开着）` }
+    // **确认删干净**：留下的不是 404 的路由，而是一条**还在监听端口**的转发。
+    //
+    // 这里**列全部再查成员**，而不是 GET 单条看它是否 404 ——
+    // Caddy 对"路径存在、值为空"可能回 200 + 空，那样会把"已删掉"误判成"还在"。
+    // 成员判断没有歧义，不依赖"删掉后该回什么状态码"这种假设。
+    const listed = await call('GET', '/config/apps/layer4/servers/')
+    if (listed.ok) {
+      try {
+        const servers = JSON.parse(listed.text) as Record<string, unknown>
+        if (Object.prototype.hasOwnProperty.call(servers, serverName)) {
+          return { ok: false, reason: `删除后 layer4 server「${serverName}」仍在配置里 —— 视为失败（否则端口还开着）` }
+        }
+      } catch {
+        // 解析不出来就不下结论 —— **不能因为读不懂就当成功**
+        return { ok: false, reason: `删除后无法确认 layer4 server 是否已移除（配置不是 JSON）：${listed.text.slice(0, 120)}` }
+      }
     }
     return { ok: true, reason: '已删除', status: result.status }
   }

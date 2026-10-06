@@ -19,14 +19,16 @@ import { buildTcpRoute, caddyTcpRouteId, tcpServerName, TCP_SERVER_NAME } from '
 test('TCP 路由形状：listen 用对外端口，upstream 用目标端口', () => {
   const route = buildTcpRoute({ listenPort: 9000, targetPort: 8080, routeId: 'forlife-tcp-db' }) as {
     listen: string[]
-    routes: { '@id': string; match: unknown[]; handle: { handler: string; upstreams: { dial: string[] }[] }[] }[]
+    routes: { '@id': string; match?: unknown; handle: { handler: string; upstreams: { dial: string[] }[] }[] }[]
   }
 
   assert.deepEqual(route.listen, [':9000'], 'listen 必须是**对外端口**')
   const inner = route.routes[0]
   assert.ok(inner !== undefined)
   assert.equal(inner['@id'], 'forlife-tcp-db', '@id 要写进对象本身（回收时按它删）')
-  assert.deepEqual(inner.match, [{ tcp: [] }])
+  // **不该有 match** —— layer4 没有通用 tcp matcher（真机踩过），
+  // 不写 match 就是匹配全部连接。
+  assert.equal(inner['match'], undefined, '不写 match（layer4 没有通用 tcp matcher）')
 
   const proxy = inner.handle[0]
   assert.equal(proxy?.handler, 'proxy')

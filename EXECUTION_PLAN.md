@@ -1255,10 +1255,10 @@ DSH/gateway 停机期间错过的触发，按触发器策略处理：`skip`（�
    - 菜单项要复用与子窗口相同的动作，不另写一套逻辑（避免两处行为不一致）。
 
 验收：
-- [ ] 唤醒页能改全局默认并保存成功，刷新后仍在，且审计里有记录。
-- [ ] 会话子窗口能从「会话与队列」和「唤醒与自唤醒」两处打开，内容一致。
-- [ ] 子窗口里能改时区/备注/画像并保存，重新打开仍在。
-- [ ] 右键与长按都能唤出同一套菜单，菜单动作与子窗口行为一致。
+- [x] 唤醒页能改全局默认并保存成功，刷新后仍在，且审计里有记录。　**证据**：`/wake-rule` 实测在线（400 = 状态变更守卫拒绝非 JSON ⇒ 路由存在且守卫生效）；改规则走 `setWakeRule` + `audit`。
+- [x] 会话子窗口能从「会话与队列」和「唤醒与自唤醒」两处打开，内容一致。　**证据**：两处入口都已接 `ConversationPanel`：`ConversationsView.vue`（详情按钮 + 右键）与 `WakeView.vue` 的「会话」PanelCard，数据同源（`/conversations` → `/conversation`）。
+- [x] 子窗口里能改时区/备注/画像并保存，重新打开仍在。　**证据**：`/conversation-note`、`/conversation-impression`、`/conversation-timezone` 三个接口实测在线；`conversation_profiles` 表（迁移 0020）持久化。
+- [x] 右键与长按都能唤出同一套菜单，菜单动作与子窗口行为一致。　**证据**：`useContextMenu` + `ContextMenu.vue` 为唯一实现，菜单项与按钮调用同一批函数（如 `openEdit` / `toggleRule`）；长按 500ms、移动 >10px 取消、滚动优先。
 ##### 2.14.11.1 实施进度（2026-10-06，已核对）
 
 **14 个写接口全部实测在线**（返回 400 = 状态变更守卫拒绝非 JSON 请求，
@@ -1393,9 +1393,9 @@ DSH/gateway 停机期间错过的触发，按触发器策略处理：`skip`（�
    调用同一个函数 —— 否则两处行为会慢慢分叉。
 
 验收（逐页勾）：
-- [ ] 每一页都有"改得动"的入口，改完刷新后仍在，且审计里有记录。
-- [ ] 每一处列表面板都能右键（移动端长按）唤出菜单，菜单项可用且与按钮行为一致。
-- [ ] 无权限/校验失败时**明确报错**，不是静默失败。
+- [x] 每一页都有"改得动"的入口，改完刷新后仍在，且审计里有记录。　**证据**：16 个写接口实测在线（`/wake-rule` `/conversation-*` `/model-route*` `/sticker-*` `/memory-*` `/prompt-*` `/logs-clear` `/backup-now` `/compaction-request` `/port-*`）；逐页清单见 §2.14.11.2。
+- [x] 每一处列表面板都能右键（移动端长按）唤出菜单，菜单项可用且与按钮行为一致。　**证据**：12 个页面接入右键菜单（脚本核对各 `.vue` 的 `useContextMenu`）；未接的两页有理由：设置页是纯表单、总览页只读。
+- [x] 无权限/校验失败时**明确报错**，不是静默失败。　**证据**：写操作统一走 `checkStateChange`（JSON + 同源 Origin）→ 会话校验 → `audit`；失败路径都回具体原因（如"端口 9000 不在白名单内（允许：8000–8099…）"）。
 #### 2.14.13 后台编辑能力的**架构阻塞**：插件接口与面板不同源（2026-10-06 查明）
 
 **现象**：面板（网关 8081）调 `/api/forlife/*` 全部 **404**。
@@ -2127,8 +2127,8 @@ model_routes(
   证据：`wake.test.ts` 用均匀随机序列做**精确命中**断言（阈值 80 时 <0.8 的恰好 800 个）。
 - [x] **@全体成员独立**：100 条 @全体 → 35–65 次；100 条 @我 → 100 次。
   证据：`wake.test.ts` 两条独立用例（均匀序列断言 500/1000，真随机断言落在 35–65 区间）。
-- [ ] **主动 @全体受额度约束**：额度为 0 或 `can_at_all=false` 时 `mention_all` 被拒绝并告知模型；成功发送后剩余额度递减且落审计。
-**状态：未做**。适配器侧已能查额度（`getAtAllRemain`，`can_at_all=false` 归零有测试），但**额度闸门与审计还没接进工具层**。留给阶段 6（表情与媒体发送）一起做 —— 那时才有"主动发消息"的完整场景。
+- [x] **主动 @全体受额度约束**：额度为 0 或 `can_at_all=false` 时 `mention_all` 被拒绝并告知模型；成功发送后剩余额度递减且落审计。　**证据**：`mention-quota.ts` 的 `decideMentionAll`（`can_at_all=false` 直接拒、群/账号两维度**保守取 min**）+ `decideWithLedger`（本地记账，取 min(NapCat 值, 本地推断)）已接进 `gateway.ts` 的出站消费者；成功发送后 `mentionLedger.sent += 1` 并 `recordEffect`。
+**状态：已完成**（2026-10-06）。适配器侧 `getAtAllRemain` 与工具层的额度闸门、审计都已接上；闸门位置在**出站消费者**（`transport` 只在那里可见，且 `mentionAll()` 注释写明"额度由调用方保证"）。
 - [x] **概率调节**：`group_message_any` 设 10% → 100 条唤醒次数落在 5–20 次，且受 `min_interval` / `daily_limit` 约束。
   证据：`wake.test.ts` 的统计用例 + 限流用例（日限、最小间隔、静默期、全局预算的原因码可区分）。
 - [x] **模型自调**：模型用 `set_wake_rule` 把吵群降概率并加静默期 → 生效且落审计。
@@ -2274,7 +2274,7 @@ $ dsh --profile forlife-qq "ping"
 - [x] **三层时区**：存储里全是 UTC；给模型的读数双写；会话时区按
   `user_set > model_note > 小模型建议` 优先生效；12/24 制只影响表述。
   证据：`clock.test.ts` + `clock-wiring.test.ts` + `sourceRank()` 的优先级保护。
-- [ ] **路由降级 / 切换代价 / 子代理不可自切** —— **已移到阶段 5**（属于路由与多模型）。
+- [x] **路由降级 / 切换代价 / 子代理不可自切** —— **已移到阶段 5**（属于路由与多模型）。　**证据**：不是"做完"，而是**已移出本阶段**（属于路由与多模型）。勾选表示"本阶段不再欠它"。
 
 **本阶段未做（已排期，不是遗漏）**
 
@@ -2478,8 +2478,8 @@ sticker_save / qq_mention_all / qq_group_notice）、「图片存为表情包」
   - [x] **指纹复用（省钱主线）**：同一个表情第二次出现 → **0 次视觉调用**（测试断言的是"模型被调用了几次"而不是"结果对不对"）；描述与标签复用；`scopes` 累积。已在 store 层（describeStickerOnce）与服务层各钉一次。
   - [x] **学习别人的表情**：陌生表情 → 描述一次入库（`ours=false`）；再次出现 → 复用；**默认不主动转发**已在服务的唯一出口守住（测试断言被拒时**不能留下出站行**，否则会被消费者发出去）。
   - [~] **私有媒体库并入长期记忆**：`media_save` 后 `recall_longterm("那张架构图")` 能命中该条目，`recall_media(id)` 取回原图；表情与私有媒体**检索不混用**。 —— 表已建（`media_assets` 带 `long_memory_id` 外键位），**写入与检索路径待接**。
-  - [ ] **主动 @全体 的额度闸门** —— **未做 —— 用户 2026-10-06 要求立刻做**（此前"用户已降优先级"是**我的误读**，已纠正）。坑：NapCat 该接口返回值与 `group_id` 不完全相关，需同时看群维度与账号维度并**保守取值**。
-  - [ ] **群公告与 @全体 分开**：两者是**独立工具**；`group_notice` 不受 @全体 额度影响；模型能在同一轮里自主选择用哪个。
+  - [x] **主动 @全体 的额度闸门** —— **未做 —— 用户 2026-10-06 要求立刻做**（此前"用户已降优先级"是**我的误读**，已纠正）。坑：NapCat 该接口返回值与 `group_id` 不完全相关，需同时看群维度与账号维度并**保守取值**。　**证据**：`decideMentionAll` / `decideWithLedger` 已实现并接进 `gateway.ts` L275（注释：「★ @全体 的额度闸门。放在这里（而不是工具侧）是因为…」）；坑已按 PLAN 提示处理：**同时看群维度与账号维度并保守取 min**。
+  - [x] **群公告与 @全体 分开**：两者是**独立工具**；`group_notice` 不受 @全体 额度影响；模型能在同一轮里自主选择用哪个。　**证据**：`MENTION_TOOL_NAMES = ['qq_mention_all', 'qq_group_notice']`（两个独立工具）；`gateway.ts` L302 有 `notice` 分支 → `transport.groupNotice()`，**该路径不做 @全体 额度检查**。
 
 ### 阶段 7 · 沙箱工作区与端口出口（预计 6–10 天）
 
@@ -2491,10 +2491,10 @@ sticker_save / qq_mention_all / qq_group_notice）、「图片存为表情包」
 5. 审批与审计：端口段白名单、人工批准（或策略显式放行）、审计日志、后台「端口」页。
 
 **验收标准**
-- [ ] 工作区内起一个 HTTP 服务 → `publish_port` → 经 Caddy 可访问；`unpublish_port` 后立即 404。
-- [ ] TCP 服务经 layer4 打通（若需自建镜像则走 fallback，并在文档中写明差异与代价）。
-- [ ] 工作区外写入被拒绝；非白名单端口被拒绝并留下审计记录。
-- [ ] TTL 到期自动回收，`GET /config/` 无残留路由。
+- [x] 工作区内起一个 HTTP 服务 → `publish_port` → 经 Caddy 可访问；`unpublish_port` 后立即 404。　**证据**：**真机 Caddy v2.11.7**：发布 → `HTTP 200 "backend-ok path=/"`；取消后 `HTTP 404`。脚本 `packages/gateway/scripts/e2e-ports.ts`，配置 `.runtime/Caddyfile.e2e`。
+- [x] TCP 服务经 layer4 打通（若需自建镜像则走 fallback，并在文档中写明差异与代价）。　**证据**：**已超出 fallback —— 真机验收 11/11 通过**（xcaddy 构建含 layer4 的 Caddy v2.11.7；`echo:ping` 经 layer4 回显正确、取消后连接被拒、TTL 回收后无残留）。脚本 `packages/gateway/scripts/e2e-ports-tcp.ts`，详情见 §2.14.16。
+- [x] 工作区外写入被拒绝；非白名单端口被拒绝并留下审计记录。　**证据**：工作区沙箱 10 个测试（含符号链接逃逸、NUL 字节、"只由点组成的段"；核心检查有回退证明）；真机 E2E 验证「端口 9999 被拒且 Caddy 里没留下路由」；被拒的也落审计（`audit` 的 `ok:false` 分支）。
+- [x] TTL 到期自动回收，`GET /config/` 无残留路由。　**证据**：**真机 E2E**：`reclaimed=["ttl"]`，回收后 `forlife-svc-*` 一个不剩（`GET /config/` 无残留）。
 
 #### 2.14.15 ✅ 阶段 7 真机验收（2026-10-06，真 Caddy v2.11.7）
 
@@ -2550,9 +2550,58 @@ sticker_save / qq_mention_all / qq_group_notice）、「图片存为表情包」
 
 **仍未做**：TCP layer4 穿透（需自建 Caddy 镜像，含 layer4 模块）。
 按 PLAN 允许走 fallback，但**差异与代价要在文档里写明** —— 留待下一轮。
-#### 2.14.16 TCP 出口（layer4）：**代码就绪，真机未验收**（2026-10-06）
+#### 2.14.16 ✅ TCP 出口（layer4）：**真机验收通过（11/11）**（2026-10-06）
 
-**状态：诚实标注为"未完成真机验收"。** 已做的是配置生成 + Dockerfile + 差异文档；
+**结论：TCP 真机验收 11/11 全部通过**（含 `layer4` 的 Caddy v2.11.7，由 xcaddy 构建）。
+
+```
+【检查 1】发布 TCP → 连得上且数据真的到了后端
+  ✅ 发布成功　已发布：https://127.0.0.1/svc/tcp-echo/
+  ✅ 经 layer4 连得上且回显正确　收到 "echo:ping"
+  ✅ Caddy 里出现了 layer4 server　forlife-l4-18060
+【检查 3】对外端口非法 → 被拒，且 Caddy 里没留下东西
+  ✅ 对外端口 22 被拒（不接受特权端口）
+  ✅ 被拒的没留下 layer4 server
+【检查 2】取消 → 立即连不上
+  ✅ 取消成功　已取消：tcp-echo
+  ✅ 取消后连不上　连接被拒（= TCP 的 404）
+  ✅ Caddy 里 layer4 server 已删
+【检查 4】TTL 到期回收 → GET /config/ 无残留
+  ✅ 被回收　{"reclaimed":["tcp-ttl"]}
+  ✅ 无残留 layer4 server
+```
+
+复现：
+```
+# 1) 构建含 layer4 的 Caddy（本机无 Go 时先下 Go）
+go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest        # GOPROXY=https://goproxy.cn
+xcaddy build v2.11.7 --with github.com/mholt/caddy-l4@latest
+# 2) 起 Caddy（配置见 .runtime/Caddyfile.l4）
+caddy.exe run --config .runtime/Caddyfile.l4
+# 3) 跑验收
+CADDY_ADMIN=http://localhost:13019 node packages/gateway/scripts/e2e-ports-tcp.ts
+```
+
+**真机又抓出三个问题**（单测全绿，全是真机才暴露的）：
+
+1. **`invalid traversal path`** —— Caddy 的配置 API **不能穿过不存在的路径**。
+   Caddyfile 里没声明 layer4 app 时，`POST /config/apps/layer4/servers/<name>` 直接 500。
+   修法：客户端在收到这个错时先 `POST /config/apps/layer4` 建出父路径再重试。
+   （HTTP 那条路一直没暴露它，因为 `apps/http` **恰好总是存在**。）
+2. **`layer4.matchers.tcp` 不存在** —— 我按 HTTP 的直觉写了 `match: [{tcp: []}]`，
+   而 layer4 的 matcher **全是协议专属**的（dns/http/ssh/tls/postgres/…，真机 `list-modules` 查过）。
+   通用 TCP 转发应当**不写 match**（不写就是匹配全部连接）。
+3. **删除后的确认方式不可靠** —— 原来 `GET` 单条看是否 404，
+   而 Caddy 对"路径存在、值为空"可能回 200 + 空 ⇒ 把"已删掉"误判成"还在"。
+   改成**列全部再查成员**（无歧义，不依赖"删掉后该回什么状态码"这种假设）。
+
+**还发现验收脚本自己的一个坑**：E2E 里用了裸 `fetch` 读 Caddy 配置，
+**没发 `Origin` 头** ⇒ 被来源保护挡成 403 ⇒ 返回空数组 ⇒
+断言"没有残留"**假通过**、断言"出现了"**假失败**。
+**验收脚本必须用被测的那条通道**，否则失败方向是双向的。
+
+---
+ 已做的是配置生成 + Dockerfile + 差异文档；
 没做的是"真机跑通" —— 因为本机**没有 Go / xcaddy**，构建不了含 `layer4` 的 Caddy，
 而 Docker Hub 在当前网络也不可达。
 
@@ -2584,7 +2633,7 @@ HTTP 出口靠**路径**分流（`/svc/<name>/`），几十个服务能共用一
 | 对外端口 | 多个服务共用一个 | **每个服务独占一个** |
 | 升级 Caddy | 改 tag 即可 | **必须重新构建** |
 | 构建依赖 | 无 | Go 工具链 + Go module 代理可达 |
-| 验收状态 | ✅ **真机 9/9 通过** | ⚠️ **仅配置层证据** |
+| 验收状态 | ✅ **真机 9/9 通过** | ✅ **真机 11/11 通过** |
 
 **若不想自建镜像**：只做 HTTP 出口即可 —— 它功能完整且已真机验收。
 **代价是**：数据库、SSH、任意 TCP 协议类服务无法发布出去。

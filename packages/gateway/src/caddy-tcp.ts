@@ -55,9 +55,10 @@ export function buildTcpRoute(input: TcpRouteInput): unknown {
     routes: [
       {
         '@id': input.routeId,
-        // `tcp: []` 表示"匹配所有 TCP 连接"。这里不需要更细的匹配 ——
-        // 对外端口本身就是唯一入口，再筛反而容易漏掉非首包场景。
-        match: [{ tcp: [] }],
+        // **刻意不写 match**：layer4 **没有通用的 `tcp` matcher**
+        // （真机 list-modules 查过：matcher 全是协议专属的 dns/http/ssh/tls/…）。
+        // 不写 match 就是匹配**全部连接** —— 这正是通用 TCP 转发要的。
+        // 而且更安全：对外端口本身就是唯一入口，再加一层筛选只会漏掉非首包场景。
         handle: [
           {
             handler: 'proxy',
