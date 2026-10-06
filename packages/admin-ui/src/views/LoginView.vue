@@ -11,6 +11,7 @@
  *  - 会话令牌由服务端下发 HttpOnly cookie，前端不接触；
  *  - 失败次数由服务端限流，前端只负责把话说清楚。
  */
+import petIcon from '../assets/pet.ico'
 import { computed, nextTick, ref, useTemplateRef } from 'vue'
 
 import AppIcon from '../components/AppIcon.vue'
@@ -59,7 +60,7 @@ async function submit(): Promise<void> {
   <div class="login">
     <form class="card" @submit.prevent="submit">
       <div class="head">
-        <span class="mark" aria-hidden="true">DF</span>
+        <img class="mark" :src="petIcon" alt="" aria-hidden="true" />
         <div>
           <h1>{{ isSetup ? '设置管理口令' : '登录 DSH-ForLife 控制台' }}</h1>
           <p class="muted">
@@ -145,16 +146,12 @@ async function submit(): Promise<void> {
   font-size: var(--t-sm);
 }
 .mark {
-  display: grid;
-  place-items: center;
+  display: block;
   flex: none;
   width: 38px;
   height: 38px;
   border-radius: var(--r-md);
-  background: var(--c-brand);
-  color: #fff;
-  font-size: var(--t-xs);
-  font-weight: 700;
+  object-fit: contain;
 }
 
 .field {

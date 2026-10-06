@@ -8,6 +8,7 @@
  *  - **深色模式**：外壳本身不含任何颜色值，全部走令牌，所以主题切换零改动；
  *  - **美观**：导航分组、当前项高亮（左侧强调条）、统一圆角与过渡。
  */
+import petIcon from './assets/pet.ico'
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
@@ -66,7 +67,7 @@ async function onLogout(): Promise<void> {
 
     <aside class="sidebar" aria-label="主导航">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">DF</span>
+        <img class="brand-mark" :src="petIcon" alt="" aria-hidden="true" />
         <span class="brand-text">
           <strong>DSH-ForLife</strong>
           <small>控制台</small>
@@ -198,16 +199,13 @@ async function onLogout(): Promise<void> {
   border-bottom: 1px solid var(--c-border);
 }
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
+  flex: none;
   width: 32px;
   height: 32px;
   border-radius: var(--r-md);
-  background: var(--c-brand);
-  color: #fff;
-  font-size: var(--t-xs);
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  /* 不再垫品牌色：那是给文字色块用的，垫在图片下会在透明像素处透出来 */
+  object-fit: contain;
 }
 .brand-text {
   display: flex;

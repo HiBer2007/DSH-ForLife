@@ -1061,6 +1061,54 @@ CREATE INDEX IF NOT EXISTS idx_media_assets_long ON media_assets (long_memory_id
 
 const m0018Checksum = createHash('sha256').update(m0018.sql).digest('hex')
 
+/**
+ * 0019：把「QQ 消息是碎片化的」补进 P1 系统提示词（用户 2026-10-06 明确要求）。
+ *
+ * 为什么需要迁移：P1 是**播种**进 prompt_revisions 的（因为它是用户可编辑的），
+ * 所以只改基线不会改变模型实际看到的内容 —— 已播种的那一版仍是旧的。
+ *
+ * 为什么不用整段替换：那会**抹掉用户可能做过的手工编辑**。
+ * 这里只在缺失时插入（幂等），且插到「## 输出规范」之前 ——
+ * 行为约束应排在输出格式前面。
+ *
+ * 这条要求的由来：用户指出 QQ 是碎片化对话，相邻几条消息往往是一个连贯意思。
+ * 我们自己就因为把碎片消息拆开理解而读歪过两次，所以写成**明确指令**，
+ * 而不是泛泛的「注意上下文」。
+ */
+const m0019 = {
+  version: 19,
+  name: '0019_p1_fragmented',
+  sql: '',
+  up(db: DatabaseSync): void {
+    const SECTION = [
+      '## 你收到的消息是碎片化的（重要）',
+      '- QQ 是碎片化对话：**同一个人的相邻几条消息，很可能是一个连贯的意思**，不是几个独立请求。',
+      '  常见形态：先发一句引子、再补一个条件、最后才说要求；或者一句话被拆成三四条发出来。',
+      '- 所以回应之前，先把这段时间里对方发的消息**合起来读一遍**，理解成一个整体意图，再决定怎么答。',
+      '- **不要**对每一条分别作答 —— 那会答非所问，也会显得没在听。',
+      '  尤其注意：别把中间某一句单独拎出来当成一个完整任务。',
+      '- 拿不准「这几条是不是一件事」时，**按是一件事来理解**；真的不确定，就用一句话问清楚。',
+      '- 同理：你自己发消息时也可以分几条发，对方也会把它们当成一个整体。',
+      '',
+    ].join('\n')
+
+    const rows = db
+      .prepare("SELECT id, text FROM prompt_revisions WHERE slug = 'p1-system' AND active = 1")
+      .all() as { id: string; text: string }[]
+
+    for (const row of rows) {
+      if (row.text.includes('## 你收到的消息是碎片化的')) continue
+      const anchor = '## 输出规范'
+      const next = row.text.includes(anchor)
+        ? row.text.replace(anchor, `${SECTION}${anchor}`)
+        : `${row.text}\n${SECTION}`
+      db.prepare('UPDATE prompt_revisions SET text = ? WHERE id = ?').run(next, row.id)
+    }
+  },
+} as const
+
+const m0019Checksum = createHash('sha256').update(m0019.sql + m0019.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1170,6 +1218,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0018.name,
     checksum: m0018Checksum,
     up: m0018.up,
+  },
+  {
+    version: m0019.version,
+    name: m0019.name,
+    checksum: m0019Checksum,
+    up: m0019.up,
   },
 ]
 
