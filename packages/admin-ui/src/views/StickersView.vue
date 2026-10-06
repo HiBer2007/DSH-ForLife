@@ -13,7 +13,7 @@ import { useContextMenu, type ContextMenuItem } from '../composables/useContextM
 import { reactive, computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
-import type { StickersOverview } from '../api/types-stickers.ts'
+import type { StickerCard, StickersOverview } from '../api/types-stickers.ts'
 import AsyncSection from '../components/AsyncSection.vue'
 import ContextMenu from '../components/ContextMenu.vue'
 import PanelCard from '../components/PanelCard.vue'
