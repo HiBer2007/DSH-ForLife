@@ -12,6 +12,7 @@
  *
  * @module @forlife/gateway/admin/api
  */
+import { setWakeRule, type WakeCondition } from '../wake.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -457,6 +458,74 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         })
         log?.(`[admin] 接管模式 ${body['on'] ? '已开启' : '已关闭'}`)
         json(res, 200, { on: body['on'] })
+        return true
+      }
+
+      // ── 唤醒规则（写）──────────────────────────────────────────────
+      // 用户硬要求：「整个后台只准我看、没有写编辑入口，这个必须要补充」。
+      // 作用域传 '*' 就是改**全局默认**（wake_rules 里 scope='*' 的那些行）。
+      if (route === '/wake-rule' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const scope = typeof body['scope'] === 'string' && body['scope'] !== '' ? body['scope'] : '*'
+        const condition = body['condition']
+        if (typeof condition !== 'string' || condition === '') {
+          json(res, 400, { error: 'condition 必须是非空字符串' })
+          return true
+        }
+
+        // 只接受已知字段，**不接受任意键** —— 否则前端一个拼写错误会被静默忽略，
+        // 表现为"点了保存但没生效"，最难查。
+        const patch: Record<string, unknown> = {}
+        for (const key of ['enabled', 'probability', 'minIntervalMs', 'dailyLimit', 'quietUntil'] as const) {
+          if (body[key] !== undefined) patch[key] = body[key]
+        }
+        if (Object.keys(patch).length === 0) {
+          json(res, 400, { error: '没有要改的字段（enabled / probability / minIntervalMs / dailyLimit / quietUntil）' })
+          return true
+        }
+        // 类型校验：数字字段必须是有限数，布尔字段必须是布尔 ——
+        // 传字符串 '50' 进来如果被 SQLite 收下，面板显示的和实际生效的就会不一致
+        for (const key of ['probability', 'minIntervalMs', 'dailyLimit'] as const) {
+          const value = patch[key]
+          if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
+            json(res, 400, { error: `${key} 必须是数字` })
+            return true
+          }
+        }
+        if (patch['enabled'] !== undefined && typeof patch['enabled'] !== 'boolean') {
+          json(res, 400, { error: 'enabled 必须是布尔值' })
+          return true
+        }
+        if (patch['quietUntil'] !== undefined && patch['quietUntil'] !== null && typeof patch['quietUntil'] !== 'string') {
+          json(res, 400, { error: 'quietUntil 必须是字符串或 null' })
+          return true
+        }
+
+        const updated = setWakeRule(
+          db,
+          scope,
+          condition as WakeCondition,
+          patch as Parameters<typeof setWakeRule>[3],
+          'admin',
+        )
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `唤醒规则 ${scope}/${condition} → ${JSON.stringify(patch)}`,
+        })
+        log?.(`[admin] 唤醒规则 ${scope}/${condition} 已更新`)
+        json(res, 200, { rule: updated })
         return true
       }
 
