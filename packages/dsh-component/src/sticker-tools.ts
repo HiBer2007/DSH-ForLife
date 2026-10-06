@@ -68,7 +68,7 @@ export function buildStickerTools(defineTool: DefineToolLike, runtime: MemoryRun
       '如果一条都没找到，说明库里没有合适的 —— 可以换个说法再试，或直接回文字。',
     parameters: {
       query: { type: 'string', required: true, description: '自然语言描述，例如「猫在睡觉」「无语」「点赞」。' },
-      limit: { type: 'number', required: false, description: '返回条数，默认 5。' },
+      limit: { type: 'number', description: '返回条数，默认 5。' },
     },
     output: {
       schema: {
@@ -125,10 +125,10 @@ export function buildStickerTools(defineTool: DefineToolLike, runtime: MemoryRun
       '注意：「学来的」表情（别人发的、不是我们收藏的）默认不发，除非确实合适。',
     parameters: {
       conversation: { type: 'string', required: true, description: '目标会话键，如 onebot11:88888。' },
-      asset_id: { type: 'string', required: false, description: '表情 id（sticker_search 的返回里有）。' },
-      query: { type: 'string', required: false, description: '自然语言描述（不给 asset_id 时用它挑）。' },
-      reply_to: { type: 'string', required: false, description: '要回复的消息 id（可选）。' },
-      allow_learned: { type: 'boolean', required: false, description: '是否允许发「学来的」表情，默认否。' },
+      asset_id: { type: 'string', description: '表情 id（sticker_search 的返回里有）。' },
+      query: { type: 'string', description: '自然语言描述（不给 asset_id 时用它挑）。' },
+      reply_to: { type: 'string', description: '要回复的消息 id（可选）。' },
+      allow_learned: { type: 'boolean', description: '是否允许发「学来的」表情，默认否。' },
     },
     output: {
       schema: {
