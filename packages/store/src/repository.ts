@@ -409,7 +409,13 @@ export interface CompactionLogInput {
   readonly reasonIfRejected?: string | null
   readonly shortTokensBefore: number
   readonly turnsSinceLast: number
-  readonly timeSinceLastMs: number
+  /**
+   * 距上次压缩的毫秒数。
+   *
+   * **允许 null**：首次压缩时"距上次"根本不存在，NULL 才是诚实的表达。
+   * 早先这里写死 0，读侧无法区分"刚压过"和"从没压过"——那是伪造数据。
+   */
+  readonly timeSinceLastMs: number | null
   readonly pushedEntries: readonly string[]
   readonly fragmentedEntries: readonly string[]
   readonly keptInShortTokens: number

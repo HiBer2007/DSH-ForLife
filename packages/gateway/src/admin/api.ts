@@ -30,6 +30,9 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
+import { queryCompaction, queryMemory } from './queries-memory.ts'
+import { queryConversations, queryWake } from './queries-qq.ts'
+import { queryPrompts, queryRouting } from './queries-model.ts'
 import { buildSeries } from './series.ts'
 
 /** 路由上下文。 */
@@ -158,6 +161,21 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
 
   const sessionOf = (req: IncomingMessage): { id: string; expiresAt: string } | undefined =>
     readSession(db, readCookie(req, SESSION_COOKIE))
+
+  /**
+   * 数据页路由表：路径 → 查询函数。
+   *
+   * 做成表而不是一串 if：新增页面时只加一行，且"哪些页面存在"一眼可见
+   * （不会出现"实现了查询却忘了接线"这种沉默的漏）。
+   */
+  const DATA_ROUTES: Record<string, ((database: DatabaseSync) => unknown) | undefined> = {
+    '/memory': (database) => queryMemory(database),
+    '/compaction': (database) => queryCompaction(database),
+    '/conversations': (database) => queryConversations(database),
+    '/wake': (database) => queryWake(database),
+    '/prompts': (database) => queryPrompts(database),
+    '/routing': (database) => queryRouting(database),
+  }
 
   /** 需要登录的接口统一在这里挡。 */
   function requireSession(req: IncomingMessage, res: ServerResponse, path: string): { id: string; expiresAt: string } | undefined {
@@ -312,6 +330,15 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         if (session === undefined) return true
         const hoursParam = Number(url.searchParams.get('hours') ?? '24')
         json(res, 200, buildSeries(db, { hours: Number.isFinite(hoursParam) ? hoursParam : 24 }))
+        return true
+      }
+
+      // ── 数据页：记忆 / 压缩 / 会话与队列 / 唤醒 / 提示词 / 路由与端点 ──────
+      // 这些页面与 DSH 内嵌面板读**同一份库、同一套语义**（计划 §2.12：无第二真源）
+      if (method === 'GET' && DATA_ROUTES[route] !== undefined) {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, DATA_ROUTES[route]!(db))
         return true
       }
 

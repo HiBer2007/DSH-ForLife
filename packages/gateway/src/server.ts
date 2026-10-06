@@ -22,6 +22,7 @@ import { openDatabase } from '@forlife/store'
 
 import { createAdminApi } from './admin/api.ts'
 import { serveStatic } from './admin/static.ts'
+import { startGatewayRuntime, type RunningGatewayRuntime } from './runtime.ts'
 
 /** 服务选项。 */
 export interface AdminServerOptions {
@@ -32,8 +33,23 @@ export interface AdminServerOptions {
   readonly host?: string
   readonly port?: number
   readonly log?: (message: string) => void
-  readonly transportConnected?: (() => boolean | undefined) | undefined
   readonly sessionTtlMs?: number
+  /**
+   * 给了就同时起 QQ 链路（OneBot 反向 WS + 网关 + 轮次）。
+   * 不给则只跑管理后台 —— 两种模式都能单独工作，排障时能分清是谁的问题。
+   */
+  readonly onebot?:
+    | {
+        readonly port: number
+        readonly host: string
+        readonly path: string
+        readonly accessToken?: string | undefined
+        readonly driver: 'headless' | 'fake'
+        readonly dshHome?: string | undefined
+        readonly profile?: string | undefined
+        readonly disableNoiseFilter?: boolean
+      }
+    | undefined
 }
 
 /** 严进严出的安全头（每个请求都加）。 */
@@ -81,12 +97,38 @@ export function createAdminServer(options: AdminServerOptions): {
       const opened = openDatabase({ file: options.dbPath, log })
       const db = opened.db
 
+      // QQ 链路先起：管理后台要能立刻反映它的真实连接状态（而不是等第一次请求才发现没连上）
+      let runtime: RunningGatewayRuntime | undefined
+      if (options.onebot !== undefined) {
+        runtime = await startGatewayRuntime({
+          db,
+          log,
+          onebot: {
+            port: options.onebot.port,
+            host: options.onebot.host,
+            path: options.onebot.path,
+            accessToken: options.onebot.accessToken,
+          },
+          driver: options.onebot.driver,
+          ...(options.onebot.dshHome === undefined && options.onebot.profile === undefined
+            ? {}
+            : {
+                headless: {
+                  dshHome: options.onebot.dshHome,
+                  profile: options.onebot.profile,
+                },
+              }),
+          ...(options.onebot.disableNoiseFilter === true ? { disableNoiseFilter: true } : {}),
+        })
+      }
+
       const api = createAdminApi({
         db,
         dbPath: options.dbPath,
         startedAt,
         log,
-        transportConnected: options.transportConnected,
+        // 真实连接状态：没有 runtime 时返回 undefined（= 本服务没接管，界面显示"—"而不是"离线"）
+        transportConnected: runtime === undefined ? undefined : () => runtime.transport.status().connected,
         ...(options.sessionTtlMs === undefined ? {} : { sessionTtlMs: options.sessionTtlMs }),
       })
 
@@ -138,6 +180,7 @@ export function createAdminServer(options: AdminServerOptions): {
         host,
         dbPath: options.dbPath,
         close: async (): Promise<void> => {
+          await runtime?.stop()
           await new Promise<void>((resolve) => server.close(() => resolve()))
           db.close()
         },
@@ -152,17 +195,51 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env): {
   distRoot: string
   host: string
   port: number
+  onebot?: {
+    port: number
+    host: string
+    path: string
+    accessToken?: string | undefined
+    driver: 'headless' | 'fake'
+    dshHome?: string | undefined
+    profile?: string | undefined
+    disableNoiseFilter?: boolean
+  }
 } {
-  const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
   const dbPath =
     env['FORLIFE_DB'] ??
     fileURLToPath(new URL('../../../.runtime/dsh/forlife/db/forlife.sqlite', import.meta.url))
   const distRoot = env['FORLIFE_ADMIN_DIST'] ?? fileURLToPath(new URL('../../admin-ui/dist', import.meta.url))
-  return {
+
+  const base = {
     dbPath,
     distRoot,
     host: env['FORLIFE_ADMIN_HOST'] ?? '127.0.0.1',
     port: Number(env['FORLIFE_ADMIN_PORT'] ?? '8081'),
+  }
+
+  // QQ 链路默认**不开**：只有显式设置 FORLIFE_ONEBOT=1 才起。
+  // 这样"只想看面板"的场景不会因为 QQ 连不上而受影响。
+  if (env['FORLIFE_ONEBOT'] !== '1') return base
+
+  const token = env['FORLIFE_ONEBOT_TOKEN']
+  const dshHome = env['FORLIFE_DSH_HOME']
+  const profile = env['FORLIFE_DSH_PROFILE']
+  const timeout = Number(env['FORLIFE_TURN_TIMEOUT_MS'] ?? '0')
+  return {
+    ...base,
+    onebot: {
+      port: Number(env['FORLIFE_ONEBOT_PORT'] ?? '3010'),
+      // 默认绑 0.0.0.0：NapCat 在容器里，必须能从外面连进来（accessToken 是唯一门槛）
+      host: env['FORLIFE_ONEBOT_HOST'] ?? '0.0.0.0',
+      path: env['FORLIFE_ONEBOT_PATH'] ?? '/',
+      ...(token === undefined || token === '' ? {} : { accessToken: token }),
+      driver: env['FORLIFE_DRIVER'] === 'headless' ? 'headless' : 'fake',
+      ...(dshHome === undefined ? {} : { dshHome }),
+      ...(profile === undefined ? {} : { profile }),
+      ...(timeout > 0 ? { timeoutMs: timeout } : {}),
+      ...(env['FORLIFE_NOISE'] === 'off' ? { disableNoiseFilter: true } : {}),
+    },
   }
 }
 
@@ -179,6 +256,7 @@ async function main(): Promise<void> {
     host: config.host,
     port: config.port,
     log,
+    ...(config.onebot === undefined ? {} : { onebot: config.onebot }),
   }).start()
 
   // 局域网测试时会绑 0.0.0.0，这条提示必须显眼：那意味着同网段都能访问登录页
@@ -188,6 +266,9 @@ async function main(): Promise<void> {
   log(`[admin] 前端产物：${config.distRoot}`)
   if (exposed) {
     log(`[admin] ⚠ 已绑定 ${config.host}：同网段设备都能打开登录页（口令是唯一门槛，请用强口令）`)
+  }
+  if (config.onebot === undefined) {
+    log('[admin] QQ 链路未启用（要启用请设 FORLIFE_ONEBOT=1）')
   }
 
   const shutdown = async (signal: string): Promise<void> => {

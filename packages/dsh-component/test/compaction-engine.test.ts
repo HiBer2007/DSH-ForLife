@@ -163,10 +163,16 @@ test('落库：注入故障 ⇒ 回滚到调用前的完整状态（无半写条
     const countBefore = runtime.listEntries().length
 
     // 让第 2 次 append 抛错：模拟"写了一半就崩"
+    //
+    // 注意：这是**部分替身**（`as unknown as MemoryRuntime` 会绕过类型检查），
+    // 所以每加一个被 `applyCompactionDecision` 用到的运行时方法，都必须在这里补上委托 ——
+    // 否则测试会在"运行时缺方法"上炸，而不是在它真正想验证的行为上炸。
+    // 踩过一次：新增 `compactionStats()` 后这条测试红了，报的是 `is not a function`。
     let calls = 0
     const failing = {
       get db() { return runtime.db },
       listEntries: (o?: Parameters<MemoryRuntime['listEntries']>[0]) => runtime.listEntries(o),
+      compactionStats: (window?: number) => runtime.compactionStats(window),
       reason: 'inject',
       append: (input: Parameters<MemoryRuntime['append']>[0]) => {
         calls += 1
@@ -348,6 +354,54 @@ test('事务记录：compaction_id 与 session_id 被写入（可对账）', asy
     const run = getCompactionRun(runtime.db, listCompactionRuns(runtime.db)[0]?.id ?? '')
     assert.equal(run?.session_id, 'sess_42')
     assert.equal(run?.compaction_id, 'cmp_42')
+    runtime.close()
+  } finally {
+    await cleanup(dir)
+  }
+})
+
+test('压缩日志写的是**真实读数**，不是写死的 0', async () => {
+  // 这条守的是一个曾经真实存在的缺陷：shortTokensBefore / turnsSinceLast / timeSinceLastMs
+  // 三行被写死为 0，于是面板上"压缩前 token"永远是 0，
+  // 而"这次压缩到底省了多少"正是压缩页存在的全部意义。
+  // 把它改回 0，这条测试必须变红。
+  const dir = tempDir()
+  try {
+    const runtime = makeRuntime(dir)
+    // 让运行时有真实的短期读数（真实链路里由 observeShortTokens 在每轮后写入）
+    runtime.observeShortTokens(4321)
+
+    applyCompactionDecision(
+      { runtime, reason: 'test' },
+      { push_to_mid: [], keep_in_short: ['留一句'], fragment_mid: [], reasoning: 'r' },
+      'sess_stats',
+    )
+
+    const row = runtime.db
+      .prepare('SELECT short_tokens_before, turns_since_last, time_since_last, kept_in_short_tokens FROM compaction_log ORDER BY rowid DESC LIMIT 1')
+      .get() as
+      | { short_tokens_before: number | null; turns_since_last: number | null; time_since_last: number | null; kept_in_short_tokens: number | null }
+      | undefined
+
+    assert.ok(row !== undefined, '压缩日志必须被写入')
+    assert.equal(row.short_tokens_before, 4321, '压缩前 token 必须是真实读数，不能是 0')
+    assert.equal(typeof row.turns_since_last, 'number', '轮次数必须是数字')
+    // 首次压缩没有"上次"，必须存 NULL 而不是伪造的 0
+    // （0 会被读侧理解成"刚刚压过"，与"从没压过"完全相反）
+    assert.equal(row.time_since_last, null, '首次压缩的 time_since_last 必须是 NULL')
+    assert.ok((row.kept_in_short_tokens ?? 0) > 0, '保留在短期的 token 数应大于 0（我们保留了「留一句」）')
+
+    // 第二次压缩：这次"距上次"真的存在，必须是真实毫秒数而不是 NULL
+    applyCompactionDecision(
+      { runtime, reason: 'test-2' },
+      { push_to_mid: [], keep_in_short: [], fragment_mid: [], reasoning: 'r2' },
+      'sess_stats',
+    )
+    const second = runtime.db
+      .prepare('SELECT time_since_last FROM compaction_log ORDER BY rowid DESC LIMIT 1')
+      .get() as { time_since_last: number | null } | undefined
+    assert.ok(second?.time_since_last !== null && second?.time_since_last !== undefined, '第二次压缩必须记下真实间隔')
+
     runtime.close()
   } finally {
     await cleanup(dir)

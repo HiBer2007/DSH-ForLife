@@ -180,6 +180,9 @@ export function applyCompactionDecision(
   const { runtime } = io
   const db = runtime.db
   const epochFrom = currentEpoch(db)
+  // 压缩前的真实读数：**必须在任何写入之前取**。
+  // 放到后面取到的是压缩后的值，那等于自己骗自己（而且再也无法复核"压了多少"）。
+  const before = runtime.compactionStats()
 
   // 计划必须**动手之前**落盘：回滚要用它
   const pushedIds = decision.push_to_mid.map((_, index) => `mid_c${String(Date.now())}_${String(index)}`)
@@ -235,13 +238,15 @@ export function applyCompactionDecision(
     }
 
     // ④ 压缩日志（PLAN §4.5 字段）
+    // 全部用**真实读数**：早先这三行写死 0，导致面板上"压缩前 token"永远是 0、
+    // 无法回答"这次压缩到底省了多少" —— 那正是这一页存在的意义。
     recordCompaction(db, {
       id: run.id,
       requestedBy: 'system',
       approved: true,
-      shortTokensBefore: 0,
-      turnsSinceLast: 0,
-      timeSinceLastMs: 0,
+      shortTokensBefore: before.shortTokens,
+      turnsSinceLast: before.turnsSinceLast,
+      timeSinceLastMs: before.hasPreviousCompaction ? before.timeSinceLastMs : null,
       pushedEntries: pushedIds.slice(0, pushed),
       fragmentedEntries: fragmentedIds,
       keptInShortTokens: estimateTokens(renderKeepInShort(decision.keep_in_short)),

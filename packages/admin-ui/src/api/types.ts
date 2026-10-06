@@ -24,6 +24,65 @@ export interface SeriesPayload {
   }
 }
 
+/** `GET /api/admin/memory` —— 记忆板块。 */
+export interface MemoryEntryRow {
+  readonly id: string
+  readonly entryType: string
+  readonly status: string
+  readonly summary: string
+  readonly contentPreview: string
+  readonly tokenCount: number
+  readonly windowOffset: number
+  readonly compactionEpoch: number
+  readonly sourceScope?: string
+  readonly createdAt: string
+  readonly lastAccessedAt?: string
+}
+
+export interface MemoryOverview {
+  readonly epoch: number
+  readonly revision: number
+  readonly counts: { readonly active: number; readonly fragmented: number; readonly archived: number; readonly long: number }
+  readonly tokens: { readonly active: number; readonly fragment: number }
+  readonly entries: readonly MemoryEntryRow[]
+}
+
+/** `GET /api/admin/compaction` —— 压缩板块。 */
+export interface CompactionRunRow {
+  readonly id: string
+  readonly phase: string
+  readonly epochFrom: number
+  readonly epochTo?: number
+  readonly startedAt: string
+  readonly endedAt?: string
+  readonly error?: string
+  readonly detailPreview?: string
+}
+
+export interface CompactionLogRow {
+  readonly id: string
+  readonly timestamp: string
+  readonly requestedBy?: string
+  readonly approved?: boolean
+  readonly reasonIfRejected?: string
+  readonly shortTokensBefore: number
+  readonly keptInShortTokens: number
+  readonly modelUsed?: string
+}
+
+export interface CompactionOverview {
+  readonly runs: readonly CompactionRunRow[]
+  readonly log: readonly CompactionLogRow[]
+  readonly stats: {
+    readonly committed: number
+    readonly aborted: number
+    readonly started: number
+    readonly lastAt?: string
+    readonly tokensBefore?: number
+    readonly tokensAfter?: number
+  }
+}
+
 /** `GET /api/admin/session` */
 export interface SessionInfo {
   readonly authenticated: boolean
