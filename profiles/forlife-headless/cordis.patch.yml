@@ -27,22 +27,21 @@
         timeZone: Asia/Shanghai
         refreshIntervalMs: 1800000
 
-# ── OpenCode Go（本项目实际使用的模型接入）──────────────────────────────
+# ── 默认模型 ─────────────────────────────────────────────────────────────
 #
-# **为什么必须显式声明**：DSH 默认走内置的 `deepseek-official`，它要
-# `DEEPSEEK_API_KEY` —— 而本项目走 OpenCode Go。不声明的话，
-# 就算设了 `FORLIFE_OPENCODE_GO_KEY`，DSH 也不知道有这个 provider，
-# 真机表现是：`MISSING_CREDENTIAL: no API key for provider route "deepseek-official"`。
+# **id 必须用短名** —— base bundle 里是 `agent-default-model`，
+# 不是完整包名 `@deepseek-ai/dsh-agent-default-model`。
+# 用包名匹配不上，而且**静默无效**（改了没反应，很难查）。
 #
-# **为什么是"改 config"而不是"insert 一份"**：
-# `@deepseek-ai/dsh-llm-pi-ai` 已经在 base bundle 里挂着了 ——
-# 再 insert 一份会报 `configurable provider "amazon-bedrock" is already declared`
-# （两个实例抢同一批 provider 声明）。所以按 id 定位、只改 config。
-#
-# `apiKeyEnv` 是**凭据引用名**（值仍在环境变量里）—— 与"密钥只存引用名"一致。
-# `baseURL` 与 gateway 侧的 `OPENCODE_GO_BASE_URL` 必须一致，
-# 否则面板上的额度统计与实际调用会对不上。
-- id: '@deepseek-ai/dsh-llm-pi-ai'
+# provider / model 的**定义**在 harness home 的 `settings.yaml` 里 ——
+# profile 的 config 只决定"挂哪些插件"，不决定"跑哪些 provider"。
+- id: agent-default-model
+  config:
+    provider: opencode-go
+    model: deepseek-v4.1-flash
+    reasoningEffort: high
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
   config:
     providers:
       opencode-go:
@@ -50,27 +49,51 @@
         apiKeyEnv: FORLIFE_OPENCODE_GO_KEY
         api: openai-completions
         baseURL: https://opencode.ai/zen/go/v1
-        # 只列**授权过的**模型（PLAN 里那 5 个）。
-        # 列全 43 个的话，模型可能在选择器里挑到未授权/未验证的那些。
+        # **OpenCode Go 强制要求**：每个请求带 `x-opencode-session`。
+        # 不带的话真机报 400 MissingSessionID —— 它是**路由与提示词缓存**的依据，
+        # 不是可选元数据。id 要**稳定**（变了会掉缓存）。
+        headers:
+          x-opencode-session: dsh-forlife
         models:
           - id: deepseek-v4.1-flash
             name: DeepSeek V4.1 Flash
             contextWindow: 262144
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：none | low | high | max
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
           - id: deepseek-v4-pro
             name: DeepSeek V4 Pro
             contextWindow: 262144
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：none | low | high | max
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
           - id: glm-5.3-flash
             name: GLM 5.3 Flash
             contextWindow: 204800
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：low | high | max
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
           - id: glm-5.3
             name: GLM 5.3
             contextWindow: 204800
-
-# 默认模型：**必须一起改** —— 只加 provider 的话，新 agent 仍用内置的
-# `deepseek-official`（要 DEEPSEEK_API_KEY），真机表现就是那条 MISSING_CREDENTIAL。
-# 推理强度按项目规定：deepseek-v4.1-flash 支持 none|low|high|max（**没有 medium**）。
-- id: '@deepseek-ai/dsh-agent-default-model'
-  config:
-    provider: opencode-go
-    model: deepseek-v4.1-flash
-    reasoningEffort: high
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：low | high | max
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
