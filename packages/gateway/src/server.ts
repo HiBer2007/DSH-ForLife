@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { openDatabase } from '@forlife/store'
 
 import { createAdminApi } from './admin/api.ts'
+import { LogBuffer } from './admin/log-buffer.ts'
 import { serveStatic } from './admin/static.ts'
 import { startGatewayRuntime, type RunningGatewayRuntime } from './runtime.ts'
 
@@ -105,7 +106,13 @@ export interface RunningAdminServer {
 export function createAdminServer(options: AdminServerOptions): {
   start: () => Promise<RunningAdminServer>
 } {
-  const log = options.log ?? ((): void => {})
+  // 面板的「实时日志」页读的是这个**内存缓冲**（不读日志文件：
+  // 文件位置随部署形态变、还可能被轮转截断，而"最近发生了什么"才是排障要的）
+  const logBuffer = new LogBuffer(500)
+  const log = (message: string): void => {
+    logBuffer.push(message)
+    options.log?.(message)
+  }
   const host = options.host ?? '127.0.0.1'
   const port = options.port ?? 8081
   const startedAt = Date.now()
@@ -148,6 +155,7 @@ export function createAdminServer(options: AdminServerOptions): {
         // 真实连接状态：没有 runtime 时返回 undefined（= 本服务没接管，界面显示"—"而不是"离线"）
         transportConnected: runtime === undefined ? undefined : () => runtime.transport.status().connected,
         ...(options.napcat === undefined ? {} : { napcat: options.napcat }),
+        logBuffer,
         ...(options.sessionTtlMs === undefined ? {} : { sessionTtlMs: options.sessionTtlMs }),
       })
 

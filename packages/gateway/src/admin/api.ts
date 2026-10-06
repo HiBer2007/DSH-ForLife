@@ -33,6 +33,7 @@ import {
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
 import { queryStorage } from './queries-storage.ts'
+import type { LogBuffer } from './log-buffer.ts'
 import { enqueueOutbound } from '../outbox.ts'
 import { queryCompaction, queryMemory } from './queries-memory.ts'
 import { queryConversations, queryWake } from './queries-qq.ts'
@@ -55,6 +56,8 @@ export interface AdminApiOptions {
    * 所以只回端口与 token，主机名由前端按当前地址栏推导。
    */
   readonly napcat?: { readonly webuiPort: number; readonly token?: string | undefined } | undefined
+  /** 内存日志缓冲（没给则日志页显示空，不报错）。 */
+  readonly logBuffer?: LogBuffer | undefined
   /** 会话时长（测试可缩短）。 */
   readonly sessionTtlMs?: number
 }
@@ -447,6 +450,22 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const session = requireSession(req, res, path)
         if (session === undefined) return true
         json(res, 200, queryStorage(db, { dbPath }))
+        return true
+      }
+
+      // ── 实时日志（内存缓冲；since 用于增量拉取）────────────────────────
+      if (route === '/logs' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const buffer = options.logBuffer
+        if (buffer === undefined) {
+          json(res, 200, { lines: [], sequence: 0, size: 0, capacity: 0 })
+          return true
+        }
+        const since = Number(url.searchParams.get('since') ?? '0')
+        const limit = Number(url.searchParams.get('limit') ?? '200')
+        const lines = Number.isFinite(since) && since > 0 ? buffer.since(since, limit) : buffer.tail(limit)
+        json(res, 200, { lines, sequence: buffer.sequence, size: buffer.size, capacity: buffer.capacity })
         return true
       }
 
