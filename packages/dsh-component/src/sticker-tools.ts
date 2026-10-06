@@ -30,7 +30,7 @@ import type { MemoryRuntime } from './runtime.ts'
 import type { DefineToolLike } from './tools.ts'
 
 /** 工具名（测试与文档共用一份）。 */
-export const STICKER_TOOL_NAMES = ['sticker_search', 'qq_send_sticker'] as const
+export const STICKER_TOOL_NAMES = ['sticker_search', 'qq_send_sticker', 'sticker_import'] as const
 
 /** 把文本包成内容块。 */
 function text(value: string): ContentBlock[] {
@@ -176,6 +176,43 @@ export function buildStickerTools(defineTool: DefineToolLike, runtime: MemoryRun
         assetId: result.assetId ?? '',
         outboxId: result.outboundId ?? '',
       }
+    },
+  })
+
+  const importSticker = defineTool({
+    name: 'sticker_import',
+    description:
+      '把一张网络图片导入表情库（下载 + 校验来源 + 生成描述），返回 assetId，之后可以用 qq_send_sticker 发出去。' +
+      '你自己有搜索工具：先用它找到图片直链，再调这个工具 —— 不要自己抓取，因为来源白名单、类型与大小校验、去重都在这一侧。',
+    parameters: {
+      url: { type: 'string', required: true, description: '图片直链（http/https）。' },
+      conversation: { type: 'string', description: '顺带记下它出现在哪个会话（可选）。' },
+      allow_learned: { type: 'boolean', description: '是否标记为我们自己的（默认是；学来的默认不主动转发）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          message: { type: 'string', required: true },
+          assetId: { type: 'string', required: true },
+        },
+      },
+      render: (_args: never, value: never): ContentBlock[] => {
+        const v = value as { ok: boolean; message: string }
+        return text(v.ok ? `已导入表情库：${v.message}` : `没能导入：${v.message}`)
+      },
+    },
+    execute: async (args: never): Promise<unknown> => {
+      const a = args as { url: string; conversation?: string; allow_learned?: boolean }
+      runtime.recordToolCall()
+      const result = await stickers().importFromUrl({
+        url: a.url,
+        ...(a.conversation === undefined ? {} : { scope: a.conversation }),
+        ...(a.allow_learned === false ? { ours: false } : {}),
+      })
+      return { ok: result.status !== 'rejected', message: result.reason, assetId: result.assetId ?? '' }
     },
   })
 

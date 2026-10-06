@@ -23,7 +23,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { describeStickerOnce, getStickerAsset, touchStickerUse, type StickerAssetRow, type StickerSource } from '@forlife/store'
 
 import { enqueueOutbound } from './outbox.ts'
-import { ingestSticker, type IngestStickerResult } from './stickers.ts'
+import { checkSourceUrl, DEFAULT_MEDIA_WHITELIST, ingestSticker, MAX_MEDIA_BYTES, type IngestStickerResult } from './stickers.ts'
+import type { StickerFetcher } from './sticker-restock.ts'
 import { searchStickers, type StickerHit } from './sticker-search.ts'
 import type { StickerVisionDescriber } from './sticker-vision.ts'
 
@@ -35,6 +36,8 @@ export interface StickerServiceOptions {
   /** 视觉描述器。**不给就只入库、不生成描述**（描述缺失时检索靠标签，仍可用）。 */
   readonly describer?: StickerVisionDescriber | undefined
   readonly whitelist?: readonly string[]
+  /** 下载器（注入以便离线测试；不给则用真实 HTTP）。 */
+  readonly fetcher?: StickerFetcher | undefined
   readonly log?: (message: string) => void
 }
 
@@ -70,6 +73,19 @@ export interface StickerService {
     readonly describe?: boolean
   }) => Promise<AddStickerResult>
   find: (query: string, options?: { readonly limit?: number }) => readonly StickerHit[]
+  /**
+   * 按 URL 导入一张图（**搜索归模型，安全下载归我们**）。
+   *
+   * 为什么这样分工：模型在轮次里本来就有搜索工具，让它去找图最自然；
+   * 而「下载任意 URL」是危险动作（SSRF、超大文件、非法类型、来源审计），
+   * 必须走我们这一条带白名单与校验的路。
+   */
+  importFromUrl: (input: {
+    readonly url: string
+    readonly scope?: string | undefined
+    readonly ours?: boolean
+    readonly describe?: boolean
+  }) => Promise<AddStickerResult>
   send: (input: {
     readonly to: string
     readonly query?: string | undefined
@@ -81,12 +97,86 @@ export interface StickerService {
   }) => SendStickerResult
 }
 
+
+/**
+ * 默认下载器：**流式**读取并卡大小上限。
+ *
+ * 为什么不用 `await response.arrayBuffer()` 再检查大小：那时整个文件**已经进内存了** ——
+ * 一个 500 MiB 的响应会把进程拖垮，而我们的上限是 5 MiB。
+ * 所以先看 `content-length`（能挡住绝大多数），再逐块累加、超限立刻中断。
+ */
+const defaultFetcher: StickerFetcher = async (url) => {
+  const response = await fetch(url, { redirect: 'follow', headers: { 'user-agent': 'dsh-forlife/0.1' } })
+  const mime = (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]?.trim() ?? 'application/octet-stream'
+  if (!response.ok) return { ok: false, mime, bytes: new Uint8Array(), reason: `HTTP ${String(response.status)}` }
+
+  const declared = Number(response.headers.get('content-length') ?? '0')
+  if (Number.isFinite(declared) && declared > MAX_MEDIA_BYTES) {
+    return { ok: false, mime, bytes: new Uint8Array(), reason: `声明大小超限（${String(declared)} 字节）` }
+  }
+
+  const reader = response.body?.getReader()
+  if (reader === undefined) {
+    // 拿不到流（老环境）就退回整体读取，但**仍然检查大小**
+    const buffer = new Uint8Array(await response.arrayBuffer())
+    if (buffer.byteLength > MAX_MEDIA_BYTES) return { ok: false, mime, bytes: new Uint8Array(), reason: '实际大小超限' }
+    return { ok: true, mime, bytes: buffer }
+  }
+
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value === undefined) continue
+    total += value.byteLength
+    if (total > MAX_MEDIA_BYTES) {
+      await reader.cancel()
+      return { ok: false, mime, bytes: new Uint8Array(), reason: `超过上限（读到 ${String(total)} 字节即中断）` }
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return { ok: true, mime, bytes }
+}
 /** 创建表情服务。 */
 export function createStickerService(options: StickerServiceOptions): StickerService {
   const { db } = options
   const log = options.log ?? ((): void => {})
 
   return {
+    async importFromUrl(input): Promise<AddStickerResult> {
+      // ① 白名单**在下载前**判：判晚了，恶意 URL 已经让我们发起了请求（SSRF 入口）
+      const sourceCheck = checkSourceUrl(input.url, options.whitelist ?? DEFAULT_MEDIA_WHITELIST)
+      if (!sourceCheck.ok) return { status: 'rejected', reason: sourceCheck.reason }
+
+      // ② 下载（大小上限在下载器里兜住：不能等整个文件进内存才发现它 500 MiB）
+      const fetcher = options.fetcher ?? defaultFetcher
+      let downloaded: Awaited<ReturnType<StickerFetcher>>
+      try {
+        downloaded = await fetcher(input.url)
+      } catch (error) {
+        return { status: 'rejected', reason: `下载失败：${String(error)}` }
+      }
+      if (!downloaded.ok) return { status: 'rejected', reason: downloaded.reason ?? '下载失败' }
+
+      // ③ 走同一条入库管线（类型/大小/指纹都再判一次）
+      return await this.add({
+        bytes: downloaded.bytes,
+        mime: downloaded.mime,
+        source: 'search',
+        sourceUrl: input.url,
+        ...(input.scope === undefined ? {} : { scope: input.scope }),
+        ...(input.ours === undefined ? {} : { ours: input.ours }),
+        ...(input.describe === undefined ? {} : { describe: input.describe }),
+      })
+    },
+
     async add(input): Promise<AddStickerResult> {
       const ingested = ingestSticker({
         db,
