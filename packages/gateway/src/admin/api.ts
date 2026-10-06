@@ -32,6 +32,7 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
+import { queryMedia } from './queries-media.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
 import { enqueueOutbound } from '../outbox.ts'
@@ -450,6 +451,14 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const session = requireSession(req, res, path)
         if (session === undefined) return true
         json(res, 200, queryStorage(db, { dbPath }))
+        return true
+      }
+
+      // ── 表情与媒体 ─────────────────────────────────────────────────
+      if (route === '/media' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryMedia(db))
         return true
       }
 
