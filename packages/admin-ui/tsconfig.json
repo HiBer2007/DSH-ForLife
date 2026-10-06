@@ -1,19 +1,18 @@
-/**
- * admin-ui 的 tsconfig —— **独立于根 tsconfig**。
- *
- * 为什么必须独立：
- *  - 根 tsconfig 是给 Node 侧代码用的（`module: NodeNext`、`lib: ["ES2023"]`、无 DOM），
- *    前端代码需要 `DOM` 与 `ESNext` 的 bundler 解析；
- *  - 根 tsconfig 的 include 覆盖 `packages/*/src/**/*.ts`，所以根配置里把本包**排除**，
- *    两边各管各的，`pnpm typecheck` 不会因为前端代码而失败。
- */
 {
+  // admin-ui 的 tsconfig —— 独立于根 tsconfig。
+  //
+  // 为什么必须独立：根 tsconfig 是给 Node 侧代码用的（module: NodeNext、lib 只有 ES2023、无 DOM），
+  // 前端代码需要 DOM 与 bundler 解析。根配置的 include 覆盖 packages 下所有 src，所以那边把本包排除了，
+  // 两边各管各的，根 typecheck 不会因为前端代码而失败。
+  //
+  // 注意：本文件里**不要**用块注释写 `pkg/*/src/**/*.ts` 这种带星号斜杠的路径 ——
+  // 中间的 `*/` 会提前闭合块注释，整个 tsconfig 立刻变成语法垃圾（我踩过）。
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": [],
+    "types": ["node"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -24,6 +23,10 @@
 
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
+    // 允许 import './x.ts'（Vite 原生支持；根配置也开了同样的开关，两边风格保持一致）
+    "allowImportingTsExtensions": true,
+    // vite.config.ts 里 `import vue from '@vitejs/plugin-vue'` 是 CJS 默认导出，需要它
+    "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
     "resolveJsonModule": true,

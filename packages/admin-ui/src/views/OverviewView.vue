@@ -64,10 +64,14 @@ const health = computed(() => {
   return [
     {
       label: 'QQ 连接',
-      value: d.qq.connected ? '在线' : '离线',
-      tone: d.qq.connected ? ('ok' as const) : ('err' as const),
+      // undefined = 本服务没接管连接（不知道），不能当成"离线"来吓人
+      value: d.qq.connected === undefined ? '未接管' : d.qq.connected ? '在线' : '离线',
+      tone: d.qq.connected === undefined ? ('neutral' as const) : d.qq.connected ? ('ok' as const) : ('err' as const),
       icon: 'chat',
-      hint: d.qq.lastInboundAt === undefined ? '还没收到过消息' : `最后收到 ${formatRelative(d.qq.lastInboundAt)}`,
+      hint:
+        d.qq.lastInboundAt === undefined
+          ? '还没收到过消息'
+          : `最后收到 ${formatRelative(d.qq.lastInboundAt)}（${formatNumber(d.qq.sessions)} 个会话）`,
     },
     {
       label: '待处理消息',
@@ -100,19 +104,19 @@ const vitals = computed(() => {
   const total = d.routing.total24h
   return [
     {
-      label: '渲染 token',
-      value: formatTokens(d.memory.renderedTokens),
-      hint: `活跃 ${formatTokens(d.memory.activeTokens)} · 碎片 ${formatTokens(d.memory.fragmentTokens)}`,
+      label: '活跃 token',
+      value: formatTokens(d.memory.activeTokens),
+      hint: `碎片 ${formatTokens(d.memory.fragmentTokens)}`,
     },
     {
       label: '记忆条目',
       value: formatNumber(d.memory.activeEntries + d.memory.fragmentEntries),
-      hint: `活跃 ${formatNumber(d.memory.activeEntries)} · 碎片 ${formatNumber(d.memory.fragmentEntries)}`,
+      hint: `活跃 ${formatNumber(d.memory.activeEntries)} · 碎片 ${formatNumber(d.memory.fragmentEntries)} · 长期 ${formatNumber(d.memory.longEntries)}`,
     },
     {
       label: '24h 降级率',
-      value: total === 0 ? '—' : formatPercent(d.degraded24h / total),
-      tone: total > 0 && d.degraded24h / total > 0.3 ? ('warn' as const) : ('neutral' as const),
+      value: total === 0 ? '—' : formatPercent(d.routing.degraded24h / total),
+      tone: total > 0 && d.routing.degraded24h / total > 0.3 ? ('warn' as const) : ('neutral' as const),
       hint: `共 ${formatNumber(total)} 次路由`,
     },
     {
@@ -181,7 +185,7 @@ const dbLine = computed(() => {
               <div>
                 <dt>前缀指纹</dt>
                 <dd class="mono">
-                  {{ data.memory.renderedTokens > 0 ? `${formatTokens(data.memory.renderedTokens)} tokens 已渲染` : '尚未渲染' }}
+                  修订号 {{ data.memory.revision }} · 压缩世代 {{ data.memory.epoch }}
                 </dd>
               </div>
             </dl>
@@ -242,9 +246,7 @@ const dbLine = computed(() => {
               </div>
               <div>
                 <dt>版本</dt>
-                <dd class="mono">
-                  {{ data.build.version }} · node {{ data.build.node }} · 参数 {{ data.build.params }} 条
-                </dd>
+                <dd class="mono">schema v{{ data.build.schemaVersion }} · node {{ data.build.node }}</dd>
               </div>
             </dl>
           </PanelCard>

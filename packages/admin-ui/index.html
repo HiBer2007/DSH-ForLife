@@ -8,23 +8,12 @@
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1115" />
     <meta name="color-scheme" content="light dark" />
     <title>ForLife 控制台</title>
-    <script>
-      // 主题必须在首屏之前定下来，否则会闪一下白（FOUC）。
-      // 三种取值：system（跟随系统）/ light / dark；用 data-theme 表达，CSS 侧统一处理。
-      ;(() => {
-        const KEY = 'forlife-theme'
-        let mode = 'system'
-        try {
-          const saved = localStorage.getItem(KEY)
-          if (saved === 'light' || saved === 'dark' || saved === 'system') mode = saved
-        } catch {
-          // 隐私模式下 localStorage 会抛，跟随系统即可
-        }
-        document.documentElement.dataset.theme = mode
-        const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-        document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
-      })()
-    </script>
+    <!--
+      主题必须在首屏之前定下来，否则会闪一下白（FOUC）。
+      它**必须是独立文件**：面板用严格 CSP（script-src 'self'），内联脚本会逼我们放开
+      'unsafe-inline'，那 CSP 就等于没有。三种取值：system（跟随系统）/ light / dark。
+    -->
+    <script src="./theme-init.js"></script>
   </head>
   <body>
     <div id="app"></div>

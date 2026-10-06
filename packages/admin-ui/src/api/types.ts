@@ -17,9 +17,7 @@ export interface Overview {
   /** 服务端生成这份数据的时刻（ISO）。 */
   readonly at: string
   readonly build: {
-    readonly version: string
-    /** 保真度基线里的参数条数（对账用）。 */
-    readonly params: number
+    readonly schemaVersion: number
     readonly node: string
     readonly uptimeSec: number
   }
@@ -33,9 +31,9 @@ export interface Overview {
     readonly revision: number
     readonly activeEntries: number
     readonly fragmentEntries: number
+    readonly longEntries: number
     readonly activeTokens: number
     readonly fragmentTokens: number
-    readonly renderedTokens: number
     readonly lastWriteAt?: string
   }
   readonly compaction: {
@@ -47,10 +45,12 @@ export interface Overview {
     readonly tokensAfter?: number
   }
   readonly qq: {
-    readonly connected: boolean
+    /** `undefined` = 本服务没接管 QQ 连接，无法判断（不是"离线"）。 */
+    readonly connected?: boolean
     readonly queueDepth: number
     readonly pendingItems: number
     readonly outboxPending: number
+    readonly sessions: number
     readonly lastInboundAt?: string
     readonly lastTurnAt?: string
   }

@@ -8,7 +8,7 @@
  *  - 任何接口抛 `UnauthorizedError` 时，调用 `markAnonymous()` 即可让外壳切到登录页 ——
  *    不需要每个页面各自处理。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, type ComputedRef } from 'vue'
 
 import { api, UnauthorizedError } from '../api/client.ts'
 
@@ -52,10 +52,10 @@ async function refresh(): Promise<void> {
 }
 
 export function useAuth(): {
-  readonly state: ReturnType<typeof computed<SessionState>>
-  readonly identity: ReturnType<typeof computed<AdminIdentity>>
-  readonly isAuthenticated: ReturnType<typeof computed<boolean>>
-  readonly needsSetup: ReturnType<typeof computed<boolean>>
+  readonly state: ComputedRef<SessionState>
+  readonly identity: ComputedRef<AdminIdentity>
+  readonly isAuthenticated: ComputedRef<boolean>
+  readonly needsSetup: ComputedRef<boolean>
   refresh: () => Promise<void>
   login: (password: string) => Promise<void>
   setup: (password: string) => Promise<void>

@@ -906,6 +906,65 @@ CREATE INDEX IF NOT EXISTS idx_probe_endpoint ON endpoint_probe_log (endpoint_id
 
 const m0016Checksum = createHash('sha256').update(m0016.sql).digest('hex')
 
+/**
+ * 迁移 17：管理后台鉴权（EXECUTION_PLAN §2.12）。
+ *
+ * 三张表各管一件事，刻意分开：
+ *  - `admin_credential`：**单行**口令记录。用 scrypt 加盐哈希，绝不存明文，
+ *    也不用 MD5/SHA（那是 AstrBot 明确踩过的坑，见计划 §1.3「我们避这 5 条」）。
+ *    参数（N/r/p/keylen）一起存，将来调参时旧记录仍可校验、可平滑升级。
+ *  - `admin_sessions`：只存**服务端随机生成的会话 id**，不存口令也不存其派生值。
+ *    带过期时间与最后活动时间：过期会话会被顺手清理，"在线设备"也看得见。
+ *  - `admin_audit`：登录、登出、改口令、限流、敏感操作全部留痕（含**失败**）。
+ *    安全事件没有审计就等于没有证据。
+ */
+const m0017 = {
+  version: 17,
+  name: '0017_admin_auth',
+  sql: `
+CREATE TABLE IF NOT EXISTS admin_credential (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),  -- 单行表：只有一个管理口令
+  algo        TEXT NOT NULL,                       -- 目前只有 scrypt
+  salt        TEXT NOT NULL,                       -- hex
+  hash        TEXT NOT NULL,                       -- hex
+  cost_n      INTEGER NOT NULL,
+  block_size  INTEGER NOT NULL,
+  parallel    INTEGER NOT NULL,
+  key_length  INTEGER NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  id           TEXT PRIMARY KEY,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  ip           TEXT,
+  user_agent   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions (expires_at);
+
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id      TEXT PRIMARY KEY,
+  at      TEXT NOT NULL,
+  action  TEXT NOT NULL,   -- setup | login | login_failed | logout | password | rate_limited | api
+  ok      INTEGER NOT NULL,
+  actor   TEXT,            -- 会话 id 前 8 位，或 anonymous
+  ip      TEXT,
+  path    TEXT,
+  detail  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0017.sql)
+  },
+} as const
+
+const m0017Checksum = createHash('sha256').update(m0017.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1003,6 +1062,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0016.name,
     checksum: m0016Checksum,
     up: m0016.up,
+  },
+  {
+    version: m0017.version,
+    name: m0017.name,
+    checksum: m0017Checksum,
+    up: m0017.up,
   },
 ]
 

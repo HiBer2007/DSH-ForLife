@@ -7,7 +7,7 @@
  *
  * 首屏防闪白在 `index.html` 里用内联脚本做掉了，这里只负责之后的切换与持久化。
  */
-import { computed, ref, watchEffect } from 'vue'
+import { computed, ref, watchEffect, type ComputedRef } from 'vue'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -53,8 +53,8 @@ watchEffect(() => {
 })
 
 export function useTheme(): {
-  readonly mode: ReturnType<typeof computed<ThemeMode>>
-  readonly isDark: ReturnType<typeof computed<boolean>>
+  readonly mode: ComputedRef<ThemeMode>
+  readonly isDark: ComputedRef<boolean>
   readonly modes: typeof THEME_MODES
   setMode: (next: ThemeMode) => void
   /** 在浅/深之间直接对调（顶栏那个一键按钮用）。 */
