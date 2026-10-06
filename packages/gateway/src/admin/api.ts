@@ -13,7 +13,7 @@
  * @module @forlife/gateway/admin/api
  */
 import { setWakeRule, type WakeCondition } from '../wake.ts'
-import { deleteModelRoute, listModelRoutes, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute } from '@forlife/store'
+import { deleteModelRoute, listModelRoutes, PROMPT_SLUGS, rollbackPrompt, savePromptRevision, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute, type PromptSlug } from '@forlife/store'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -509,6 +509,63 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 提示词：保存新版本 ─────────────────────────────────────────
+      if (route === '/prompt-revision' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const slug = typeof body['slug'] === 'string' ? body['slug'] : ''
+        if (!(PROMPT_SLUGS as readonly string[]).includes(slug)) {
+          json(res, 400, { error: `未知槽位：${slug}（只允许 ${PROMPT_SLUGS.join(' / ')}）` })
+          return true
+        }
+        const text = typeof body['text'] === 'string' ? body['text'] : ''
+
+        // 校验交给 savePromptRevision —— 它内部做 validatePromptText + 规范化 + 指纹。
+        // 在这里再写一套变量名检查，两套规则迟早分叉，
+        // 而分叉的表现是"面板说保存成功了，实际被拒了"。
+        const result = savePromptRevision(db, {
+          slug: slug as PromptSlug,
+          text,
+          createdBy: `admin:${session.id.slice(0, 8)}`,
+          ...(typeof body['note'] === 'string' ? { note: body['note'] } : {}),
+        })
+        if (!result.ok) {
+          // 校验失败要把**每一条**错误都返回：只回第一条的话，
+          // 用户改完一条又冒出下一条，来回好几轮
+          json(res, 400, { error: result.errors.join('；'), errors: result.errors })
+          return true
+        }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `提示词 ${slug} 保存（${result.changed ? '新版本' : '内容未变，未造新版本'}）` })
+        json(res, 200, { ok: true, changed: result.changed, revisionId: result.revision.id })
+        return true
+      }
+
+      // ── 提示词：回滚到某个版本 ─────────────────────────────────────
+      if (route === '/prompt-rollback' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const revisionId = typeof body['revisionId'] === 'string' ? body['revisionId'] : ''
+        if (revisionId === '') { json(res, 400, { error: 'revisionId 必填' }); return true }
+
+        const revision = rollbackPrompt(db, revisionId)
+        if (revision === undefined) {
+          // 版本不存在要**明确报错**，而不是静默返回成功 ——
+          // 静默成功会让用户以为回滚生效了，实际提示词一个字都没变
+          json(res, 404, { error: `没有这个版本：${revisionId}` })
+          return true
+        }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `提示词回滚 → ${revisionId}` })
+        json(res, 200, { ok: true, revisionId: revision.id })
         return true
       }
 
