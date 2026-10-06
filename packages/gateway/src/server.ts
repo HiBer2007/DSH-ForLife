@@ -292,6 +292,8 @@ async function main(): Promise<void> {
     port: config.port,
     log,
     ...(config.onebot === undefined ? {} : { onebot: config.onebot }),
+    // 漏传这个会让 CSP 的 frame-src 停在 'self'，内嵌的 NapCat 页会白屏
+    ...(config.napcat === undefined ? {} : { napcat: config.napcat }),
   }).start()
 
   // 局域网测试时会绑 0.0.0.0，这条提示必须显眼：那意味着同网段都能访问登录页
