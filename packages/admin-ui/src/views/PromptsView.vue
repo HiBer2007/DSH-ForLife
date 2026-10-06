@@ -10,18 +10,20 @@
  * 顺序 = 排查顺序：规模（槽位 / 版本 / 覆盖 / 生效 token）→ 每个槽位此刻生效的那一版
  * → 历史版本（将来回滚要选的对象）→ 按会话覆盖（谁没用全局版本）。
  */
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
 import { ref, computed } from 'vue'
 
 import { api } from '../api/client.ts'
 import type { PromptsOverview, PromptSlotOverview } from '../api/types-prompts.ts'
 import AppIcon from '../components/AppIcon.vue'
 import AsyncSection from '../components/AsyncSection.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import DataTable, { type TableColumn } from '../components/DataTable.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatCard from '../components/StatCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
-import { formatDateTime, formatNumber, formatTokens } from '../utils/format.ts'
+import { formatRelative, formatDateTime, formatNumber, formatTokens } from '../utils/format.ts'
 
 const state = useAsyncData<PromptsOverview>(() => api.get<PromptsOverview>('/prompts'))
 
@@ -157,6 +159,44 @@ function slotSubtitle(slot: PromptSlotOverview): string {
   return `${active} · 共 ${formatNumber(slot.revisionCount)} 版`
 }
 
+/**
+ * 版本回滚。
+ *
+ * 「生效中」那一版**禁用回滚按钮** —— 回滚到自己等于什么都没做，
+ * 点了会让人以为"操作失败了"（因为界面毫无变化）。直接禁用 + 菜单里说明，更清楚。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+const rollingBack = ref(false)
+const rollbackError = ref('')
+
+async function rollback(row: Record<string, unknown>): Promise<void> {
+  rollingBack.value = true
+  rollbackError.value = ''
+  try {
+    await api.post('/prompt-rollback', { revisionId: row['id'] })
+    state.refresh()
+  } catch (error) {
+    // **必须显示错误**：静默失败会让人以为回滚生效了，而提示词一个字都没变
+    rollbackError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    rollingBack.value = false
+  }
+}
+
+function rollbackMenuItems(row: Record<string, unknown>): ContextMenuItem[] {
+  const active = row['active'] === true
+  return [
+    {
+      key: 'rollback',
+      label: '回滚到这一版',
+      hint: active ? '已经生效中' : String(row['slug']),
+      disabled: active,
+      run: () => rollback(row),
+    },
+    { key: 'copy', label: '复制版本 id', run: () => void navigator.clipboard?.writeText(String(row['id'])) },
+  ]
+}
+
 const revisionColumns: TableColumn<Record<string, unknown>>[] = [
   { key: 'slug', label: 'slug', primary: true, mono: true },
   { key: 'createdAt', label: '创建时间', secondary: true, value: (row) => formatDateTime(asText(row['createdAt'])) },
@@ -270,11 +310,43 @@ const overrideColumns: TableColumn<Record<string, unknown>>[] = [
           title="版本历史"
           :subtitle="`共 ${formatNumber(state.data.value.stats.revisions)} 版（全表计数），本页列出最近 ${formatNumber(revisionRows.length)} 条，按写入时间倒序`"
         >
-          <DataTable
-            :columns="revisionColumns"
-            :rows="revisionRows"
-            empty-text="还没有任何提示词版本。写入接口落地之前这里会是空的 —— 不是加载失败，也不是槽位被删了。"
-          />
+          <p v-if="revisionRows.length === 0" class="empty-note">
+            还没有任何提示词版本 —— 不是加载失败，也不是槽位被删了。
+          </p>
+
+          <ul v-else class="rev-list">
+            <li
+              v-for="row in revisionRows"
+              :key="String(row['id'])"
+              class="rev-row"
+              :data-active="row['active'] === true"
+              @contextmenu="onContextMenu($event, rollbackMenuItems(row), row)"
+              v-on="touchHandlers(rollbackMenuItems(row), row)"
+            >
+              <div class="rev-head">
+                <StatusBadge :tone="row['active'] === true ? 'ok' : 'muted'" dot>
+                  {{ row['active'] === true ? '生效中' : '历史' }}
+                </StatusBadge>
+                <span class="mono rev-slug">{{ row['slug'] }}</span>
+                <span class="rev-time">{{ formatRelative(String(row['createdAt'] ?? '')) }}</span>
+              </div>
+              <p class="rev-meta mono">
+                {{ String(row['sha256'] ?? '').slice(0, 12) }}… ·
+                {{ formatNumber(Number(row['tokenCount'] ?? 0)) }} tokens ·
+                {{ row['createdBy'] }}
+              </p>
+              <div class="rev-actions">
+                <button
+                  type="button"
+                  class="mini"
+                  :disabled="row['active'] === true"
+                  @click="rollback(row)"
+                >
+                  回滚到这一版
+                </button>
+              </div>
+            </li>
+          </ul>
 
           <template #footer>
             <p class="muted legend">
@@ -320,6 +392,8 @@ const overrideColumns: TableColumn<Record<string, unknown>>[] = [
         </template>
       </div>
     </div>
+
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
@@ -527,5 +601,48 @@ const overrideColumns: TableColumn<Record<string, unknown>>[] = [
   justify-content: flex-end;
   gap: var(--s-2);
   margin-top: var(--s-4);
+}
+
+.rev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+.rev-row {
+  padding: var(--s-3);
+  border-radius: var(--r-sm);
+  cursor: context-menu;
+}
+.rev-row:hover {
+  background: var(--c-surface-2);
+}
+.rev-row[data-active='true'] {
+  background: var(--c-brand-soft);
+}
+.rev-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.rev-slug {
+  color: var(--c-text);
+  font-size: var(--t-sm);
+}
+.rev-time {
+  margin-left: auto;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.rev-meta {
+  margin-top: 4px;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.rev-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: var(--s-2);
 }
 </style>
