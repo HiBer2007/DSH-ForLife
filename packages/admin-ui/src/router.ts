@@ -35,6 +35,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { path: '/takeover', title: '接管台', icon: 'chat' },
       { path: '/napcat', title: 'NapCat', icon: 'external' },
       { path: '/wake', title: '唤醒与自唤醒', icon: 'routing' },
+      { path: '/wakes', title: '触发器', icon: 'routing' },
     ],
   },
   {
@@ -73,6 +74,7 @@ const routes: readonly RouteRecordRaw[] = [
   { path: '/', name: 'overview', component: () => import('./views/OverviewView.vue'), meta: { title: '运行总览' } },
   { path: '/conversations', name: 'conversations', component: () => import('./views/ConversationsView.vue'), meta: { title: '会话与队列' } },
   { path: '/wake', name: 'wake', component: () => import('./views/WakeView.vue'), meta: { title: '唤醒与自唤醒' } },
+  { path: '/wakes', name: 'wakes', component: () => import('./views/WakesView.vue'), meta: { title: '触发器' } },
   { path: '/memory', name: 'memory', component: () => import('./views/MemoryView.vue'), meta: { title: '记忆条目' } },
   { path: '/routing', name: 'routing', component: () => import('./views/RoutingView.vue'), meta: { title: '路由与端点' } },
   { path: '/compaction', name: 'compaction', component: () => import('./views/CompactionView.vue'), meta: { title: '压缩日志' } },
