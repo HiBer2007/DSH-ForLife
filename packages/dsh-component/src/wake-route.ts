@@ -21,7 +21,7 @@
  *
  * ```ts
  * registry.register({
- *   path: '/forlife/wake',        // `/api` 之下的绝对路径 ⇒ 实际是 /api/forlife/wake
+ *   path: '/api/forlife/wake',    // **必须带 `/api` 前缀**
  *   methods: ['POST'],
  *   requestBody: 'buffered',
  *   fetch: (request: Request) => Promise<Response>,   // ← **Web Fetch API**
@@ -37,7 +37,7 @@ import { handleWakeRequest, type WakeHost } from './wake-bridge-endpoint.ts'
 import type { FetchRegistryLike } from './api.ts'
 
 /** 端点路径（`/api` 之下）。 */
-export const WAKE_ROUTE_PATH = '/forlife/wake'
+export const WAKE_ROUTE_PATH = '/api/forlife/wake'
 
 /**
  * 注册唤醒桥端点。

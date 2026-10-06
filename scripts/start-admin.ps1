@@ -28,7 +28,7 @@ if (Test-Path "$root\.runtime\onebot-token.txt") {
 if (Test-Path "$root\.runtime\wake-bridge-secret.txt") {
   $env:FORLIFE_WAKE_BRIDGE_SECRET = (Get-Content "$root\.runtime\wake-bridge-secret.txt" -Raw).Trim()
   # 插件侧的端点路径要与这里一致（默认 /forlife/wake）
-  $env:FORLIFE_WAKE_BRIDGE_URL = if ($env:FORLIFE_WAKE_BRIDGE_URL) { $env:FORLIFE_WAKE_BRIDGE_URL } else { 'http://127.0.0.1:3080/forlife/wake' }
+  $env:FORLIFE_WAKE_BRIDGE_URL = if ($env:FORLIFE_WAKE_BRIDGE_URL) { $env:FORLIFE_WAKE_BRIDGE_URL } else { 'http://127.0.0.1:3080/api/forlife/wake' }
 }
 
 # 监视条件的沙箱根（不配则监视源明确禁用 —— 路径没有沙箱根可比）
