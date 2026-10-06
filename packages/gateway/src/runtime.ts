@@ -155,6 +155,9 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
             // **用 observeConnection**（盯一个状态量）—— 用 observe 传两个事件名的话，
             // qq.disconnected 那一侧永远看不到"恢复"，**第二次断线不会被唤醒**
             const outcome = wake.systemSource!.observeConnection(connected, detail)
+            // **诊断日志**（真机排查用）：回调有没有被调用、边沿判定结果是什么。
+            // 没有它的话，"QQ 端断开"记了但触发器没动时，完全看不出卡在哪一步。
+            log(`[诊断] 连接回调 connected=${String(connected)} → changed=${String(outcome.changed)} triggered=${String(outcome.triggered.length)}｜${outcome.reason.slice(0, 90)}`)
             if (outcome.triggered.length > 0) log(`QQ 状态变化已触发 ${String(outcome.triggered.length)} 条唤醒`)
           },
         }),

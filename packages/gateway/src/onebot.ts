@@ -91,6 +91,17 @@ export class OneBotTransport implements QqTransport {
       path: options.path ?? '/',
       actionTimeoutMs: options.actionTimeoutMs ?? 10_000,
       ...(options.accessToken === undefined ? {} : { accessToken: options.accessToken }),
+      // ★ **这一行曾经漏掉过**（真机 bug，2026-10-06）：
+      // 构造函数是**逐字段重建** `this.options` 的，而 `onConnectionState`
+      // 在 `Pick<>` 里是**可选**的 ⇒ TypeScript **不会**报"少传了"。
+      //
+      // 后果：`notifyConnection` 里 `callback === undefined` 直接 return，
+      // **连接回调永远不触发**，而日志里只看到 `QQ 端已连接` / `QQ 端断开` ——
+      // 完全看不出"观察者根本没被叫"。
+      //
+      // 这类"参数在两层之间掉了"的 bug，单测很容易漏（测试直接调函数时
+      // 参数是显式传的，根本不经过构造函数）。所以守卫测试**必须走构造函数**。
+      ...(options.onConnectionState === undefined ? {} : { onConnectionState: options.onConnectionState }),
     }
     this.log = options.log ?? ((): void => {})
   }
