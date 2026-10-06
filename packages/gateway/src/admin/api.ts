@@ -32,6 +32,7 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
+import { queryStorage } from './queries-storage.ts'
 import { enqueueOutbound } from '../outbox.ts'
 import { queryCompaction, queryMemory } from './queries-memory.ts'
 import { queryConversations, queryWake } from './queries-qq.ts'
@@ -438,6 +439,14 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         })
         log?.(`[admin] 接管模式 ${body['on'] ? '已开启' : '已关闭'}`)
         json(res, 200, { on: body['on'] })
+        return true
+      }
+
+      // 存储页要 dbPath，所以不能进上面那张纯函数表
+      if (route === '/storage' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryStorage(db, { dbPath }))
         return true
       }
 

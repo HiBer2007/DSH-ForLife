@@ -55,7 +55,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: '资源',
     items: [
       { path: '/media', title: '表情与媒体', icon: 'media', pending: true },
-      { path: '/storage', title: '存储与迁移', icon: 'storage', pending: true },
+      { path: '/storage', title: '存储与迁移', icon: 'storage' },
     ],
   },
   {
@@ -78,7 +78,7 @@ const routes: readonly RouteRecordRaw[] = [
   { path: '/takeover', name: 'takeover', component: () => import('./views/TakeoverView.vue'), meta: { title: '接管台' } },
   { path: '/napcat', name: 'napcat', component: () => import('./views/NapcatView.vue'), meta: { title: 'NapCat' } },
   { path: '/media', name: 'media', component: () => import('./views/ComingSoonView.vue'), meta: { title: '表情与媒体' } },
-  { path: '/storage', name: 'storage', component: () => import('./views/ComingSoonView.vue'), meta: { title: '存储与迁移' } },
+  { path: '/storage', name: 'storage', component: () => import('./views/StorageView.vue'), meta: { title: '存储与迁移' } },
   { path: '/logs', name: 'logs', component: () => import('./views/ComingSoonView.vue'), meta: { title: '实时日志' } },
   { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '设置' } },
   // 兜底：不认识的路径回总览（路由从第一天就用稳定命名，不做历史重定向）
