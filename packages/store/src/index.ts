@@ -209,3 +209,29 @@ export {
   setPromptOverride,
 } from './prompt-store.ts'
 export type { PromptRevision, PromptSlug, SavePromptResult } from './prompt-store.ts'
+export {
+  countFiredToday,
+  createWakeTrigger,
+  decideWake,
+  DEFAULT_MERGE_WINDOW_MS,
+  deleteWakeTrigger,
+  getWakeTrigger,
+  isWakePaused,
+  listDueTimers,
+  listWakeEvents,
+  listWakeTriggers,
+  markFired,
+  MAX_CASCADE_DEPTH,
+  recordWakeEvent,
+  setWakePaused,
+  updateWakeTrigger,
+  WAKE_PAUSED_KEY,
+} from './wake-triggers.ts'
+export type {
+  CreateWakeTriggerInput,
+  CreateWakeTriggerResult,
+  GateDecision,
+  GateInput,
+  WakeTriggerKind,
+  WakeTriggerRow,
+} from './wake-triggers.ts'

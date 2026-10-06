@@ -1211,6 +1211,92 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_published_ports_listen
 
 const m0022Checksum = createHash('sha256').update(m0022.sql + m0022.name).digest('hex')
 
+/**
+ * 迁移 23：唤醒引擎三表（PLAN 阶段 8 交付物 1）。
+ *
+ * 为什么在 gateway 而不是 DSH：见 research/wake-scheduling-report.md §10.2 ——
+ * **DSH 没有自动重启，进程内的监视器会跟着进程一起死**，
+ * 而"DSH 自己挂了要通知我"在进程内不可能实现。
+ */
+const m0023 = {
+  version: 23,
+  name: '0023_wake_engine',
+  sql: `
+-- 触发器：四类（timer / watcher / system / external）共用一张表。
+-- spec 存 JSON：四类规格差异大，拆宽表会让每类都带一堆 NULL 列，
+-- 而"哪个字段属于哪类"会变成只有代码知道的事。
+CREATE TABLE IF NOT EXISTS wake_triggers (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL,          -- timer | watcher | system | external
+  scope          TEXT NOT NULL,          -- 会话键；'*' 表示与具体会话无关
+  title          TEXT NOT NULL,
+  prompt         TEXT NOT NULL,          -- 唤醒后要模型做什么
+  spec           TEXT NOT NULL,          -- JSON（按 kind 解释）
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  next_fire_at   TEXT,                   -- timer 用；其余为 NULL
+  last_fired_at  TEXT,
+  fire_count     INTEGER NOT NULL DEFAULT 0,
+  -- 六道闸的配置（每触发器一份）
+  min_interval_ms INTEGER NOT NULL DEFAULT 0,
+  daily_limit    INTEGER NOT NULL DEFAULT 0,   -- 0 = 不限
+  budget_tokens  INTEGER NOT NULL DEFAULT 0,   -- 0 = 不限
+  quiet_until    TEXT,
+  depth          INTEGER NOT NULL DEFAULT 0,   -- 级联深度（防自激）
+  created_by     TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wake_triggers_next ON wake_triggers (next_fire_at) WHERE enabled = 1;
+CREATE INDEX IF NOT EXISTS idx_wake_triggers_scope ON wake_triggers (scope);
+
+-- 监视程序：模型自己写的脚本，由 gateway 监督。
+-- sha256 非空：**脚本变更必须重新登记** —— 否则"我改了脚本但行为没变"会查很久。
+CREATE TABLE IF NOT EXISTS wake_programs (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  contract        TEXT NOT NULL,        -- probe | watcher | service
+  path            TEXT NOT NULL,        -- 工作区内的相对路径
+  sha256          TEXT NOT NULL,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  status          TEXT NOT NULL,        -- stopped | running | failed | disabled
+  restart_count   INTEGER NOT NULL DEFAULT 0,
+  last_started_at TEXT,
+  last_exit_at    TEXT,
+  last_exit_code  INTEGER,
+  last_error      TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+-- 唤醒事件：每一次"要不要唤醒、唤醒后发生了什么"都要留痕。
+-- decision 用文本而不是布尔：**被拒的原因必须能区分** ——
+-- "静默期抑制"与"预算超了"对用户是完全不同的事。
+CREATE TABLE IF NOT EXISTS wake_trigger_events (
+  id          TEXT PRIMARY KEY,
+  trigger_id  TEXT,
+  kind        TEXT NOT NULL,
+  fired_at    TEXT NOT NULL,
+  decision    TEXT NOT NULL,   -- fired | merged | quiet | budget | depth | expired | duplicate | paused | failed
+  reason      TEXT,
+  payload     TEXT,
+  session_id  TEXT,
+  turn_ok     INTEGER,
+  cost_tokens INTEGER,
+  model_did   TEXT,            -- "模型做了什么"（面板要显示）
+  created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wake_trigger_events_fired ON wake_trigger_events (fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wake_trigger_events_trigger ON wake_trigger_events (trigger_id, fired_at DESC);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0023.sql)
+  },
+} as const
+
+const m0023Checksum = createHash('sha256').update(m0023.sql + m0023.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1344,6 +1430,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0022.name,
     checksum: m0022Checksum,
     up: m0022.up,
+  },
+  {
+    version: m0023.version,
+    name: m0023.name,
+    checksum: m0023Checksum,
+    up: m0023.up,
   },
 ]
 
