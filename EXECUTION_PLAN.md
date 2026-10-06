@@ -2296,10 +2296,26 @@ $ dsh --profile forlife-qq "ping"
 - [x] `/api/admin/{session,setup,login,logout,password,overview,series}`
 - [x] 总览页（实时指标 + 5 张运行图表 + 24h/3天/7天 切换）
 - [x] 设置页（主题、会话、改口令、关于）
-- [~] 数据页：记忆 / 压缩 / 会话与队列 / 唤醒 / 提示词 / 路由与端点（数据层并行编写中，页面随后）
+- [x] NapCat 页：内嵌官方 WebUI（token 自动带上），扫码登录就在面板里完成
+- [x] 数据页：记忆 / 压缩 / 会话与队列 / 唤醒 / 提示词 / 路由与端点（6 页全部接进路由，构建通过）
+- [x] **与 QQ 真实联通**（2026-10-06 实测）：私聊与群聊消息入库 → 会话登记 → 轮次 done →
+      出站 `status=sent confirmed=1`（平台回执确认），防抖合并生效（4 条合成一轮）
 - [ ] 表情与媒体、存储、日志
 - [ ] 服务端事件推送（SSE）替代轮询
 - [ ] 部署：多阶段 Dockerfile（构建前端 → 运行服务）+ compose 接线 + Caddy 反代验证
+
+**QQ 链路排障记（都写进了代码注释，因为每一条都花了时间）**
+- **轮次刻意不做出站**：出站动作由**模型通过工具**产出，发送归 outbox 消费者。
+  直接后果是"只返回文本的驱动永远不会产生回复"——联调时现场表现为"出站队列是空的"。
+  所以 fake 驱动必须自己把回执写进 outbox。
+- 动作名是 **`send_private_msg`**，不是 `send_msg`。测试只回执后者时，
+  回复明明发出去了却卡在 `status='sending'`，看起来像发送失败，其实是没人回执。
+- **`processed` 从来没人置 1**（只有 INSERT 写 0），而它是面板"待处理入站"的唯一来源 ⇒
+  该数字只增不减（用户实测看到 7 条）。一个永远只增的计数器比没有更糟。
+- NapCat 的适配器**只在登录成功那一刻初始化**：容器重启不会重新加载 OneBot 配置，
+  所以"配置写对了却一直不生效"是正常的——重新登录即可。
+- NapCat 鉴权：`sha256(token + ".napcat")` → `POST /api/auth/login` → Bearer JWT。
+- `internal: true` 的 Docker 网络**发布端口无效**（见上文）。
 
 **验收标准**
 - [x] `pnpm -F @forlife/admin-ui build` 通过；根 `pnpm typecheck` 干净（前端包用独立 tsconfig 排除）
