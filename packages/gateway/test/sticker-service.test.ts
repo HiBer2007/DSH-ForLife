@@ -8,7 +8,7 @@
  * 第二条是**省钱主线在服务层的表现**：同一张图第二次入库，`calledModel` 必须是 false。
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -100,7 +100,15 @@ test('send：按 query 检索并发送，出站行的 kind 与 segments 正确',
       sha256: 'own-1',
       mime: 'image/png',
       sizeBytes: 10,
-      storagePath: '/s/own1.png',
+      // ★ 写一个**真实文件**（不再用假路径）——
+      // 发送时要把内容读成 base64://，假路径会让它读不到而失败。
+      // 这正是"测试 fixture 与真实行为脱节"的一个例子：
+      // 以前给假路径也能过，是因为旧实现**根本不读文件**（直接把路径塞进消息）。
+      storagePath: (() => {
+        const p = join(dir, 'own1.png')
+        writeFileSync(p, Buffer.from('89504e470d0a1a0a', 'hex'))
+        return p
+      })(),
       source: 'manual',
       ours: true,
     })
@@ -123,7 +131,14 @@ test('send：按 query 检索并发送，出站行的 kind 与 segments 正确',
     assert.equal(segments[0]?.kind, 'reply', '回复引用要排在第一个（QQ 侧的回复关系由首段决定）')
     assert.equal(segments[0]?.messageId, 'msg-9')
     assert.equal(segments[1]?.kind, 'sticker')
-    assert.equal(segments[1]?.file, '/s/own1.png')
+    // ★ **必须是 base64://，不能是宿主本地路径**（真机抓到的 bug）
+    //
+    // NapCat 跑在 Docker（Linux）里，而文件在 Windows 的 D:\ 上 ——
+    // 给它本地路径会得到「文件处理失败: 识别URL失败」，
+    // 而那条消息会变成面板上一个 failed 积压（原因藏在 NapCat 的报错里）。
+    assert.match(String(segments[1]?.file), /^base64:\/\//, '表情必须以 base64:// 发送')
+    assert.doesNotMatch(String(segments[1]?.file), /^[A-Za-z]:\\/, '**绝不能**是 Windows 本地路径')
+    assert.doesNotMatch(String(segments[1]?.file), /^\//, '**也不能**是 Unix 本地路径（容器里同样没有）')
 
     // 使用统计要更新（LRU 的依据）
     const after = db.prepare('SELECT use_count, last_used_at FROM sticker_assets WHERE id = ?').get(asset.id) as {

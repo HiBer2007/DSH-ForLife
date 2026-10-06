@@ -218,6 +218,39 @@ function registerWakeBridge(
     return
   }
 
+  // ★ **必须用 inject 延迟获取，不能用 ctx.get()**
+  //
+  // 实测（2026-10-06 真机）：`ctx.get('webServer')` 在 forlife-web profile 里
+  // 返回 `undefined` ⇒ 端点从未挂载 ⇒ gateway 发唤醒得到 **HTTP 405**。
+  //
+  // 原因是 `ctx.get()` **只能拿到"已经加载好"的服务**，而 webServer
+  // 在插件 `apply()` 执行时还没就绪。本文件头部早就写着这条策略：
+  // 「核心服务用 inject 等待；**可选服务用 ctx.inject([...], cb) 延迟获取**」。
+  //
+  // 这个坑很隐蔽：fail-closed 的实现在日志里只留一行警告，
+  // 而那一行是**中文**的 —— 在本机（GBK 控制台 + UTF-8 日志）会变成乱码，
+  // 中文 grep 一条都匹配不上。我因此连续两轮以为"日志没出现"。
+  if (ctx.inject === undefined) {
+    log('⚠️ 宿主没有 ctx.inject：唤醒桥端点未挂载（无法延迟获取 webServer）。')
+    return
+  }
+  ctx.inject(['webServer', 'sessionController', 'sessions', 'agents'], (ready) => {
+    mountWakeEndpoint(ready, secret, disposers, log)
+  })
+}
+
+/**
+ * 真正挂载端点（在 `inject` 回调里跑 —— 那时服务才就绪）。
+ *
+ * 从 `registerWakeBridge` 拆出来是因为 `inject` 是**回调式**的：
+ * 挂载必须发生在回调里，而不是 `apply()` 的同步流程里。
+ */
+function mountWakeEndpoint(
+  ctx: ContextLike,
+  secret: string,
+  disposers: (() => void | Promise<void>)[],
+  log: (message: string) => void,
+): void {
   const webServer = ctx.get('webServer') as
     | { register(route: unknown): () => void }
     | undefined

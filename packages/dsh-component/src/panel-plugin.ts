@@ -19,6 +19,7 @@
  * @module forlife-memory/panel
  */
 import { registerPanelRoutes, type FetchRegistryLike } from './api.ts'
+import { registerWakeRoute } from './wake-route.ts'
 import { whenRuntimeReady } from './index.ts'
 
 /** Cordis 插件名。 */
@@ -32,7 +33,9 @@ export const inject = ['connection']
  *
  * @param ctx - 宿主上下文（此时 `ctx.connection` 已可合法访问）。
  */
-export function apply(ctx: { readonly connection?: { readonly fetch?: FetchRegistryLike } }): void {
+export function apply(ctx: {
+  readonly connection?: { readonly fetch?: FetchRegistryLike }
+}): (() => void) | void {
   const registry = ctx.connection?.fetch
   if (registry === undefined) {
     console.warn('[forlife] connection 服务已就绪但没有 fetch 注册表：面板接口未注册')
@@ -40,10 +43,55 @@ export function apply(ctx: { readonly connection?: { readonly fetch?: FetchRegis
   }
   // 主插件与面板插件谁先 apply 由服务依赖决定，顺序不保证 ⇒ 等运行时就绪再注册
   let disposeRoutes: (() => Promise<void>) | undefined
+  let disposeWake: (() => Promise<void>) | undefined
   const disposeWait = whenRuntimeReady((runtime) => {
     disposeRoutes = registerPanelRoutes(registry, runtime)
+
+    // 唤醒桥端点（PLAN 阶段 8）。**注册在同一条已验证可用的路径上** ——
+    // ctx.inject 运行时回调在这个控制器里静默不触发（见文件头第 14 行），
+    // 而本行是"独立插件行 + inject: ['connection']"，那条路是通的。
+    disposeWake = registerWakeRoute(registry, {
+      secret: process.env.FORLIFE_WAKE_BRIDGE_SECRET,
+      log: (m) => { console.log(`[forlife] ${m}`) },
+      host: {
+        // 冷会话会被 resume —— 这是"给一个很久没说话的会话安排唤醒"能工作的前提
+        resolveAgent: async (sessionId: string) => {
+          const sc = (ctx as { sessionController?: { resolveAgent(id: string): Promise<unknown> } }).sessionController
+          if (sc === undefined) return undefined
+          const resolved = (await sc.resolveAgent(sessionId)) as
+            | { agent?: { status?: string; followup?: (m: unknown) => void; session?: unknown } }
+            | undefined
+          const agent = resolved?.agent
+          if (agent === undefined || typeof agent.followup !== 'function') return undefined
+          return {
+            agent: {
+              status: String(agent.status ?? 'idle'),
+              followup: agent.followup.bind(agent),
+              session: agent.session,
+            },
+          }
+        },
+        flush: async (session: unknown) => {
+          const ss = (ctx as { sessions?: { flush(s: unknown): Promise<boolean> } }).sessions
+          return ss === undefined ? false : ss.flush(session)
+        },
+        // **构造一条"不是用户发的"消息** —— sourceKind 由调用方给。
+        // 绝不用 sessionController.prompt()：它把 source 硬编码成 {kind:'user'}。
+        createMessage: (input) => ({
+          text: input.text,
+          source: { kind: input.sourceKind, summary: input.summary },
+        }),
+        withoutInitiator: async (fn) => {
+          const ag = (ctx as { agents?: { withoutInitiator<T>(f: () => Promise<T>): Promise<T> } }).agents
+          return ag === undefined ? fn() : ag.withoutInitiator(fn)
+        },
+      },
+    })
     console.log('[forlife] 已注册面板接口 /api/forlife/{state,entries,compaction,spills,health}')
   })
   // 反注册（宿主卸载本行时）
-  return void disposeWait
+  return (): void => {
+    void disposeWait()
+    if (disposeWake !== undefined) void disposeWake()
+  }
 }

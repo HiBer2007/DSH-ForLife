@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 /**
  * 表情服务：把「入库 → 描述 → 检索 → 发送」串成一条可用的链。
  *
@@ -153,6 +154,30 @@ const defaultFetcher: StickerFetcher = async (url) => {
   return { ok: true, mime, bytes }
 }
 /** 创建表情服务。 */
+/**
+ * 把表情文件读成 OneBot 的 `base64://` 形式。
+ *
+ * **为什么不能直接给本地路径**：NapCat 跑在 Docker（Linux）里，
+ * 而文件在 Windows 的 `D:\` 上 —— 容器里没有那个盘。
+ * 真机报错是 `文件处理失败: 识别URL失败`（因为 OneBot 的 `file` 字段
+ * 接受 URL / `base64://` / 容器内路径，唯独不接受宿主机路径）。
+ *
+ * **为什么用 base64 而不是 URL**：URL 要求 NapCat 能访问到那个地址
+ * （要暴露文件服务 + 容器能路由到宿主，因部署而异）；
+ * `base64://` 把内容直接放进消息体，**不依赖任何网络可达性**。
+ *
+ * 读不到时**抛出**（由调用方转成明确失败）—— 退化成路径等于把原 bug 留下。
+ */
+function readStickerAsBase64(storagePath: string, log: (m: string) => void): string {
+  try {
+    const bytes = readFileSync(storagePath)
+    return `base64://${bytes.toString('base64')}`
+  } catch (error) {
+    log(`表情文件读不到（${storagePath}）：${String(error).slice(0, 120)}`)
+    throw new Error(`表情文件读不到：${String(error).slice(0, 120)}`)
+  }
+}
+
 export function createStickerService(options: StickerServiceOptions): StickerService {
   const { db } = options
   const log = options.log ?? ((): void => {})
@@ -302,7 +327,7 @@ export function createStickerService(options: StickerServiceOptions): StickerSer
       const segments: Record<string, unknown>[] = []
       // 回复引用要排在前面：QQ 侧的回复关系由第一个段决定
       if (input.replyTo !== undefined && input.replyTo !== '') segments.push({ kind: 'reply', messageId: input.replyTo })
-      segments.push({ kind: 'sticker', file: asset.storage_path })
+      segments.push({ kind: 'sticker', file: readStickerAsBase64(asset.storage_path, log) })
 
       const outboundId = enqueueOutbound(db, {
         conversationKey: input.to,
