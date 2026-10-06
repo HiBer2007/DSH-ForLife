@@ -10,6 +10,8 @@
  * 所以顺序是：计数 → 事务时间线 → 决策日志。筛选只做"相位"：
  * 排查时人总是从"哪一次中止了 / 哪一次没跑完"进手，而不是先搜关键词。
  */
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
 import { computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
@@ -110,6 +112,30 @@ const PHASES = [
   { value: 'started', label: '未完成' },
 ] as const
 const phaseFilter = ref<(typeof PHASES)[number]['value']>('all')
+
+/**
+ * 运行表的右键菜单。
+ *
+ * 压缩运行是**不可逆的历史**（它记录了哪些中期条目被合并成了哪条长期记忆），
+ * 所以菜单里给的是"看/复制"，**不给删除** —— 删掉排障线索得不偿失。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+
+function runMenuItems(run: Record<string, unknown>): ContextMenuItem[] {
+  const id = String(run["id"] ?? "")
+  const phase = String(run["phase"] ?? "")
+  return [
+    { key: "copyId", label: "复制运行 id", hint: phase, run: () => void navigator.clipboard?.writeText(id) },
+    {
+      key: "copySummary",
+      label: "复制这一行的摘要",
+      run: () =>
+        void navigator.clipboard?.writeText(
+          Object.entries(run).map(([k, v]) => `${k}=${String(v)}`).join(" "),
+        ),
+    },
+  ]
+}
 
 const runRows = computed<readonly CompactionRunView[]>(() => {
   const wanted = phaseFilter.value
@@ -239,7 +265,13 @@ const logColumns: TableColumn<Record<string, unknown>>[] = [
               </tr>
             </thead>
             <tbody>
-              <tr v-for="run in runRows" :key="run.id">
+              <tr
+                v-for="run in runRows"
+                :key="run.id"
+                class="run-row"
+                @contextmenu="onContextMenu($event, runMenuItems(run), run)"
+                v-on="touchHandlers(runMenuItems(run), run)"
+              >
                 <td data-label="相位">
                   <StatusBadge :tone="phaseTone(run.phase)" dot>{{ phaseLabel(run.phase) }}</StatusBadge>
                 </td>
@@ -266,6 +298,7 @@ const logColumns: TableColumn<Record<string, unknown>>[] = [
       </template>
     </AsyncSection>
   </div>
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
