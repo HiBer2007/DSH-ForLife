@@ -32,6 +32,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: '对话',
     items: [
       { path: '/conversations', title: '会话与队列', icon: 'chat' },
+      { path: '/takeover', title: '接管台', icon: 'chat' },
       { path: '/napcat', title: 'NapCat', icon: 'external' },
       { path: '/wake', title: '唤醒与自唤醒', icon: 'routing' },
     ],
@@ -74,6 +75,7 @@ const routes: readonly RouteRecordRaw[] = [
   { path: '/routing', name: 'routing', component: () => import('./views/RoutingView.vue'), meta: { title: '路由与端点' } },
   { path: '/compaction', name: 'compaction', component: () => import('./views/CompactionView.vue'), meta: { title: '压缩日志' } },
   { path: '/prompts', name: 'prompts', component: () => import('./views/PromptsView.vue'), meta: { title: '提示词' } },
+  { path: '/takeover', name: 'takeover', component: () => import('./views/TakeoverView.vue'), meta: { title: '接管台' } },
   { path: '/napcat', name: 'napcat', component: () => import('./views/NapcatView.vue'), meta: { title: 'NapCat' } },
   { path: '/media', name: 'media', component: () => import('./views/ComingSoonView.vue'), meta: { title: '表情与媒体' } },
   { path: '/storage', name: 'storage', component: () => import('./views/ComingSoonView.vue'), meta: { title: '存储与迁移' } },
