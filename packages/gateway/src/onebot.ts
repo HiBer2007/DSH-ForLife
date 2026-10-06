@@ -52,6 +52,15 @@ export interface OneBotTransportOptions {
   readonly actionTimeoutMs?: number
   /** 日志。 */
   readonly log?: (message: string) => void
+  /**
+   * 连接状态变化时的观察者回调（可选）。
+   *
+   * 给唤醒引擎用：QQ 掉线/恢复要能转成 system 触发。
+   * **它是观察者，不是链路的一部分** —— 抛异常会被吞掉，不影响连接处理。
+   */
+  readonly onConnectionState?:
+    | ((connected: boolean, detail?: string) => void)
+    | undefined
 }
 
 /** 待响应的动作调用。 */
@@ -67,7 +76,7 @@ interface PendingAction {
  */
 export class OneBotTransport implements QqTransport {
   private readonly options: Required<Pick<OneBotTransportOptions, 'port' | 'host' | 'path' | 'actionTimeoutMs'>> &
-    Pick<OneBotTransportOptions, 'accessToken'>
+    Pick<OneBotTransportOptions, 'accessToken' | 'onConnectionState'>
   private readonly log: (message: string) => void
   private server: WebSocketServer | undefined
   private socket: WebSocket | undefined
@@ -125,6 +134,7 @@ export class OneBotTransport implements QqTransport {
     this.state.since = new Date().toISOString()
     delete this.state.lastError
     this.log('QQ 端已连接')
+    this.notifyConnection(true)
 
     socket.on('message', (data) => {
       try {
@@ -139,6 +149,7 @@ export class OneBotTransport implements QqTransport {
         this.socket = undefined
         this.state.connected = false
         this.log('QQ 端断开')
+    this.notifyConnection(false, 'socket closed')
       }
       // 断开时把挂起的动作全部失败掉，避免调用方永久等待
       for (const [echo, pending] of this.pending) {
@@ -154,6 +165,23 @@ export class OneBotTransport implements QqTransport {
   }
 
   /** 处理一帧（事件或动作响应）。 */
+  /**
+   * 通知连接状态变化。
+   *
+   * **吞掉观察者的异常** —— 它是观察者，不是链路的一部分。
+   * 让"上报断线"的失败带崩"真正的断线处理"（挂起动作不会被失败掉、
+   * 调用方永久等待）是最不划算的一种耦合。
+   */
+  private notifyConnection(connected: boolean, detail?: string): void {
+    const callback = this.options.onConnectionState
+    if (callback === undefined) return
+    try {
+      callback(connected, detail)
+    } catch (error) {
+      this.log(`连接状态观察者抛异常（已忽略）：${String(error)}`)
+    }
+  }
+
   private handleFrame(text: string): void {
     const payload: unknown = JSON.parse(text)
     if (typeof payload !== 'object' || payload === null) return
