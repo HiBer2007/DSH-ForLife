@@ -15,6 +15,9 @@
  *
  * @module forlife-memory
  */
+import { createHash, randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { resolveInWorkspace } from '@forlife/gateway'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
@@ -150,7 +153,45 @@ function wakeToolHost(runtime: MemoryRuntime): WakeToolHost {
       updateWakeTrigger(runtime.db, triggerId, { nextFireAt: new Date().toISOString() })
       return { decision: "fired", reason: "已请求立刻执行（gateway 侧下一次 tick 处理，≤1 秒）" }
     },
-    // registerProgram 暂不提供 ⇒ register_watcher 会**明确拒绝**（不静默成功）
+    // **登记监视程序**：写一条 wake_programs 行（含**登记时**算出的脚本指纹），
+    // gateway 的运行层 tick 会捡起来跑。
+    // 指纹在**登记这一刻**算 —— 那是"认可的是哪一版"的唯一凭据。
+    registerProgram: (input) => {
+      const root = process.env.FORLIFE_WORKSPACE_ROOT
+      if (root === undefined || root === "") {
+        return { ok: false, reason: "未配置 FORLIFE_WORKSPACE_ROOT，无法登记监视程序（路径没有沙箱根可比）" }
+      }
+      const resolved = resolveInWorkspace(root, input.path)
+      if (!resolved.ok) return { ok: false, reason: `路径不合法：${resolved.reason}` }
+
+      let sha256: string
+      try {
+        sha256 = createHash("sha256").update(readFileSync(resolved.absolutePath)).digest("hex")
+      } catch (error) {
+        // 登记一个不存在的路径，会在第一次 tick 时才失败 ——
+        // 而那时模型已经以为"监视在跑了"
+        return { ok: false, reason: `读不到脚本（${input.path}）：${String(error).slice(0, 120)}` }
+      }
+
+      const now = new Date().toISOString()
+      const id = `wp_${randomUUID()}`
+      try {
+        runtime.db
+          .prepare(
+            `INSERT INTO wake_programs (id, name, contract, path, sha256, enabled, status, restart_count, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 1, 'stopped', 0, ?, ?)`,
+          )
+          .run(id, input.name, input.contract, input.path, sha256, now, now)
+      } catch (error) {
+        // 重名（name 上有 UNIQUE）会走到这里 —— 说清楚，而不是笼统的"失败了"
+        const message = String(error)
+        if (/UNIQUE|constraint/i.test(message)) {
+          return { ok: false, reason: `已经有一个叫「${input.name}」的监视程序（名字要唯一）` }
+        }
+        return { ok: false, reason: `登记失败：${message.slice(0, 160)}` }
+      }
+      return { ok: true, reason: `已登记（指纹 ${sha256.slice(0, 12)}…）` }
+    },
   }
 }
 

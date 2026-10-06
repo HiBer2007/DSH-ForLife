@@ -131,3 +131,8 @@ export { createPortService } from './port-service.ts'
 export type { PortService } from './port-service.ts'
 export { buildTcpRoute, caddyTcpRouteId, tcpServerName, TCP_SERVER_NAME } from './caddy-tcp.ts'
 export type { TcpRouteInput } from './caddy-tcp.ts'
+
+// ── 工作区沙箱（PLAN 阶段 7）──────────────────────────────────────────
+// 插件侧登记监视程序时也要用：路径校验必须在**两边都做**（两边都能被绕过）。
+export { isInside, resolveInWorkspace } from './workspace.ts'
+export type { WorkspaceCheck, WorkspaceOptions } from './workspace.ts'
