@@ -19,7 +19,9 @@
  * - iframe 的内容由 NapCat 自己的 token 保护（token 只发给已登录的会话）；
  * - CSP 的 `frame-src` 由服务端按**当前主机名 + NapCat 端口**精确放行，不是放开整个 `http:`。
  */
-import { computed } from 'vue'
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
+import { ref, computed } from 'vue'
 
 import { api } from '../api/client.ts'
 import AppIcon from '../components/AppIcon.vue'
@@ -38,6 +40,28 @@ interface NapcatInfo {
 const state = useAsyncData<NapcatInfo>(() => api.get<NapcatInfo>('/napcat'))
 
 /** 用当前访问地址的主机名 + 服务端给的端口拼出 WebUI 地址。 */
+/**
+ * 重新加载内嵌的 WebUI。
+ *
+ * 用**换 key** 的方式强制 iframe 重建 —— 直接改 src 有时不会重新加载
+ *（同源且路径没变时浏览器会复用现有文档），表现为"点了没反应"。
+ */
+const frameKey = ref(0)
+function reloadFrame(): void {
+  frameKey.value += 1
+}
+
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+
+function napcatMenuItems(): ContextMenuItem[] {
+  const url = webuiUrl.value
+  return [
+    { key: "reload", label: "重新加载内嵌页", hint: "登录态不会丢", run: () => reloadFrame() },
+    { key: "open", label: "在新窗口打开", run: () => void window.open(url, "_blank", "noopener,noreferrer") },
+    { key: "copy", label: "复制 WebUI 地址", run: () => void navigator.clipboard?.writeText(url) },
+  ]
+}
+
 const webuiUrl = computed(() => {
   const info = state.data.value
   if (info === undefined) return ''
@@ -75,10 +99,17 @@ const connectionText = computed(() => {
           </template>
 
           <div class="bar">
-            <a class="link" :href="webuiUrl" target="_blank" rel="noopener noreferrer">
-              <AppIcon name="external" :size="14" />
-              <span>在新标签页打开</span>
-            </a>
+            <span
+              class="napcat-tools"
+              @contextmenu="onContextMenu($event, napcatMenuItems())"
+              v-on="touchHandlers(napcatMenuItems())"
+            >
+              <a class="link" :href="webuiUrl" target="_blank" rel="noopener noreferrer">
+                <AppIcon name="external" :size="14" />
+                <span>在新标签页打开</span>
+              </a>
+              <button type="button" class="link" @click="reloadFrame">重新加载</button>
+            </span>
             <span class="muted mono">{{ webuiUrl }}</span>
           </div>
 
@@ -91,7 +122,7 @@ const connectionText = computed(() => {
 
         <PanelCard title="登录与网络配置" subtitle="嵌的是 NapCat 官方 WebUI，操作与直接打开它完全一致">
           <div class="frame-wrap">
-            <iframe
+            <iframe :key="frameKey"
               :src="webuiUrl"
               title="NapCat WebUI"
               referrerpolicy="no-referrer"
@@ -106,6 +137,7 @@ const connectionText = computed(() => {
       </template>
     </AsyncSection>
   </div>
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
