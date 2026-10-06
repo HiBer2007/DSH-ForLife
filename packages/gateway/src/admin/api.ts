@@ -33,6 +33,7 @@ import {
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
+import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
 import { enqueueOutbound } from '../outbox.ts'
@@ -475,6 +476,37 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const limit = Number(url.searchParams.get('limit') ?? '200')
         const lines = Number.isFinite(since) && since > 0 ? buffer.since(since, limit) : buffer.tail(limit)
         json(res, 200, { lines, sequence: buffer.sequence, size: buffer.size, capacity: buffer.capacity })
+        return true
+      }
+
+      // ── 表情库 ──────────────────────────────────────────────────────
+      if (route === '/stickers' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryStickers(db))
+        return true
+      }
+
+      // 图片字节。**只按 id 取库里登记过的路径** ——
+      // 若允许调用方传路径，这个接口就是"按路径读服务器任意文件"的洞。
+      if (route === '/sticker-file' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const id = url.searchParams.get('id') ?? ''
+        const found = readStickerBytes(db, id)
+        if (!found.ok) {
+          json(res, 404, { error: found.reason })
+          return true
+        }
+        res.writeHead(200, {
+          'content-type': found.mime,
+          'content-length': found.bytes.length,
+          // 内容按 sha256 命名 ⇒ 同一个 id 的字节不会变，可以长缓存；
+          // 但必须是 private（这是登录后才能看的东西，不能被共享缓存留存）
+          'cache-control': 'private, max-age=86400',
+          'x-content-type-options': 'nosniff',
+        })
+        res.end(found.bytes)
         return true
       }
 

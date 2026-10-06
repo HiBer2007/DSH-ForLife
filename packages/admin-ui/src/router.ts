@@ -54,6 +54,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   {
     label: '资源',
     items: [
+      { path: '/stickers', title: '表情库', icon: 'media' },
       { path: '/media', title: '表情与媒体', icon: 'media' },
       { path: '/storage', title: '存储与迁移', icon: 'storage' },
     ],
@@ -77,6 +78,7 @@ const routes: readonly RouteRecordRaw[] = [
   { path: '/prompts', name: 'prompts', component: () => import('./views/PromptsView.vue'), meta: { title: '提示词' } },
   { path: '/takeover', name: 'takeover', component: () => import('./views/TakeoverView.vue'), meta: { title: '接管台' } },
   { path: '/napcat', name: 'napcat', component: () => import('./views/NapcatView.vue'), meta: { title: 'NapCat' } },
+  { path: '/stickers', name: 'stickers', component: () => import('./views/StickersView.vue'), meta: { title: '表情库' } },
   { path: '/media', name: 'media', component: () => import('./views/MediaView.vue'), meta: { title: '表情与媒体' } },
   { path: '/storage', name: 'storage', component: () => import('./views/StorageView.vue'), meta: { title: '存储与迁移' } },
   { path: '/logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { title: '实时日志' } },
