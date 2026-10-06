@@ -1224,7 +1224,7 @@ DSH/gateway 停机期间错过的触发，按触发器策略处理：`skip`（�
 
 > **本机现实提醒**（易踩坑）：`dsh-tui` 把 host 层一大批 row 标了 `disabled: true`（`tool-jobs`/`tool-goal`/`tool-ralph`/`tool-bash`/`tool-pwsh`/`tool-subagent`…）**改由 agent preset 接管** ⇒ 判断"有没有某能力"**必须看 preset，不能只看 host patch**。Windows 上沙箱实际是 `danger-full-access`，且持久 shell 组（`dsh-terminal*`/`tool-bash-persistent`）被 preset 关掉 ⇒ PTY 路线在本机不可用。
 
-#### 2.14.1 唤醒与自唤醒页的交互要求（用户 2026-10-06 新增）
+#### 2.14.9 唤醒与自唤醒页的交互要求（用户 2026-10-06 新增）
 
 现状问题（用户实测指出）：
 - **没有手动更改设置的入口**：页面上只能看，改不了。
