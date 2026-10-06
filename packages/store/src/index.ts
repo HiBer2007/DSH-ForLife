@@ -10,7 +10,7 @@ export { DEFAULT_DB_FILENAME, SCHEMA_VERSION, backupDatabase, currentVersion, mi
 export type { OpenOptions, OpenedDatabase } from './db.ts'
 export { LATEST_SCHEMA_VERSION, MIGRATIONS } from './migrations.ts'
 export { FLAG_QQ_TAKEOVER, getFlag, setFlag } from './flags.ts'
-export {
+export { markStickerOurs,
   describeStickerOnce,
   evictLearnedStickers,
   findStickerBySha,

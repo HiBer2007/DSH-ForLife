@@ -276,3 +276,30 @@ test('★ 水印闸门：检查本身抛错也拒绝（查不了就不许用）'
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('★ 学来的可以提升为「我们的」（先学来、后收藏是最常见的顺序）', async () => {
+  const { db, dir, service } = setup()
+  try {
+    // ① 先作为「学来的」入库（别人发的图）
+    const learned = await service.add({ bytes: fakeImage(512, 11), mime: 'image/png', source: 'learned', ours: false })
+    assert.equal(learned.status, 'created')
+    const oursAfterLearn = (db.prepare('SELECT ours FROM sticker_assets WHERE id = ?').get(learned.assetId) as { ours: number }).ours
+    assert.equal(oursAfterLearn, 0, '学来的应为 ours=0')
+
+    // 学来的默认发不出去
+    assert.equal(service.send({ to: 'onebot11:1', assetId: learned.assetId }).ok, false)
+
+    // ② 用户明确收藏它 ⇒ 必须能提升
+    const saved = await service.add({ bytes: fakeImage(512, 11), mime: 'image/png', source: 'manual', ours: true })
+    assert.equal(saved.assetId, learned.assetId, '同一张图应复用同一行（指纹去重）')
+    const oursAfterSave = (db.prepare('SELECT ours FROM sticker_assets WHERE id = ?').get(learned.assetId) as { ours: number }).ours
+    assert.equal(oursAfterSave, 1, '收藏后必须提升为 ours=1 —— 否则主流程（把喜欢的图存为表情包）半通')
+
+    // ③ 现在应该发得出去
+    const sent = service.send({ to: 'onebot11:1', assetId: learned.assetId })
+    assert.equal(sent.ok, true, '提升后应能发送，实际：' + sent.reason)
+  } finally {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

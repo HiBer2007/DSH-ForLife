@@ -20,7 +20,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
-import { describeStickerOnce, getStickerAsset, rejectStickerAsset, touchStickerUse, type StickerAssetRow, type StickerSource } from '@forlife/store'
+import { describeStickerOnce, getStickerAsset, markStickerOurs, rejectStickerAsset, touchStickerUse, type StickerAssetRow, type StickerSource } from '@forlife/store'
 
 import { enqueueOutbound } from './outbox.ts'
 import { checkMediaBytes, checkSourceUrl, DEFAULT_MEDIA_WHITELIST, fingerprintOf, ingestSticker, MAX_MEDIA_BYTES, type IngestStickerResult } from './stickers.ts'
@@ -231,6 +231,11 @@ export function createStickerService(options: StickerServiceOptions): StickerSer
       if (ingested.sha256 === undefined || ingested.assetId === undefined) {
         return { status: ingested.status, reason: ingested.reason }
       }
+
+      // 用户明确收藏（ours=true）⇒ **显式提升**。
+      // 不做这一步的话，一张先被学来、后被收藏的图永远发不出去 ——
+      // 而"先学来、后收藏"正是最常见的顺序。
+      if (input.ours === true && ingested.assetId !== undefined) markStickerOurs(db, ingested.assetId)
 
       // 不给描述器 / 显式不要描述 ⇒ 到此为止（检索仍能靠标签工作）
       if (options.describer === undefined || input.describe === false) {

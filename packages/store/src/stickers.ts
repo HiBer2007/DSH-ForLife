@@ -336,3 +336,18 @@ export function evictLearnedStickers(db: DatabaseSync, keep: number): number {
     .run(Math.max(0, Math.floor(keep)))
   return Number(result.changes)
 }
+
+/**
+ * 把一张表情显式标记为「我们自己的」（可主动转发）。
+ *
+ * 为什么需要它：`upsertStickerAsset` 的冲突分支**有意不覆盖 `ours`**
+ * （否则重复入库会把"我们自己的"标记重置掉）。那个设计是对的，
+ * 但它导致没有任何路径能把"学来的"提升为"我们的" ——
+ * 而"先学来、后被用户收藏"是很自然的顺序，卡在这里等于主流程半通。
+ *
+ * 所以提升必须是**显式动作**（用户点了收藏），而不是 upsert 的副作用。
+ */
+export function markStickerOurs(db: DatabaseSync, assetId: string): boolean {
+  const result = db.prepare('UPDATE sticker_assets SET ours = 1 WHERE id = ? AND ours = 0').run(assetId)
+  return Number(result.changes) > 0
+}
