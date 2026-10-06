@@ -401,8 +401,21 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
           conversationKind: kind === 'group' ? 'group' : 'private',
           source: 'admin',
         })
-        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `手动发送到 ${conversationKey}` })
-        json(res, 200, { ok: true, id })
+        // 手动发过消息 ⇒ 这个会话里积压的消息就算"处理过了"。
+        // 不做这一步的话，接管模式下运维回完了消息、面板上却永远显示"待处理 N 条" ——
+        // 那个数字会变成一个没人相信的计数器（正是之前踩过的坑的另一种形态）。
+        const handled = db
+          .prepare('UPDATE qq_inbox SET processed = 1 WHERE conversation_key = ? AND processed = 0')
+          .run(conversationKey)
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `手动发送到 ${conversationKey}；顺带标记 ${String(Number(handled.changes))} 条为已处理`,
+        })
+        json(res, 200, { ok: true, id, handled: Number(handled.changes) })
         return true
       }
 
