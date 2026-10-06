@@ -29,6 +29,7 @@ import { defaultFor } from '@forlife/contracts'
 
 import type { Tier } from './guards.ts'
 import { escalate } from './pipeline.ts'
+import type { ReasoningEffort } from '@forlife/contracts'
 
 /** 角色：档位 + 专用模型（视觉/嵌入/评分器/子代理）。 */
 export type RouteRole = Tier | 'vision' | 'embedding' | 'scorer' | 'subagent'
@@ -44,7 +45,7 @@ export interface RouteEntry {
   readonly provider: string
   readonly model: string
   /** 推理强度（强模型的"想多久"）。 */
-  readonly reasoningEffort?: 'low' | 'medium' | 'high'
+  readonly reasoningEffort?: ReasoningEffort
   /** 关掉的条目不参与选择（但保留在表里，便于回滚）。 */
   readonly enabled?: boolean
   /** 这一条的说明（面板展示"为什么留着它"）。 */
@@ -119,8 +120,8 @@ export function defaultRouteEntries(options: {
 }): readonly RouteEntry[] {
   const entries: RouteEntry[] = [
     { role: 'L1', rank: 0, ...options.l1, reasoningEffort: 'low', note: '闲聊与简单问答' },
-    { role: 'L2', rank: 0, ...options.l2, reasoningEffort: 'medium', note: '一般任务' },
-    { role: 'L3', rank: 0, ...options.l3, reasoningEffort: 'high', note: '复杂任务（架构/长链推理）' },
+    { role: 'L2', rank: 0, ...options.l2, reasoningEffort: 'high', note: '一般任务' },
+    { role: 'L3', rank: 0, ...options.l3, reasoningEffort: 'max', note: '复杂任务（架构/长链推理）' },
   ]
   if (options.vision !== undefined) entries.push({ role: 'vision', rank: 0, ...options.vision, note: '看图（必须声明 image 能力）' })
   if (options.embedding !== undefined) entries.push({ role: 'embedding', rank: 0, ...options.embedding, note: '向量（必须给维度）' })

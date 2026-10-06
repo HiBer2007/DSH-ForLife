@@ -41,3 +41,5 @@ export {
   usableModels,
 } from './opencode-go.ts'
 export type { ModelUsability, OpenCodeModel, OpenCodeProtocol, OpenCodeRoutePlan } from './opencode-go.ts'
+
+export type { ReasoningEffort } from './opencode-go.ts'

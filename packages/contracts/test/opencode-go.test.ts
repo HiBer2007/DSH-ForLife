@@ -79,8 +79,11 @@ test('路由计划：每个角色都有降级链，且 rank 从 0 连续', () =>
   }
 
   // 档位只影响推理强度（既有设计）
-  assert.equal(plan.find((row) => row.role === 'L1')?.reasoningEffort, 'low')
-  assert.equal(plan.find((row) => row.role === 'L3')?.reasoningEffort, 'high')
+  // 整条阶梯都钉住：只测两端的话，中间那档用了**不存在的值**也发现不了
+    // （这次出问题的正是中间档 —— L2 曾用 medium，而 DeepSeek/GLM 都不接受它）
+    assert.equal(plan.find((row) => row.role === 'L1')?.reasoningEffort, 'low')
+    assert.equal(plan.find((row) => row.role === 'L2')?.reasoningEffort, 'high')
+    assert.equal(plan.find((row) => row.role === 'L3')?.reasoningEffort, 'max', '拉满必须是 max')
 })
 
 test('请求头：必须带自己的 UA 与稳定的会话 id', () => {

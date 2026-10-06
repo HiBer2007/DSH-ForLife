@@ -39,6 +39,18 @@ export const OPENCODE_GO_SESSION_HEADER = 'x-opencode-session'
 export const OPENCODE_GO_KEY_ENV = 'FORLIFE_OPENCODE_GO_KEY'
 
 /** 三种协议。 */
+/**
+ * 推理强度。**值域来自各模型官方文档，不是猜的**：
+ *
+ * - `deepseek-v4.1-flash`：`none` `low` `high` `max`（默认 `high`；`none` 关闭思考）
+ * - `glm-5.3-flash`：`low` `high` `max`（**仅这三个，其余输入报错**）
+ * - `mimo-v2.6-flash`：除 `none` 外**行为完全一致**（暂未对强度做区分）
+ *
+ * 注意 **没有 `medium`** —— 它在 DeepSeek 与 GLM 上都不合法。
+ * 为什么这件事不能靠实测判断：模型为了兼容性会**接受不存在的挡位**并静默忽略，
+ * 所以 HTTP 200 不能作为"该挡位存在"的证据（这正是踩过的坑）。
+ */
+export type ReasoningEffort = 'none' | 'low' | 'high' | 'max'
 export type OpenCodeProtocol = 'chat' | 'responses' | 'messages'
 
 /** 一个模型的登记项。 */
@@ -182,7 +194,7 @@ export interface OpenCodeRoutePlan {
   readonly role: string
   readonly rank: number
   readonly model: string
-  readonly reasoningEffort: 'low' | 'medium' | 'high' | null
+  readonly reasoningEffort: ReasoningEffort | null
   readonly note: string
 }
 
@@ -212,11 +224,11 @@ export function planOpenCodeGoRoutes(now: Date = new Date()): readonly OpenCodeR
   add('L1', 1, 'glm-5.3-flash', 'low', '降级候选：额度高，抖动时顶上')
   add('L1', 2, 'space-bunny-free', 'low', '最后兜底：限时免费，随时可能消失')
 
-  add('L2', 0, 'deepseek-v4.1-flash', 'medium', '一般任务：授权清单里综合最强')
-  add('L2', 1, 'glm-5.3-flash', 'medium', '降级候选')
+  add('L2', 0, 'deepseek-v4.1-flash', 'high', '一般任务：授权清单里综合最强')
+  add('L2', 1, 'glm-5.3-flash', 'high', '降级候选')
 
-  add('L3', 0, 'deepseek-v4.1-flash', 'high', '复杂任务：同模型但拉满推理强度')
-  add('L3', 1, 'glm-5.3-flash', 'high', '降级候选')
+  add('L3', 0, 'deepseek-v4.1-flash', 'max', '复杂任务：同模型但拉满推理强度')
+  add('L3', 1, 'glm-5.3-flash', 'max', '降级候选')
 
   add('scorer', 0, 'glm-5.3-flash', 'low', '复杂度评分器：高频小请求，要便宜且快')
   add('scorer', 1, 'mimo-v2.6-flash', 'low', '降级候选')

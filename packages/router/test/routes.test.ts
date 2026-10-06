@@ -84,7 +84,8 @@ test('档位映射：reasoningEffort 按档位递增（弱模型不需要想很�
     subagent: { provider: 'p', model: 'sub' },
   })
   assert.equal(entries.find((e) => e.role === 'L1')?.reasoningEffort, 'low')
-  assert.equal(entries.find((e) => e.role === 'L3')?.reasoningEffort, 'high')
+    assert.equal(entries.find((e) => e.role === 'L2')?.reasoningEffort, 'high')
+    assert.equal(entries.find((e) => e.role === 'L3')?.reasoningEffort, 'max', '拉满必须是 max')
   assert.equal(entries.length, 7, '七个角色都要有默认映射')
   const roles = new Set(entries.map((e) => e.role))
   for (const role of ROUTE_ROLES) assert.ok(roles.has(role), `缺少 ${role} 的默认路由`)

@@ -1,3 +1,4 @@
+import type { ReasoningEffort } from '@forlife/contracts'
 /**
  * 模型供应子系统（EXECUTION_PLAN §2.13）—— 统一抽象、加速后端多态、选型与校验。
  *
@@ -45,7 +46,7 @@ export interface ModelCapability {
   /** 上下文长度。 */
   readonly contextLength: number
   /** 推理强度合法集合（不含则视为"不支持推理强度"）。 */
-  readonly reasoningEfforts?: readonly ('low' | 'medium' | 'high')[]
+  readonly reasoningEfforts?: readonly ReasoningEffort[]
   /** 嵌入维度（**嵌入模型必须给**）。 */
   readonly embeddingDimensions?: number
 }

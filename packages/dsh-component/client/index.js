@@ -1286,7 +1286,7 @@ window.__ModuleLoader__.load({
           node(
             'select',
             { style: styles.input, value: state.effort || '', onChange: (event) => set({ effort: event.target.value }) },
-            ['', 'low', 'medium', 'high'].map((option) => node('option', { value: option }, [option === '' ? '（不指定）' : option])),
+            ['', 'none', 'low', 'high', 'max'].map((option) => node('option', { value: option }, [option === '' ? '（不指定）' : option])),
           ),
         ),
         node('div', { style: styles.row }, [

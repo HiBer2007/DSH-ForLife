@@ -34,6 +34,7 @@ import {
   OPENCODE_GO_MODELS,
   OPENCODE_GO_PROVIDER,
   planOpenCodeGoRoutes,
+  type ReasoningEffort,
   usableModels,
 } from '@forlife/contracts'
 import { listModelRoutes, upsertEndpoint, upsertModelRoute } from '@forlife/store'
@@ -70,10 +71,10 @@ export function seedDefaultRoutes(db: DatabaseSync, input: SeedRoutesInput): See
   }
 
   // 档位只决定推理强度：低档不想太久、高档多想一会儿
-  const tiers: readonly { role: string; effort: 'low' | 'medium' | 'high'; note: string }[] = [
+  const tiers: readonly { role: string; effort: ReasoningEffort; note: string }[] = [
     { role: 'L1', effort: 'low', note: '闲聊与简单问答（内置播种）' },
-    { role: 'L2', effort: 'medium', note: '一般任务（内置播种）' },
-    { role: 'L3', effort: 'high', note: '复杂任务：架构/长链推理（内置播种）' },
+    { role: 'L2', effort: 'high', note: '一般任务（内置播种）' },
+    { role: 'L3', effort: 'max', note: '复杂任务：架构/长链推理（内置播种）' },
   ]
   for (const tier of tiers) {
     upsertModelRoute(db, {

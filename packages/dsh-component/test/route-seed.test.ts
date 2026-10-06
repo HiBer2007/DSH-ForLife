@@ -42,7 +42,8 @@ test('播种：空表时补 L1/L2/L3/scorer —— 档位只决定推理强度',
   const rows = listModelRoutes(db)
   assert.deepEqual(rows.map((r) => r.role).sort(), ['L1', 'L2', 'L3', 'scorer'])
   assert.equal(rows.find((r) => r.role === 'L1')?.reasoning_effort, 'low')
-  assert.equal(rows.find((r) => r.role === 'L3')?.reasoning_effort, 'high')
+    assert.equal(rows.find((r) => r.role === 'L2')?.reasoning_effort, 'high')
+    assert.equal(rows.find((r) => r.role === 'L3')?.reasoning_effort, 'max', '拉满必须是 max')
   assert.match(String(rows.find((r) => r.role === 'scorer')?.note), /默认复用主模型/)
 })
 
