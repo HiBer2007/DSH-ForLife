@@ -37,6 +37,7 @@ import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { queryWakes } from './queries-wakes.ts'
+import { createExternalWakeSource } from '../wake-external-source.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
 import { backupNow } from './storage-write.ts'
 import { setState } from '@forlife/store'
@@ -190,6 +191,9 @@ function checkStateChange(req: IncomingMessage): string | undefined {
  */
 export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
   const { db, dbPath, startedAt, log } = options
+
+  // 外部触发源（无状态，建一次即可）
+  const externalSource = createExternalWakeSource({ db })
   const limiter = new LoginRateLimiter()
   const ttlMs = options.sessionTtlMs ?? SESSION_TTL_MS
 
@@ -521,6 +525,29 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 外部触发（**不走管理会话**，按触发器自己的令牌鉴权）────────
+      // 外部系统（CI / 监控 / 传感器）没有管理会话，也不该有 ——
+      // 给它们一个管理会话等于把整个后台交出去。
+      if (route === '/wake-external' && method === 'POST') {
+        const body = await readJsonBody(req)
+        const triggerId = typeof body['id'] === 'string' ? body['id'] : ''
+        const token = typeof body['token'] === 'string' ? body['token'] : ''
+        if (triggerId === '' || token === '') { json(res, 400, { error: 'id 与 token 必填' }); return true }
+
+        const source = externalSource
+        const result = source.fire(triggerId, token, typeof body['payload'] === 'object' && body['payload'] !== null ? (body['payload'] as Record<string, unknown>) : {})
+        // **失败与"不存在"回同一个 404** —— 否则可以拿它枚举 id
+        if (!result.ok) {
+          audit(db, { action: 'api', ok: false, actor: 'external', ip, path, detail: `外部触发被拒（${triggerId.slice(0, 12)}…）` })
+          json(res, 404, { error: '触发器不存在或令牌不正确' })
+          return true
+        }
+        // 审计里记**触发器 id 前缀**而不是令牌
+        audit(db, { action: 'api', ok: true, actor: 'external', ip, path, detail: `外部触发 ${triggerId.slice(0, 12)}…` })
+        json(res, 200, { ok: true, note: result.reason })
         return true
       }
 
