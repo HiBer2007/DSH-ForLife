@@ -43,6 +43,7 @@ import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
+import type { PortService } from '../port-service.ts'
 import { enqueueOutbound } from '../outbox.ts'
 import { queryCompaction, queryMemory } from './queries-memory.ts'
 import { queryConversations, queryWake } from './queries-qq.ts'
@@ -67,6 +68,14 @@ export interface AdminApiOptions {
   readonly napcat?: { readonly webuiPort: number; readonly token?: string | undefined } | undefined
   /** 内存日志缓冲（没给则日志页显示空，不报错）。 */
   readonly logBuffer?: LogBuffer | undefined
+  /** 端口出口（未配置时为 undefined ⇒ 界面显示原因并禁用按钮）。 */
+  readonly ports?:
+    | {
+        readonly service?: PortService | undefined
+        readonly disabledReason?: string | undefined
+        readonly whitelist: readonly { readonly from: number; readonly to: number }[]
+      }
+    | undefined
   /** 会话时长（测试可缩短）。 */
   readonly sessionTtlMs?: number
 }
@@ -511,6 +520,75 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 端口出口：列表 / 发布 / 取消 ───────────────────────────────
+      if (route === '/ports' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const ports = options.ports
+        // **未启用回 200**（不是 4xx）：没配 Caddy 是部署状态、不是请求错误。
+        // 回 4xx 会让面板显示成"操作失败"，而用户会反复重试一个不可能成功的操作。
+        json(res, 200, {
+          enabled: ports?.service !== undefined,
+          ...(ports?.disabledReason === undefined ? {} : { disabledReason: ports.disabledReason }),
+          whitelist: ports?.whitelist ?? [],
+          rows: ports?.service?.list() ?? [],
+        })
+        return true
+      }
+
+      if (route === '/port-publish' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const service = options.ports?.service
+        if (service === undefined) {
+          json(res, 400, { error: options.ports?.disabledReason ?? '端口出口未启用' })
+          return true
+        }
+        const body = await readJsonBody(req)
+        const name = typeof body['name'] === 'string' ? body['name'] : ''
+        const targetPort = Number(body['targetPort'])
+        const ttlRaw = body['ttlSeconds']
+        const ttlSeconds = ttlRaw === null || ttlRaw === undefined ? null : Number(ttlRaw)
+
+        const result = await service.publish({
+          name,
+          targetPort,
+          ttlSeconds,
+          approvedBy: `admin:${session.id.slice(0, 8)}`,
+          ...(typeof body['note'] === 'string' ? { note: body['note'] } : {}),
+        })
+        // **被拒的也要审计**："有人试图暴露一个非白名单端口"本身就是需要知道的事
+        audit(db, {
+          action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+          detail: result.ok ? `发布端口 ${name} → ${String(targetPort)}` : `发布端口被拒（${name}/${String(targetPort)}）：${result.reason}`,
+        })
+        json(res, result.ok ? 200 : 400, result.ok ? { ok: true, url: service.urlFor(result.row!) } : { error: result.reason })
+        return true
+      }
+
+      if (route === '/port-unpublish' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const service = options.ports?.service
+        if (service === undefined) {
+          json(res, 400, { error: options.ports?.disabledReason ?? '端口出口未启用' })
+          return true
+        }
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const result = await service.unpublish(id)
+        audit(db, {
+          action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+          detail: result.ok ? `取消端口发布 ${id}` : `取消端口发布失败（${id}）：${result.reason}`,
+        })
+        json(res, result.ok ? 200 : 400, result.ok ? { ok: true } : { error: result.reason })
         return true
       }
 

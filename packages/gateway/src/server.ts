@@ -15,6 +15,8 @@
  *
  * @module @forlife/gateway/server
  */
+import { createPortRuntime } from './port-runtime.ts'
+import type { PortService } from './port-service.ts'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -37,6 +39,19 @@ export interface AdminServerOptions {
   readonly sessionTtlMs?: number
   /** NapCat WebUI 的位置（面板里内嵌它做扫码登录）。 */
   readonly napcat?: { readonly webuiPort: number; readonly token?: string | undefined } | undefined
+    /**
+     * 端口出口（PLAN 阶段 7）。
+     *
+     * 未配置 Caddy 时给 `{ whitelist }`（service 为 undefined）——
+     * 界面据此**禁用按钮并显示原因**，而不是等一次失败去推断。
+     */
+    readonly ports?:
+      | {
+          readonly service?: PortService | undefined
+          readonly disabledReason?: string | undefined
+          readonly whitelist: readonly { readonly from: number; readonly to: number }[]
+        }
+      | undefined
   /**
    * 给了就同时起 QQ 链路（OneBot 反向 WS + 网关 + 轮次）。
    * 不给则只跑管理后台 —— 两种模式都能单独工作，排障时能分清是谁的问题。
@@ -122,6 +137,13 @@ export function createAdminServer(options: AdminServerOptions): {
       const opened = openDatabase({ file: options.dbPath, log })
       const db = opened.db
 
+  // 端口出口（PLAN 阶段 7）。没配 FORLIFE_CADDY_ADMIN / FORLIFE_PUBLIC_HOST 时
+  // service 为 undefined —— 功能**明确禁用**，而不是等一次失败去推断
+  // （"配置失败"会让人去排查 Caddy，而其实是根本没配）。
+  const portRuntime =
+    options.ports ??
+    createPortRuntime({ db, env: process.env, log })
+
       // QQ 链路先起：管理后台要能立刻反映它的真实连接状态（而不是等第一次请求才发现没连上）
       let runtime: RunningGatewayRuntime | undefined
       if (options.onebot !== undefined) {
@@ -155,6 +177,7 @@ export function createAdminServer(options: AdminServerOptions): {
         // 真实连接状态：没有 runtime 时返回 undefined（= 本服务没接管，界面显示"—"而不是"离线"）
         transportConnected: runtime === undefined ? undefined : () => runtime.transport.status().connected,
         ...(options.napcat === undefined ? {} : { napcat: options.napcat }),
+      ports: portRuntime,
         logBuffer,
         ...(options.sessionTtlMs === undefined ? {} : { sessionTtlMs: options.sessionTtlMs }),
       })
@@ -250,6 +273,7 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env): {
 
   // NapCat 的 WebUI 位置：面板里内嵌它做扫码登录。
   // 给了端口就同时放行 CSP 的 frame-src（见 buildCsp）—— 没给则 CSP 保持最严。
+
   const napcatPort = Number(env['FORLIFE_NAPCAT_WEBUI_PORT'] ?? '0')
   const napcatToken = env['FORLIFE_NAPCAT_TOKEN']
   const napcat =
