@@ -2740,6 +2740,23 @@ HTTP 出口靠**路径**分流（`/svc/<name>/`），几十个服务能共用一
 
 **五条验收标准 —— 全部勾上（见上方清单，每条附证据）**
 
+**交付物 4 的九类事件最终状态（6 接 + 3 结构性接不上）**
+
+| 事件 | 状态 | 说明 |
+|---|---|---|
+| `qq.disconnected` / `qq.reconnected` | ✅ 已接 | `transport.onConnectionState` → `observeConnection`（**边沿盯一个状态量**）|
+| `endpoint.unavailable` | ✅ 已接 | `EndpointHealthOptions.onProbeResult`（健康与不健康各一次；**额度用尽也算不可用**）|
+| `disk.high` | ✅ 已接 | `startSystemMonitor`（持续看水位；**取不到使用率不算健康**）|
+| `budget.exceeded` | ✅ 已接 | `WakeEngineOptions.onGateBlocked`（六道闸**早就判了**，只是以前没人往外说）|
+| `compaction.failed` | ✅ 已接 | 插件侧 `onCompactionFailure` → **直接写库**（压缩在插件进程，systemHooks 在 gateway 进程）|
+| `migration.failed` | ⛔ **通道不成立** | 迁移失败时**库本身不可用**，而"标记触发器到点"要写这个库。上报必须走带外（日志/面板/退出码）。**原因写在 `db.ts` 代码里** |
+| `contract.mismatch` | ⛔ 上游未建 | DSH 契约检查（`forlife doctor`）属于**阶段 9/10 的交付物** |
+| `job.failed` | ⛔ 上游未建 | gateway 侧**还没有 job 系统**（DSH 的 `ctx.jobs` 在插件进程里）|
+
+**这三类不是"我漏了"**：钩子全部就绪（上游一就位，各加一行即可），
+但**不能假装已经接上了** —— 所以原因写进**代码注释**（`wake-system-hooks.ts` 与 `db.ts`），
+而不是只留在提交信息里（提交信息不会有人回头读，代码注释会）。
+
 **仍未验的部分（**环境依赖**，不是代码缺口）**
 
 | 缺什么 | 影响哪条 | 为什么不是代码问题 |
