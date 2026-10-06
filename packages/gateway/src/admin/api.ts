@@ -37,6 +37,7 @@ import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
+import { backupNow } from './storage-write.ts'
 import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts'
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
@@ -509,6 +510,26 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 存储：立即备份（**非破坏性**）──────────────────────────────
+      // 为什么加的是备份而不是清理：清理是破坏性动作，该走明确流程（先备份、再确认、可回滚），
+      // 不该是顺手一点的界面按钮 —— 存储页原本「刻意没有按钮」的理由仍然成立。
+      // 但"能看见备份清单、却不能在面板里做一份备份"正是用户抱怨的那类问题，
+      // 而流程第一步就是"先备份"。所以补这个安全动作。
+      if (route === '/backup-now' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const result = backupNow(db, { dbPath })
+        audit(db, {
+          action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+          detail: result.ok ? `立即备份 → ${result.path ?? ''}` : `立即备份失败：${result.reason}`,
+        })
+        if (!result.ok) { json(res, 500, { error: result.reason }); return true }
+        json(res, 200, { ok: true, path: result.path, sizeBytes: result.sizeBytes })
         return true
       }
 

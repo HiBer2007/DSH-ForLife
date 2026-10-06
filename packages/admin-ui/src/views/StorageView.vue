@@ -8,6 +8,8 @@
  * 刻意**没有**"删数据"按钮：清理是破坏性动作，该走明确的运维流程，
  * 不该是一个顺手点下去的界面按钮。
  */
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
 import { computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
@@ -19,6 +21,42 @@ import StatCard from '../components/StatCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format.ts'
+
+/**
+ * 立即备份。
+ *
+ * 这是本页**唯一**的写动作，而且是**非破坏性**的 ——
+ * 破坏性清理仍然留在 scripts/ 里（页面原本"刻意没有按钮"的理由成立：
+ * 清理该走明确流程：先备份、再确认、可回滚）。
+ * 但"能看见备份清单、却做不了备份"是真缺口，而流程第一步就是先备份。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+const backingUp = ref(false)
+const backupError = ref("")
+const backupDone = ref("")
+
+async function backupNow(): Promise<void> {
+  backingUp.value = true
+  backupError.value = ""
+  backupDone.value = ""
+  try {
+    const result = await api.post<{ readonly path?: string }>("/backup-now", {})
+    backupDone.value = result.path ?? "已备份"
+    state.refresh()
+  } catch (error) {
+    // 备份失败必须**明确显示** —— 让人以为备份好了是最危险的失败方式
+    backupError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    backingUp.value = false
+  }
+}
+
+function backupMenuItems(row: Record<string, unknown>): ContextMenuItem[] {
+  const name = String(row["name"] ?? "")
+  return [
+    { key: "copy", label: "复制文件名", run: () => void navigator.clipboard?.writeText(name) },
+  ]
+}
 
 const state = useAsyncData<StorageOverview>(() => api.get<StorageOverview>('/storage'))
 
@@ -119,6 +157,16 @@ const backupColumns: TableColumn<Record<string, unknown>>[] = [
           </PanelCard>
 
           <PanelCard title="备份" subtitle="迁移前的自动备份 —— 最后一道保险，得能看见它在不在">
+          <div class="backup-bar">
+            <button type="button" class="btn primary" :disabled="backingUp" @click="backupNow">
+              {{ backingUp ? "备份中…" : "立即备份" }}
+            </button>
+            <span class="muted cap">
+              非破坏性：用 <span class="mono">VACUUM INTO</span> 生成一份紧凑副本，不动正在用的库。
+            </span>
+          </div>
+          <p v-if="backupError !== ''" class="backup-error">{{ backupError }}</p>
+          <p v-if="backupDone !== ''" class="backup-done">已生成：<span class="mono">{{ backupDone }}</span></p>
             <template #actions>
               <StatusBadge :tone="state.data.value.backups.length > 0 ? 'ok' : 'muted'">
                 {{ state.data.value.backups.length }} 个
@@ -143,6 +191,7 @@ const backupColumns: TableColumn<Record<string, unknown>>[] = [
       </template>
     </AsyncSection>
   </div>
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
@@ -179,5 +228,45 @@ const backupColumns: TableColumn<Record<string, unknown>>[] = [
 .note {
   font-size: var(--t-sm);
   line-height: 1.8;
+}
+
+.backup-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+.backup-bar .cap {
+  font-size: var(--t-xs);
+}
+.btn {
+  min-height: var(--touch-min, 44px);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text);
+  cursor: pointer;
+}
+.btn.primary {
+  border-color: transparent;
+  background: var(--c-brand);
+  color: #fff;
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.backup-error {
+  margin-bottom: var(--s-2);
+  color: var(--c-err, #d9534f);
+  font-size: var(--t-xs);
+}
+.backup-done {
+  margin-bottom: var(--s-2);
+  color: var(--c-ok, #2a9d5c);
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
 }
 </style>
