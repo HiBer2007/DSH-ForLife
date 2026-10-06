@@ -16,6 +16,7 @@ import { api } from '../api/client.ts'
 import type { WakeEventItem, WakeGroup, WakeOverview } from '../api/types-wake.ts'
 import AsyncSection from '../components/AsyncSection.vue'
 import ContextMenu from '../components/ContextMenu.vue'
+import ConversationPanel from '../components/ConversationPanel.vue'
 import DataTable, { type TableColumn } from '../components/DataTable.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatCard from '../components/StatCard.vue'
@@ -33,6 +34,31 @@ import { formatDateTime, formatDuration, formatNumber, formatPercent, formatRela
  *    这样菜单本身就说明了它会对什么生效，不用先去看表格。
  */
 const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+
+/**
+ * 会话区块（子窗口的第二个入口）。
+ *
+ * 独立取一次 /conversations：唤醒规则现在全是全局默认（scope='*'），
+ * 按 scope 列会话会是空的，用户点不到东西。会话列表本身是独立的事实，拿它做入口最可靠。
+ */
+const conversations = useAsyncData<{ readonly sessions: readonly Record<string, unknown>[] }>(() =>
+  api.get<{ readonly sessions: readonly Record<string, unknown>[] }>('/conversations'),
+)
+const conversationRows = computed<Record<string, unknown>[]>(() => [...(conversations.data.value?.sessions ?? [])])
+const openedKey = ref<string | null>(null)
+
+function openConversation(key: string): void {
+  openedKey.value = key
+}
+
+/** 会话的右键/长按菜单（与"详情"按钮调用同一个 openConversation）。 */
+function conversationMenuItems(row: Record<string, unknown>): ContextMenuItem[] {
+  const key = String(row['conversationKey'])
+  return [
+    { key: 'detail', label: '打开详情…', hint: '时区/备注/画像', run: () => openConversation(key) },
+    { key: 'copy', label: '复制会话键', run: () => void navigator.clipboard?.writeText(key) },
+  ]
+}
 
 const editing = ref<Record<string, unknown> | null>(null)
 const saving = ref(false)
@@ -389,6 +415,40 @@ const ruleColumns: TableColumn<Record<string, unknown>>[] = [
           </template>
         </PanelCard>
 
+        <!-- ②.5 会话：全局默认具体作用在谁身上；也是子窗口的第二个入口 -->
+        <PanelCard
+          title="会话"
+          :subtitle="`共 ${formatNumber(conversationRows.length)} 个 · 点「详情」或右键/长按查看该会话的全部信息`"
+        >
+          <p v-if="conversationRows.length === 0" class="rules-empty">
+            还没有会话记录 —— 全局默认规则暂时作用不到任何会话上。
+          </p>
+          <ul v-else class="conv-list">
+            <li
+              v-for="row in conversationRows"
+              :key="String(row['conversationKey'])"
+              class="conv-row"
+              @contextmenu="onContextMenu($event, conversationMenuItems(row), row)"
+              v-on="touchHandlers(conversationMenuItems(row), row)"
+            >
+              <span class="mono conv-key">{{ row['conversationKey'] }}</span>
+              <span class="conv-facts">
+                {{ row['kind'] === 'group' ? '群聊' : '私聊' }} ·
+                {{ formatRelative(String(row['lastMessageAt'] ?? '')) }}
+              </span>
+              <button type="button" class="rule-edit" @click="openConversation(String(row['conversationKey']))">
+                详情
+              </button>
+            </li>
+          </ul>
+          <template #footer>
+            <p class="muted legend">
+              这里的会话**继承**上面那些作用域为 <span class="mono">*</span> 的全局默认；
+              只有在会话子窗口里单独配过，才会出现属于它自己的规则。
+            </p>
+          </template>
+        </PanelCard>
+
         <!-- ③ 留痕：这里才有"为什么没醒"的答案 -->
         <PanelCard
           title="唤醒留痕"
@@ -500,6 +560,9 @@ const ruleColumns: TableColumn<Record<string, unknown>>[] = [
       </div>
 
       <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
+
+    <ConversationPanel :conversation-key="openedKey" @close="openedKey = null" />
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
@@ -862,5 +925,34 @@ const ruleColumns: TableColumn<Record<string, unknown>>[] = [
 .btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.conv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+.conv-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--touch-min, 44px);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  cursor: context-menu;
+}
+.conv-row:hover {
+  background: var(--c-surface-2);
+}
+.conv-key {
+  color: var(--c-text);
+  font-size: var(--t-sm);
+}
+.conv-facts {
+  margin-left: auto;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
 }
 </style>
