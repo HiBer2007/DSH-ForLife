@@ -179,3 +179,33 @@ export {
   setConversationNote,
 } from './conversation-profile.ts'
 export type { ConversationProfileRow } from './conversation-profile.ts'
+
+export {
+  diffPromptLines,
+  estimatePromptTokens,
+  hashPromptText,
+  normalizePromptText,
+  PROMPT_VARIABLES,
+  promptVariable,
+  renderPromptPreview,
+  validatePromptText,
+  VARIABLE_NAME,
+} from './prompt-text.ts'
+export type { PromptDiffLine, PromptRenderResult, PromptValidation, PromptVariableSpec } from './prompt-text.ts'
+
+export {
+  activePrompt,
+  clearPromptOverride,
+  listPromptOverrides,
+  listPromptRevisions,
+  promptEditCount,
+  promptRevisionById,
+  promptStatus,
+  PROMPT_SLUGS,
+  resolvePrompt,
+  rollbackPrompt,
+  savePromptRevision,
+  seedDefaultPrompts,
+  setPromptOverride,
+} from './prompt-store.ts'
+export type { PromptRevision, PromptSlug, SavePromptResult } from './prompt-store.ts'

@@ -198,7 +198,11 @@ importers:
         specifier: workspace:*
         version: link:../store
 
-  packages/store: {}
+  packages/store:
+    dependencies:
+      '@forlife/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   profiles/forlife:
     dependencies:
