@@ -1147,6 +1147,41 @@ CREATE INDEX IF NOT EXISTS idx_conv_profiles_updated ON conversation_profiles (u
 
 const m0020Checksum = createHash('sha256').update(m0020.sql + m0020.name).digest('hex')
 
+/**
+ * 迁移 21：端口出口（PLAN 阶段 7）。
+ *
+ * `caddy_route_id` 必须存下来：回收/取消时要按它去删 Caddy 里的路由。
+ * 不存的话，删了记录却会留下一条**公开路由** —— 那是最糟的状态（没人知道它还在）。
+ *
+ * `approved_by` 非空：PLAN 要求"人工批准（或策略显式放行）"，
+ * 所以每条发布都必须能回答"谁批的"。
+ */
+const m0021 = {
+  version: 21,
+  name: '0021_published_ports',
+  sql: `
+CREATE TABLE IF NOT EXISTS published_ports (
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL UNIQUE,   -- /svc/<name>/ 里的 name
+  target_port    INTEGER NOT NULL,       -- 工作区里的服务端口
+  protocol       TEXT NOT NULL DEFAULT 'http',  -- http | tcp
+  caddy_route_id TEXT,                   -- Caddy 的 @id，回收时按它删
+  ttl_seconds    INTEGER,                -- NULL = 不过期
+  expires_at     TEXT,
+  approved_by    TEXT NOT NULL,          -- 谁批的（人工或策略）
+  note           TEXT,
+  created_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_published_ports_expires ON published_ports (expires_at);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0021.sql)
+  },
+} as const
+
+const m0021Checksum = createHash('sha256').update(m0021.sql + m0021.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1268,6 +1303,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0020.name,
     checksum: m0020Checksum,
     up: m0020.up,
+  },
+  {
+    version: m0021.version,
+    name: m0021.name,
+    checksum: m0021Checksum,
+    up: m0021.up,
   },
 ]
 
