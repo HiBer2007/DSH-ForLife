@@ -38,6 +38,7 @@ import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
 import { backupNow } from './storage-write.ts'
+import { setState } from '@forlife/store'
 import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts'
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
@@ -510,6 +511,23 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 压缩：写一条"请求压缩"（**执行在 DSH 侧**）────────────────
+      // 压缩引擎深度依赖 DSH 框架，网关跑不了它；而压缩需要模型调用，那也只在 DSH 侧有。
+      // 所以面板只写请求，DSH 侧读到后执行 —— **压缩逻辑只有一份**，
+      // 不会出现"面板点的压缩和自动压缩效果不一样"。
+      if (route === '/compaction-request' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const at = new Date().toISOString()
+        setState(db, 'compaction_request_at', at)
+        setState(db, 'compaction_request_by', `admin:${session.id.slice(0, 8)}`)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `请求压缩 @ ${at}` })
+        json(res, 200, { ok: true, requestedAt: at, note: '已记录请求；DSH 侧会在下一轮或下次启动时执行' })
         return true
       }
 

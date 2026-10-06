@@ -22,6 +22,8 @@
  *
  * @module forlife-memory/compaction
  */
+import type { DatabaseSync } from 'node:sqlite'
+import { getState, setState } from '@forlife/store'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { BlockAssembler, createUserMessage, type ContentBlock, type Message, type TokenUsage } from '@deepseek-ai/dsh-llm'
@@ -461,6 +463,24 @@ export class ForlifeCompactionEngine extends BasicCompactionEngine {
 
 export default ForlifeCompactionEngine
 
-
-
-
+/**
+ * 取出并清除"面板请求的压缩"（路径 1）。
+ *
+ * ## 为什么先清后执行
+ *
+ * 反过来（先执行、成功后再清）的话，一旦执行抛错，请求会**一直留在那里**，
+ * 于是每轮都重试一次 —— 表现为"压缩莫名其妙反复跑"，
+ * 而用户只会觉得"系统卡了"。先清掉：**一次请求只尝试一次**，
+ * 失败就如实记在日志里，用户想再来一次就再点一下。
+ *
+ * @returns 请求时间与请求人；没有待处理请求时返回 undefined。
+ */
+export function takeCompactionRequest(db: DatabaseSync): { readonly at: string; readonly by: string } | undefined {
+  const at = getState(db, 'compaction_request_at')
+  if (at === undefined || at === '') return undefined
+  const by = getState(db, 'compaction_request_by') ?? 'unknown'
+  // 先清（见上面的理由）
+  setState(db, 'compaction_request_at', '')
+  setState(db, 'compaction_request_by', '')
+  return { at, by }
+}

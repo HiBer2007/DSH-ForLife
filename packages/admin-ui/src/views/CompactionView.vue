@@ -137,6 +137,30 @@ function runMenuItems(run: Record<string, unknown>): ContextMenuItem[] {
   ]
 }
 
+/**
+ * 请求压缩。
+ *
+ * 压缩**执行在 DSH 侧**（引擎依赖 DSH 框架，网关跑不了它；而压缩需要模型调用，
+ * 那也只在 DSH 侧有）。所以这里只写一条请求，并在界面上**明确显示"已请求"** ——
+ * 不做这个提示的话，用户会以为点了没反应。
+ */
+const requesting = ref(false)
+const requestError = ref("")
+const requestedAt = ref("")
+
+async function requestCompaction(): Promise<void> {
+  requesting.value = true
+  requestError.value = ""
+  try {
+    const result = await api.post<{ readonly requestedAt: string }>("/compaction-request", {})
+    requestedAt.value = result.requestedAt
+  } catch (error) {
+    requestError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    requesting.value = false
+  }
+}
+
 const runRows = computed<readonly CompactionRunView[]>(() => {
   const wanted = phaseFilter.value
   if (wanted === 'all') return runs.value
@@ -232,6 +256,19 @@ const logColumns: TableColumn<Record<string, unknown>>[] = [
         </p>
 
         <PanelCard title="压缩运行" :subtitle="runSubtitle">
+          <div class="compaction-request">
+            <button type="button" class="mini primary" :disabled="requesting" @click="requestCompaction">
+              {{ requesting ? "请求中…" : "请求压缩" }}
+            </button>
+            <span class="muted cap">
+              压缩**执行在 DSH 侧**（引擎依赖 DSH 框架，且压缩需要模型调用）——
+              这里只写一条请求，DSH 侧读到后执行。
+            </span>
+          </div>
+          <p v-if="requestedAt !== ''" class="request-ok">
+            已请求（<span class="mono">{{ requestedAt }}</span>）—— 等 DSH 侧执行。
+          </p>
+          <p v-if="requestError !== ''" class="request-error">{{ requestError }}</p>
           <template #actions>
             <div class="segmented" role="radiogroup" aria-label="按相位筛选">
               <button
@@ -451,5 +488,44 @@ const logColumns: TableColumn<Record<string, unknown>>[] = [
   .runs .err-cell {
     max-width: none;
   }
+}
+
+.compaction-request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+.compaction-request .cap {
+  font-size: var(--t-xs);
+}
+.mini {
+  min-height: var(--touch-min, 44px);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text);
+  cursor: pointer;
+}
+.mini.primary {
+  border-color: transparent;
+  background: var(--c-brand);
+  color: #fff;
+}
+.mini:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.request-ok {
+  margin-bottom: var(--s-2);
+  color: var(--c-ok, #2a9d5c);
+  font-size: var(--t-xs);
+}
+.request-error {
+  margin-bottom: var(--s-2);
+  color: var(--c-err, #d9534f);
+  font-size: var(--t-xs);
 }
 </style>
