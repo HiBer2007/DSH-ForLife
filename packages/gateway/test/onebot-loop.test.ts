@@ -114,6 +114,13 @@ test('整条链：模拟 NapCat → 入库 → 轮次 → 出站 → 确认', as
     assert.equal(inbox?.sender_name, '海波_HiBer', '发送者昵称要带上')
     assert.equal(inbox?.is_group, 0, '私聊不该被标成群聊')
 
+    // 已处理标记必须被写上：它是面板"待处理入站"的唯一来源，
+    // 只写入不标记的话那个数字只增不减（用户实测看到"待处理入站 7 条"）。
+    // 把 `markProcessed` 删掉，这条断言必须变红。
+    await waitFor('入站被标记为已处理', () => count(db, 'SELECT COUNT(*) AS v FROM qq_inbox WHERE processed = 1') === 1)
+    const merged = db.prepare('SELECT merged_into FROM qq_inbox LIMIT 1').get() as { merged_into: string | null } | undefined
+    assert.match(String(merged?.merged_into), /^turn_/, '要记下这批进了哪一轮（防抖合并的证据）')
+
     // 会话表也要被建出来（否则面板上"会话"一栏永远是空的）
     await waitFor('会话被登记', () => count(db, 'SELECT COUNT(*) AS v FROM qq_sessions') === 1)
     const session = db.prepare('SELECT conversation_key, kind FROM qq_sessions LIMIT 1').get() as

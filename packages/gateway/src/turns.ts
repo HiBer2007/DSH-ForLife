@@ -228,8 +228,33 @@ export class TurnRunner {
    * @param signal - 取消信号。
    * @returns 处理结果。
    */
-  async handleBatch(messages: readonly InboundMessage[], signal: AbortSignal): Promise<TurnRunResult> {
-    const first = messages[0]
+  /**
+   * 把这批入站标记为「已处理」。
+   *
+   * ## 为什么必须做这件事
+   *
+   * `processed` 是**面板口径的唯一来源**（"待处理入站"= `COUNT(*) WHERE processed = 0`）。
+   * 只写入不标记的话，这个数字只增不减 —— 用户实测就看到"待处理入站 7 条"，
+   * 而实际上那些消息早就跑完轮次、回复也发出去了。**一个永远只增的计数器比没有更糟**，
+   * 它会让人以为系统积压了。
+   *
+   * `turnId` 为 `undefined` 表示这批被判为噪音、没有进任何轮次（它们同样"处理过了"）。
+   */
+  private markProcessed(messages: readonly InboundMessage[], turnId: string | undefined): void {
+    if (messages.length === 0) return
+    const ids = messages.map((message) => message.messageId)
+    const placeholders = ids.map(() => '?').join(', ')
+    try {
+      this.options.db
+        .prepare(`UPDATE qq_inbox SET processed = 1, merged_into = ? WHERE id IN (${placeholders})`)
+        .run(turnId ?? null, ...ids)
+    } catch (error) {
+      // 标记失败不该让轮次失败：消息已经处理完了，这里只是面板口径
+      this.log(`标记入站已处理失败：${String(error)}`)
+    }
+  }
+
+  async handleBatch(messages: readonly InboundMessage[], signal: AbortSignal): Promise<TurnRunResult> {    const first = messages[0]
     if (first === undefined) return { woken: false, reason: 'empty-batch' }
 
     // ① 噪音过滤（§8.5）：在**队列层**就把纯闲聊挡在 DSH 之外 ——
@@ -258,6 +283,9 @@ export class TurnRunner {
     this.lastNoiseCount = filtered.length
     if (survivors.length === 0) {
       this.log(`整批都是噪音（${filtered.map((f) => f.verdict.rule ?? '?').join(',')}），不进记忆也不占待读池`)
+      // 被判定为噪音也是**处理过了**：不标记的话面板上的"待处理"会只增不减
+      // （用户实测看到"待处理入站 7 条"就是这个原因）。
+      this.markProcessed(messages, undefined)
       return { woken: false, reason: 'noise' }
     }
     const effective = survivors
@@ -278,6 +306,10 @@ export class TurnRunner {
     }
 
     const turnId = `turn_${randomUUID()}`
+    // 这批消息已经被本轮消费了，立刻标记 —— 面板的"待处理入站"必须能归零。
+    // 标记**整批**（含被噪音过滤掉的那些）：它们同样经过了本轮判定，不再"待处理"。
+    // `merged_into` 记下进了哪一轮，这正是防抖合并的证据。
+    this.markProcessed(messages, turnId)
     const startedAt = nowIso()
     this.options.db
       .prepare(
