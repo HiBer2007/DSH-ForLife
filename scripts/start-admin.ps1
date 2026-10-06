@@ -8,6 +8,16 @@
 $ErrorActionPreference = 'Stop'
 $root = 'D:\DSH-ForLife'
 
+# ── DSH_HOME **必须在仓库内**（可移植硬约束）───────────────────────────────
+#
+# headless 驱动会把 process.env 传给 `dsh headless` 子进程（driver.ts:67），
+# 而 `DSH_HOME` 不设的话它会**回落到宿主 ~/.dsh** ——
+# 那正是本文件开头第 4 行记着的那个坑，但当时只修了"引号问题"，没设这个变量。
+#
+# 真机证据（2026-10-06）：开发机的 `DSH_HOME` 是 `C:Users<用户>.dsh`，
+# 而 gateway 直接继承了它 ⇒ 切到 headless 驱动就会写宿主的 dsh 目录。
+# 用 `FORLIFE_DSH_HOME` 显式覆盖，默认指向仓库内。
+$env:FORLIFE_DSH_HOME = if ($env:FORLIFE_DSH_HOME) { $env:FORLIFE_DSH_HOME } else { "$root\.runtime\dsh" }
 $env:FORLIFE_DB = "$root\.runtime\dsh\forlife\db\forlife.sqlite"
 $env:FORLIFE_ADMIN_HOST = '0.0.0.0'
 $env:FORLIFE_ADMIN_PORT = '8081'
