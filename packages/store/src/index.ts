@@ -11,6 +11,26 @@ export type { OpenOptions, OpenedDatabase } from './db.ts'
 export { LATEST_SCHEMA_VERSION, MIGRATIONS } from './migrations.ts'
 export { FLAG_QQ_TAKEOVER, getFlag, setFlag } from './flags.ts'
 export {
+  describeStickerOnce,
+  evictLearnedStickers,
+  findStickerBySha,
+  findStickerDescription,
+  getStickerAsset,
+  listStickerAssets,
+  rejectStickerAsset,
+  saveStickerDescription,
+  touchStickerUse,
+  upsertStickerAsset,
+} from './stickers.ts'
+export type {
+  DescribeOnceResult,
+  StickerAssetRow,
+  StickerDescriptionRow,
+  StickerSource,
+  UpsertStickerInput,
+  UpsertStickerResult,
+} from './stickers.ts'
+export {
   abortCompactionRun,
   beginCompactionRun,
   commitCompactionRun,
