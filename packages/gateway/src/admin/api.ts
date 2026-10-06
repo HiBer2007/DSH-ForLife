@@ -13,7 +13,7 @@
  * @module @forlife/gateway/admin/api
  */
 import { setWakeRule, type WakeCondition } from '../wake.ts'
-import { setConversationClock, setConversationImpression, setConversationNote } from '@forlife/store'
+import { deleteModelRoute, listModelRoutes, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute } from '@forlife/store'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -506,6 +506,110 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const note = typeof body['note'] === 'string' ? body['note'] : null
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 路由行（增 / 改）──────────────────────────────────────────
+      if (route === '/model-route' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const role = typeof body['role'] === 'string' ? body['role'].trim() : ''
+        const provider = typeof body['provider'] === 'string' ? body['provider'].trim() : ''
+        const model = typeof body['model'] === 'string' ? body['model'].trim() : ''
+        const rank = typeof body['rank'] === 'number' && Number.isFinite(body['rank']) ? Math.max(0, Math.floor(body['rank'])) : 0
+        if (role === '' || provider === '' || model === '') {
+          json(res, 400, { error: 'role / provider / model 都必填' })
+          return true
+        }
+
+        // effort 允许 null（表示"不指定"，各端点用自己的默认值）——
+        // 传空串进来会写成一个空值，面板显示的和实际生效的就不一致了
+        const effort = typeof body['effort'] === 'string' && body['effort'].trim() !== '' ? body['effort'].trim() : null
+
+        const id = upsertModelRoute(db, {
+          role,
+          rank,
+          provider,
+          model,
+          reasoningEffort: effort,
+          enabled: body['enabled'] !== false,
+          note: typeof body['note'] === 'string' ? body['note'] : null,
+          updatedBy: session.id.slice(0, 8),
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `路由 ${role}#${String(rank)} → ${provider}/${model}（effort=${effort ?? '不指定'}）` })
+        json(res, 200, { ok: true, id })
+        return true
+      }
+
+      // ── 路由行（删）────────────────────────────────────────────────
+      if (route === '/model-route-delete' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const role = typeof body['role'] === 'string' ? body['role'] : ''
+        const rank = typeof body['rank'] === 'number' ? body['rank'] : -1
+        if (role === '' || rank < 0) {
+          json(res, 400, { error: 'role 与 rank 必填' })
+          return true
+        }
+        const removed = deleteModelRoute(db, role, rank)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `删除路由 ${role}#${String(rank)}（${String(removed)} 行）` })
+        json(res, 200, { ok: true, removed })
+        return true
+      }
+
+      // ── 路由行（上下移）─────────────────────────────────────────────
+      if (route === '/model-route-move' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const role = typeof body['role'] === 'string' ? body['role'] : ''
+        const rank = typeof body['rank'] === 'number' ? body['rank'] : -1
+        const direction = body['direction'] === 'up' ? 'up' : body['direction'] === 'down' ? 'down' : ''
+        if (role === '' || rank < 0 || direction === '') {
+          json(res, 400, { error: 'role / rank / direction(up|down) 必填' })
+          return true
+        }
+
+        const rows = listModelRoutes(db, role)
+        const target = rank + (direction === 'up' ? -1 : 1)
+        if (target < 0 || target >= rows.length) {
+          json(res, 400, { error: `已经在${direction === 'up' ? '最前' : '最后'}了` })
+          return true
+        }
+        const a = rows[rank]
+        const b = rows[target]
+        if (a === undefined || b === undefined) {
+          json(res, 400, { error: '找不到要交换的两行' })
+          return true
+        }
+
+        // UNIQUE(role, rank)：直接交换会在中间那步撞唯一约束（先写 a=target 时 b 还是 target）。
+        // 所以先把 a 挪到临时高位，再落位 —— 这是唯一安全的顺序。
+        const TEMP = 9000
+        db.prepare('UPDATE model_routes SET rank = ? WHERE id = ?').run(TEMP, a.id)
+        db.prepare('UPDATE model_routes SET rank = ? WHERE id = ?').run(rank, b.id)
+        db.prepare('UPDATE model_routes SET rank = ? WHERE id = ?').run(target, a.id)
+
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `路由 ${role}：${String(rank)} ↔ ${String(target)}` })
         json(res, 200, { ok: true })
         return true
       }
