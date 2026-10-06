@@ -36,6 +36,7 @@ import {
 import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
+import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
 import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts'
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
@@ -508,6 +509,47 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 记忆条目：编辑正文与摘要 ───────────────────────────────────
+      if (route === '/memory-entry' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const content = typeof body['content'] === 'string' ? body['content'] : ''
+        const summary = typeof body['summary'] === 'string' ? body['summary'] : ''
+        const entities = Array.isArray(body['entities'])
+          ? body['entities'].filter((e): e is string => typeof e === 'string' && e.trim() !== '')
+          : []
+        if (id === '') { json(res, 400, { error: 'id 必填' }); return true }
+
+        const result = updateLongMemory(db, { id, content, summary, entities })
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `记忆 ${id} 已编辑（${String(content.length)} 字）` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 记忆条目：归档 / 恢复（**不是真删**）────────────────────────
+      if (route === '/memory-archive' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        if (id === '') { json(res, 400, { error: 'id 必填' }); return true }
+
+        // restore=true 走恢复；默认归档。用一个接口而不是两个：
+        // 它们是同一个动作的两个方向，分成两个接口会让前端要判断该调哪个。
+        const result = body['restore'] === true ? restoreLongMemory(db, id) : archiveLongMemory(db, id)
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `记忆 ${id} ${body['restore'] === true ? '恢复' : '归档'}` })
+        json(res, 200, { ok: true, message: result.reason })
         return true
       }
 
