@@ -1327,6 +1327,28 @@ DSH/gateway 停机期间错过的触发，按触发器策略处理：`skip`（�
 - [ ] 每一页都有"改得动"的入口，改完刷新后仍在，且审计里有记录。
 - [ ] 每一处列表面板都能右键（移动端长按）唤出菜单，菜单项可用且与按钮行为一致。
 - [ ] 无权限/校验失败时**明确报错**，不是静默失败。
+#### 2.14.13 后台编辑能力的**架构阻塞**：插件接口与面板不同源（2026-10-06 查明）
+
+**现象**：面板（网关 8081）调 `/api/forlife/*` 全部 **404**。
+
+**原因**（查过，不是猜的）：
+- 插件通过 `registerPanelRoutes(registry, runtime)` 把路由注册到 **DSH 宿主**的 fetch 注册表；
+  也就是说 `/api/forlife/*` **只在 DSH 跑着插件时才存在**。
+- 而网关是**独立运行**的（这正是部署目标：一个 Docker 容器，不是 DSH）。
+- 顺带排除：8080 端口是 Windows 的 `ApplicationWebServer`，**不是**宿主。
+
+**结论：面板不能依赖插件接口。** 提示词等"写逻辑在插件侧"的功能，
+必须让逻辑在**网关侧也可用**，否则这些页面永远只能看。
+
+**修法（已确认可行）**：把 `packages/dsh-component/src/prompt-store.ts`（287 行）
+**移进 `@forlife/store`**。已核实它的依赖只有：
+`node:crypto` / `node:sqlite` / `@forlife/contracts` / `@forlife/memory-core` / `@forlife/store`
+—— **不依赖插件内部任何东西**，所以能干净地搬；搬完插件与网关共用同一份。
+
+**动手前要先确认一件事**：`@forlife/memory-core` 是否依赖 `@forlife/store` ——
+若是，则 store 引用 memory-core 会形成**循环依赖**，那时应改为把提示词文本工具
+（`validatePromptText` / `normalizePromptText` / `estimatePromptTokens` / `hashPromptText`）
+一并下沉到更底层，而不是硬引。
 ### 2.15 时间感知：为什么模型会"时间幻觉"，以及怎么修
 
 > 完整诊断见 `research/time-context-report.md`。这一节给结论与方案。
