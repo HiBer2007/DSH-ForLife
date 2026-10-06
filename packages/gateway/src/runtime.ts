@@ -17,6 +17,7 @@
  * @module @forlife/gateway/runtime
  */
 import { startEndpointHealthLoop } from './endpoint-health.ts'
+import { createSystemEventHooks } from './wake-system-hooks.ts'
 import { createWakeRuntime } from './wake-runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -95,10 +96,6 @@ function makeFakeScript(db: DatabaseSync, log: (message: string) => void): FakeS
       // 入队失败不能让轮次崩掉：它已经跑完了，报出去比抛出去有用
       log(`[gateway] fake 驱动入队出站失败：${String(error)}`)
     }
-  // 端点健康探测：启动时立刻探一次 + 之后定时。
-  // 不做这一步的话，面板上的「健康/已登记」永远显示 0/N ——
-  // 因为 health_ok 从没被写过（探测以前只能手动触发）。
-  const stopHealthLoop = startEndpointHealthLoop({ db, log })
 
     return { segments: [reply], tokensIn: 0, tokensOut: 0 }
   }
@@ -111,6 +108,23 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
   // 唤醒引擎（PLAN 阶段 8）。没配桥时 engine 为 undefined —— 功能**明确禁用**，
   // 而不是等一次失败去推断。
   const wake = createWakeRuntime({ db: options.db, env: process.env, log })
+
+  // 端点健康探测：启动时立刻探一次 + 之后定时。
+  // 不做这一步的话，面板上的「健康/已登记」永远显示 0/N ——
+  // 因为 health_ok 从没被写过（探测以前只能手动触发）。
+  //
+  // **搬家说明**：它原来在 makeFakeScript 里，而那是**每次跑轮次**都会调的 ——
+  // 于是每跑一轮就新建一个探测循环（返回的 stop 还被丢掉了）。
+  // 跑 N 轮就有 N 个循环在探所有端点 = **N 倍的端点请求量**，而额度是要花钱的。
+  const systemHooks = createSystemEventHooks({ source: wake.systemSource, log })
+  const stopHealthLoop = startEndpointHealthLoop({
+    db: options.db,
+    log,
+    // 端点不可用/恢复 ⇒ system 触发（**边沿检测在事件源里**，所以不会重复唤醒）
+    onProbeResult: (endpointName, ok, error) => {
+      systemHooks.endpointUnavailable(endpointName, ok, error)
+    },
+  })
 
   const transport = createOneBotTransport({
     port: options.onebot.port,
@@ -176,6 +190,7 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     state: () => gateway.state(),
     stop: async (): Promise<void> => {
       await gateway.stop()
+      stopHealthLoop()
       await driver.close?.()
       await transport.stop()
     },
