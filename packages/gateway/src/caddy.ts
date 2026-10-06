@@ -67,18 +67,45 @@ export interface CaddyClient {
   readonly getConfig: () => Promise<{ readonly ok: boolean; readonly config: unknown; readonly reason: string }>
 }
 
+
+/**
+ * 从 admin 地址推出要发的 `Origin`（**完整 origin URL**）。
+ *
+ * Caddy 的 admin 端点有**来源保护**，而且实测行为是：
+ * **没有 `Origin` 头 ⇒ 被当成空 origin `''` ⇒ 403**。
+ * 所以我们必须主动发一个 Origin，且必须是带 scheme 的完整形式
+ * （裸 `host:port` 会被拒，实测过）。
+ *
+ * 为什么不用 `Host` 头：Node 的 `fetch`（undici）**按规范禁止设置 `Host`**，
+ * 会**静默忽略** —— 那样的代码看起来做了事，实际什么都没做。
+ */
+export function originHeaderFor(adminUrl: string): string | undefined {
+  try {
+    const url = new URL(adminUrl)
+    return url.origin
+  } catch {
+    return undefined
+  }
+}
+
 /** 造一个 Caddy 客户端。 */
 export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
   const base = options.adminUrl.replace(/\/$/, '')
   const doFetch = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   const timeout = options.timeoutMs ?? 5000
   const serverName = options.serverName ?? 'srv0'
+  // 发 Origin（见 originHeaderFor 的说明：不发会被 Caddy 当空 origin 拒掉）
+  const originHeader = originHeaderFor(base)
 
   const call = async (method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; text: string }> => {
     try {
       const response = await doFetch(`${base}${path}`, {
         method,
-        headers: body === undefined ? {} : { 'content-type': 'application/json' },
+        headers: {
+          // **必须发 Origin**：Caddy 把"没有 Origin"当空 origin 而拒绝（实测 403）
+          ...(originHeader === undefined ? {} : { origin: originHeader }),
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(timeout),
       } as never)

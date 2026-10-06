@@ -2496,6 +2496,60 @@ sticker_save / qq_mention_all / qq_group_notice）、「图片存为表情包」
 - [ ] 工作区外写入被拒绝；非白名单端口被拒绝并留下审计记录。
 - [ ] TTL 到期自动回收，`GET /config/` 无残留路由。
 
+#### 2.14.15 ✅ 阶段 7 真机验收（2026-10-06，真 Caddy v2.11.7）
+
+**结论：四条验收标准全部通过（9 项检查全绿）。**
+
+```
+【验收 1】发布 → 经 Caddy 可访问
+  ✅ 发布成功　已发布：https://127.0.0.1/svc/e2e/
+  ✅ 经 Caddy 可访问　HTTP 200 "backend-ok path=/"
+【验收 3】非白名单端口被拒
+  ✅ 非白名单被拒　端口 9999 不在白名单内（允许：18000–18099）
+  ✅ 被拒的没有留下路由
+【验收 2】unpublish → 立即 404
+  ✅ 取消成功　已取消：e2e
+  ✅ 取消后立即 404　HTTP 404
+【验收 4】TTL 到期回收 → GET /config/ 无残留路由
+  ✅ 带 TTL 的发布成功
+  ✅ 被回收　{"reclaimed":["ttl"],"failed":[]}
+  ✅ 无残留路由
+```
+
+复现：`.runtime/caddy-bin/caddy.exe run --config .runtime/Caddyfile.e2e`，
+然后 `node packages/gateway/scripts/e2e-ports.ts`（需设 `CADDY_ADMIN`）。
+
+---
+
+**真机跑出来的四个问题**（全部只有真机/文档才能发现，单测都是绿的）：
+
+1. **`PUT /id/<新id>` 创建不了路由** —— `/id/` 只是配置路径的快捷方式，
+   只能访问**已存在**的对象；创建要用 `PUT /config/…/routes/0`。
+   靠读官方文档发现（当时 Docker Hub 拉不动，跑不了真机）。
+   若不修：部署当天表现为"**发布成功但访问不通**"。
+2. **Caddy admin 的来源保护** —— 实测 `client is not allowed to access from origin ''`：
+   **没有 `Origin` 头会被当成空 origin 而 403**。修法是客户端主动发
+   `Origin: <完整 origin URL>`（裸 `host:port` 不行，实测过）。
+   另外：**Node 的 `fetch` 按规范禁止设置 `Host` 头并静默忽略** ——
+   所以"发 Host: localhost"那条路是走不通的（我先写错了一版）。
+3. **`createPortService` 不接受白名单** —— `FORLIFE_PORT_WHITELIST` 被解析了
+   却传不到编排层，于是永远用默认段。表现是"配了白名单也不生效"。
+   这类"参数在两层之间掉了"的问题单测很容易都过（每层各自都对），
+   **只有把两层接起来的测试才会发现**。
+4. **Caddy 对"无匹配路由"默认回空 200**（不是 404）。所以"取消后立即 404"
+   这条验收**依赖部署侧配一条兜底 404 路由** ——
+   不配的话，取消后访问到的是"200 + 空 body"，看起来像没取消成功。
+   **这是部署要求，已写进 `.runtime/Caddyfile.e2e` 的注释。**
+
+**环境上踩到的两件事**：
+- 端口 2019 / 12019 **都被 Windows 保留**（`netsh interface ipv4 show excludedportrange`
+  显示 1902–2001、11908–12107 等段）⇒ 换到 13019。
+  **部署文档要提醒：admin 端口要避开系统排除段。**
+- Docker Hub 在本网络不可达，改用 GitHub Releases 下 Caddy 二进制
+  （`curl --ssl-no-revoke`，否则 schannel 的吊销检查会失败）。
+
+**仍未做**：TCP layer4 穿透（需自建 Caddy 镜像，含 layer4 模块）。
+按 PLAN 允许走 fallback，但**差异与代价要在文档里写明** —— 留待下一轮。
 ### 阶段 8 · 触发与自唤醒引擎（预计 6–10 天）
 
 **依赖**：阶段 7 的工作区沙箱（监视程序跑在里面）。

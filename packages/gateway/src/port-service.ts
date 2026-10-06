@@ -38,6 +38,13 @@ export interface PortServiceOptions {
   readonly host: string
   /** 上游主机（容器里是服务名，默认 127.0.0.1）。 */
   readonly upstreamHost?: string
+  /**
+   * 允许发布的端口段。
+   *
+   * **必须能配**：否则 `FORLIFE_PORT_WHITELIST` 配了也没用 ——
+   * 环境变量在 port-runtime 里被解析，却传不到这里，于是永远用默认段。
+   */
+  readonly whitelist?: readonly { readonly from: number; readonly to: number }[]
   readonly log?: (message: string) => void
   readonly now?: () => Date
 }
@@ -77,6 +84,8 @@ export function createPortService(options: PortServiceOptions): PortService {
       ttlSeconds: input.ttlSeconds ?? null,
       approvedBy: input.approvedBy,
       ...(input.note === undefined ? {} : { note: input.note }),
+      // 把白名单**转发下去** —— 漏了这一句，环境变量就白配了
+      ...(options.whitelist === undefined ? {} : { whitelist: options.whitelist }),
       now: now(),
     })
     if (!registered.ok || registered.row === undefined) return { ok: false, reason: registered.reason }

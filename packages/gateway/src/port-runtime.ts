@@ -119,6 +119,7 @@ export function createPortRuntime(options: {
     caddy,
     host: config.host,
     ...(config.upstreamHost === undefined ? {} : { upstreamHost: config.upstreamHost }),
+    whitelist: config.whitelist,
     log: options.log,
   })
 
