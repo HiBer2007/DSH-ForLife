@@ -10,6 +10,8 @@
  *  2. **级别筛选 + 关键词**：几百行里找一条，靠眼睛扫是浪费生命；
  *  3. **增量拉取**：只取比上次更新的行（用 seq），不重复传整段。
  */
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api } from '../api/client.ts'
@@ -74,6 +76,49 @@ const viewport = ref<HTMLElement>()
 function scrollToBottom(): void {
   const element = viewport.value
   if (element !== undefined) element.scrollTop = element.scrollHeight
+}
+
+/**
+ * 日志操作。
+ *
+ * 清空是**危险操作**（销毁排障证据），所以：后端落审计、前端失败要显示错误。
+ * 菜单动作与按钮调用同一个 clearLogs。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+const clearing = ref(false)
+const clearError = ref("")
+
+async function clearLogs(): Promise<void> {
+  clearing.value = true
+  clearError.value = ""
+  try {
+    await api.post("/logs-clear", {})
+    state.refresh()
+  } catch (error) {
+    clearError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    clearing.value = false
+  }
+}
+
+function logMenuItems(line: Record<string, unknown>): ContextMenuItem[] {
+  // 局部变量**不叫 level** —— 那会遮蔽外层的 level ref（上次就是这么栽的）
+  const lineLevel = String(line["level"] ?? "")
+  const text = String(line["text"] ?? "")
+  return [
+    { key: "copy", label: "复制这一行", run: () => void navigator.clipboard?.writeText(text) },
+    {
+      key: "filter",
+      label: "只看这个级别",
+      hint: lineLevel,
+      run: () => {
+        // 复用页面已有的级别筛选，不另写一套
+        // 页面的筛选取值只有 all / warn / error —— **没有 info**
+        // （info 是默认档，等价于 all）。所以 info 行落到 all，而不是硬塞一个不存在的值。
+        level.value = lineLevel === "warn" ? "warn" : lineLevel === "error" ? "error" : "all"
+      },
+    },
+  ]
 }
 
 const filtered = computed(() => {
@@ -159,7 +204,14 @@ function stamp(iso: string): string {
             {{ lines.length === 0 ? '缓冲里还没有日志。服务刚启动时是正常的。' : '没有匹配的行。' }}
           </p>
           <ol v-else class="lines">
-            <li v-for="line in filtered" :key="line.seq" :data-level="line.level">
+            <li
+              v-for="line in filtered"
+              :key="line.seq"
+              :data-level="line.level"
+              class="log-line"
+              @contextmenu="onContextMenu($event, logMenuItems(line), line)"
+              v-on="touchHandlers(logMenuItems(line), line)"
+            >
               <span class="time">{{ stamp(line.at) }}</span>
               <span class="text">{{ line.text }}</span>
             </li>
@@ -168,6 +220,7 @@ function stamp(iso: string): string {
       </PanelCard>
     </AsyncSection>
   </div>
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
