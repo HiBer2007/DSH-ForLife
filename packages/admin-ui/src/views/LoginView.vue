@@ -59,9 +59,9 @@ async function submit(): Promise<void> {
   <div class="login">
     <form class="card" @submit.prevent="submit">
       <div class="head">
-        <span class="mark" aria-hidden="true">FL</span>
+        <span class="mark" aria-hidden="true">DF</span>
         <div>
-          <h1>{{ isSetup ? '设置管理口令' : '登录 ForLife 控制台' }}</h1>
+          <h1>{{ isSetup ? '设置管理口令' : '登录 DSH-ForLife 控制台' }}</h1>
           <p class="muted">
             {{ isSetup ? '这是第一次打开：请设置一个管理口令，之后用它登录。' : '输入管理口令后进入。' }}
           </p>

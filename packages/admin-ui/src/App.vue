@@ -23,7 +23,7 @@ const route = useRoute()
 /** 手机上侧栏是否展开。桌面端这个值不起作用（CSS 里侧栏常驻）。 */
 const navOpen = ref(false)
 
-const pageTitle = computed(() => (typeof route.meta.title === 'string' ? route.meta.title : 'ForLife 控制台'))
+const pageTitle = computed(() => (typeof route.meta.title === 'string' ? route.meta.title : 'DSH-ForLife 控制台'))
 
 // 切页就收起抽屉，否则手机上点完导航还要手动关一次
 watch(() => route.fullPath, () => {
@@ -66,9 +66,9 @@ async function onLogout(): Promise<void> {
 
     <aside class="sidebar" aria-label="主导航">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">FL</span>
+        <span class="brand-mark" aria-hidden="true">DF</span>
         <span class="brand-text">
-          <strong>ForLife</strong>
+          <strong>DSH-ForLife</strong>
           <small>控制台</small>
         </span>
       </div>

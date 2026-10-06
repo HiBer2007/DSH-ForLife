@@ -8,18 +8,51 @@
  *
  * 自动刷新 15 秒一次；切到后台标签页时停掉（手机省电，也不打扰服务端）。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '../api/client.ts'
-import type { Overview } from '../api/types.ts'
+import type { Overview, SeriesPayload } from '../api/types.ts'
 import AppIcon from '../components/AppIcon.vue'
 import AsyncSection from '../components/AsyncSection.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatCard from '../components/StatCard.vue'
+import TimeSeriesChart from '../components/TimeSeriesChart.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatBytes, formatDuration, formatNumber, formatPercent, formatRelative, formatTokens } from '../utils/format.ts'
 
 const state = useAsyncData<Overview>(() => api.get<Overview>('/overview'))
+
+/** 图表的时间范围（小时）。默认 24 小时：日常最常看的一段。 */
+const RANGES = [
+  { value: 24, label: '24 小时' },
+  { value: 72, label: '3 天' },
+  { value: 168, label: '7 天' },
+] as const
+const seriesHours = ref<number>(24)
+const series = useAsyncData<SeriesPayload>(() => api.get<SeriesPayload>('/series', { hours: seriesHours.value }))
+watch(seriesHours, () => void series.refresh())
+
+/** 图表用到的序列（写成 computed 免得模板里塞一堆数组字面量）。 */
+const chartSeries = computed(() => {
+  const m = series.data.value?.metrics
+  if (m === undefined) return undefined
+  return {
+    traffic: [
+      { name: '入站消息', values: m.messages, tone: 1 },
+      { name: '轮次', values: m.turns, tone: 3 },
+    ],
+    routing: [
+      { name: '路由决策', values: m.routing, tone: 1 },
+      { name: '其中降级', values: m.degraded, tone: 5 },
+    ],
+    tokens: [{ name: '提示词 token', values: m.promptTokens, tone: 2 }],
+    cache: [{ name: '缓存命中率', values: m.cacheHitRate, tone: 3 }],
+    outbox: [
+      { name: '已确认发送', values: m.outboxSent, tone: 3 },
+      { name: '发送失败', values: m.outboxFailed, tone: 5 },
+    ],
+  }
+})
 
 const REFRESH_MS = 15_000
 let timer: number | undefined
@@ -170,7 +203,91 @@ const dbLine = computed(() => {
           />
         </div>
 
-        <!-- ③ 细节 -->
+        <!-- ③ 运行图表：先看趋势，再看明细 -->
+        <PanelCard title="运行图表" :subtitle="`按小时聚合，最近 ${seriesHours} 小时（空桶也画出来，不会把「没消息」画成「连续有消息」）`">
+          <template #actions>
+            <div class="range" role="radiogroup" aria-label="时间范围">
+              <button
+                v-for="option in RANGES"
+                :key="option.value"
+                type="button"
+                role="radio"
+                :aria-checked="seriesHours === option.value"
+                :data-active="seriesHours === option.value"
+                @click="seriesHours = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </template>
+
+          <AsyncSection
+            :loading="series.loading.value"
+            :error="series.error.value"
+            :updated-at="series.updatedAt.value"
+            :skeleton-rows="4"
+            @retry="series.refresh()"
+          >
+            <div v-if="chartSeries && series.data.value" class="charts">
+              <div class="chart-block">
+                <h4>消息与轮次</h4>
+                <TimeSeriesChart
+                  :buckets="series.data.value.buckets"
+                  :series="chartSeries.traffic"
+                  kind="bar"
+                  unit="count"
+                  :height="150"
+                />
+              </div>
+
+              <div class="chart-block">
+                <h4>路由与降级</h4>
+                <TimeSeriesChart
+                  :buckets="series.data.value.buckets"
+                  :series="chartSeries.routing"
+                  kind="area"
+                  unit="count"
+                  :height="150"
+                />
+              </div>
+
+              <div class="chart-block">
+                <h4>提示词 token</h4>
+                <TimeSeriesChart
+                  :buckets="series.data.value.buckets"
+                  :series="chartSeries.tokens"
+                  kind="area"
+                  unit="tokens"
+                  :height="150"
+                />
+              </div>
+
+              <div class="chart-block">
+                <h4>缓存命中率</h4>
+                <TimeSeriesChart
+                  :buckets="series.data.value.buckets"
+                  :series="chartSeries.cache"
+                  kind="area"
+                  unit="percent"
+                  :height="150"
+                />
+              </div>
+
+              <div class="chart-block wide">
+                <h4>出站发送</h4>
+                <TimeSeriesChart
+                  :buckets="series.data.value.buckets"
+                  :series="chartSeries.outbox"
+                  kind="bar"
+                  unit="count"
+                  :height="130"
+                />
+              </div>
+            </div>
+          </AsyncSection>
+        </PanelCard>
+
+        <!-- ④ 细节 -->
         <div class="grid grid-2">
           <PanelCard title="记忆" subtitle="三层记忆的当前状态">
             <dl class="kv">
@@ -284,6 +401,52 @@ const dbLine = computed(() => {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
+}
+
+/* ── 运行图表 ─────────────────────────────────────────────── */
+.range {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--c-surface-2);
+  border-radius: var(--r-md);
+}
+.range button {
+  min-height: 28px;
+  padding: 0 var(--s-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text-3);
+  cursor: pointer;
+  font-size: var(--t-xs);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.range button:hover {
+  color: var(--c-text);
+}
+.range button[data-active='true'] {
+  background: var(--c-surface);
+  color: var(--c-text);
+  box-shadow: var(--sh-1);
+}
+
+.charts {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+.chart-block {
+  min-width: 0;
+}
+.chart-block.wide {
+  grid-column: 1 / -1;
+}
+.chart-block h4 {
+  margin-bottom: var(--s-2);
+  color: var(--c-text-2);
+  font-size: var(--t-xs);
+  font-weight: 600;
 }
 .kv > div {
   display: flex;

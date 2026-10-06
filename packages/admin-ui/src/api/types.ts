@@ -5,6 +5,25 @@
  * 但前端用到的字段服务端必须给 —— 改接口时先改这里，两边都不会跑偏。
  */
 
+/** `GET /api/admin/series?hours=24` —— 运行图表的时序数据（按小时分桶）。 */
+export interface SeriesPayload {
+  /** 每个桶的起点（ISO），长度固定 = hours。 */
+  readonly buckets: readonly string[]
+  readonly bucketMinutes: number
+  readonly hours: number
+  readonly metrics: {
+    readonly messages: readonly number[]
+    readonly turns: readonly number[]
+    readonly routing: readonly number[]
+    readonly degraded: readonly number[]
+    readonly promptTokens: readonly number[]
+    /** 命中率 0..1；该桶没有模型调用时为 **null**（不是 0）。 */
+    readonly cacheHitRate: readonly (number | null)[]
+    readonly outboxSent: readonly number[]
+    readonly outboxFailed: readonly number[]
+  }
+}
+
 /** `GET /api/admin/session` */
 export interface SessionInfo {
   readonly authenticated: boolean

@@ -96,5 +96,5 @@ export const router = createRouter({
 
 router.afterEach((to) => {
   const title = typeof to.meta.title === 'string' ? to.meta.title : undefined
-  document.title = title === undefined ? 'ForLife 控制台' : `${title} · ForLife 控制台`
+  document.title = title === undefined ? 'DSH-ForLife 控制台' : `${title} · DSH-ForLife 控制台`
 })

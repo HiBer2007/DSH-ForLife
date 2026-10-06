@@ -193,3 +193,38 @@ test('安全响应头：CSP 严格、禁止被套框', async () => {
   assert.match(csp, /frame-ancestors 'none'/)
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
 })
+
+test('运行图表接口：需要登录，且返回等长分桶', async () => {
+  const anonymous = await fetch(`${base}/api/admin/series`)
+  assert.equal(anonymous.status, 401, '图表数据同样属于数据接口，未登录必须 401')
+
+  const login = await postJson('/api/admin/login', { password: 'brand-new-password' })
+  if (login.status !== 200) return // 被限流时跳过（限流本身已被上一条测试覆盖）
+  const cookie = cookieOf(login)
+
+  const response = await fetchWith(cookie, '/api/admin/series?hours=6')
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as {
+    hours: number
+    buckets: string[]
+    metrics: Record<string, (number | null)[]>
+  }
+  assert.equal(body.hours, 6)
+  assert.equal(body.buckets.length, 6, '空库也必须补齐每个桶')
+  for (const [name, values] of Object.entries(body.metrics)) {
+    assert.equal(values.length, body.buckets.length, `指标 ${name} 的长度必须与桶数一致`)
+  }
+  // 空库里"没有调用"必须表现为 null（而不是 0，0 会被画成命中率暴跌）
+  assert.ok(body.metrics['cacheHitRate']?.every((v) => v === null), '没有模型调用时命中率应为 null')
+})
+
+test('运行图表接口：hours 参数被夹在 1..168', async () => {
+  const login = await postJson('/api/admin/login', { password: 'brand-new-password' })
+  if (login.status !== 200) return
+  const cookie = cookieOf(login)
+  const response = await fetchWith(cookie, '/api/admin/series?hours=99999')
+  assert.equal(response.status, 200)
+  const body = (await response.json()) as { hours: number; buckets: string[] }
+  assert.equal(body.hours, 168, '过大的范围必须被夹到一周，避免一次查询拉爆内存')
+  assert.equal(body.buckets.length, 168)
+})

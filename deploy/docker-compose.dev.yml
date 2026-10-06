@@ -1,0 +1,27 @@
+# 本机开发用的 compose 覆盖文件 —— **只在验收/联调时叠加**，不进生产。
+#
+#     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml up -d qq
+#
+# ## 为什么必须额外接一条 `edge` 网络（踩过的坑）
+#
+# 主 compose 里 qq 只挂 `internal`，而那个网络是 `internal: true`：
+# **这种网络没有任何对外路由，发布端口对它完全无效**。
+# 表现极具迷惑性：容器内 `curl 127.0.0.1:6099/webui` 返回 301（服务明明活着），
+# 但宿主机 `docker port` 是空的、浏览器 ERR_CONNECTION_REFUSED，
+# 而 `docker inspect HostConfig.PortBindings` 里**映射又确实写着**。
+#
+# 接上 `edge`（普通 bridge）之后两件事同时成立：
+#   ① 6099 能发布到宿主机（只在 127.0.0.1，同网段仍够不到）；
+#   ② NapCat 有路由出网，才能反向连到宿主机上的 gateway（`host.docker.internal`）。
+#
+# 生产环境**不要**用这个文件：QQ 侧就该待在 internal 里不出来。
+services:
+  qq:
+    networks:
+      - internal
+      - edge
+    ports:
+      # NapCat WebUI（扫码登录、看登录态）。只绑回环：同网段设备依然够不到。
+      - '127.0.0.1:6099:6099'
+      # 刻意**不发布** 3001：我们用 OneBot **反向 WS**（NapCat 主动连我们的 gateway），
+      # 不需要它的正向 WS 端口；而且本机 gateway 的传输层要用这个端口号，发布了会撞车。

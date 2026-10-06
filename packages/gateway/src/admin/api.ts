@@ -30,6 +30,7 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
+import { buildSeries } from './series.ts'
 
 /** 路由上下文。 */
 export interface AdminApiOptions {
@@ -302,6 +303,15 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
             transportConnected: options.transportConnected?.(),
           }),
         )
+        return true
+      }
+
+      // ── 运行图表：按小时分桶的时序 ──────────────────────────────────
+      if (route === '/series' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const hoursParam = Number(url.searchParams.get('hours') ?? '24')
+        json(res, 200, buildSeries(db, { hours: Number.isFinite(hoursParam) ? hoursParam : 24 }))
         return true
       }
 
