@@ -14,12 +14,14 @@
  *  - `healthOk === undefined` 是"从未探测过"，不等于 `false`（探测了、不健康）；
  *  - `effectiveBackend !== backend` 是静默回落（配置写 GPU、实际跑 CPU），必须显眼提示。
  */
-import { computed, ref } from 'vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
+import { reactive, computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
 import type { RoutingEndpoint, RoutingLogEntry, RoutingOverview, RoutingRole, UncertainCaseOverview } from '../api/types-routing.ts'
 import AppIcon from '../components/AppIcon.vue'
 import AsyncSection from '../components/AsyncSection.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import DataTable, { type TableColumn } from '../components/DataTable.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatCard from '../components/StatCard.vue'
@@ -43,6 +45,101 @@ function defined(parts: readonly (string | undefined)[]): string[] {
 /* ── ① 统计卡 ─────────────────────────────────────────────────────────── */
 
 const endpoints = computed<readonly RoutingEndpoint[]>(() => data.value?.endpoints ?? [])
+/**
+ * 路由编辑。
+ *
+ * 菜单动作与页面按钮调用**同一批函数**（moveRoute / toggleRoute / deleteRoute / openRouteEdit）
+ * —— 分成两套的话，菜单里改了 A、按钮里改了 B，最后没人知道哪个是对的。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+
+interface RouteCandidate {
+  readonly rank: number
+  readonly provider: string
+  readonly model: string
+  readonly enabled: boolean
+  readonly effort?: string
+  readonly note?: string
+}
+
+const editingRoute = ref<{ role: string; rank: number } | null>(null)
+const routeSaving = ref(false)
+const routeError = ref('')
+const routeForm = reactive({ provider: '', model: '', effort: '', enabled: true, note: '' })
+
+/** 统一发请求 + 刷新；失败必须显示（静默失败会让人以为保存成功了）。 */
+async function postRoute(path: string, body: Record<string, unknown>): Promise<void> {
+  routeSaving.value = true
+  routeError.value = ''
+  try {
+    await api.post(path, body)
+    editingRoute.value = null
+    state.refresh()
+  } catch (error) {
+    routeError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    routeSaving.value = false
+  }
+}
+
+function openRouteEdit(role: string, candidate: RouteCandidate): void {
+  editingRoute.value = { role, rank: candidate.rank }
+  routeError.value = ''
+  routeForm.provider = candidate.provider
+  routeForm.model = candidate.model
+  routeForm.effort = candidate.effort ?? ''
+  routeForm.enabled = candidate.enabled
+  routeForm.note = candidate.note ?? ''
+}
+
+async function saveRoute(): Promise<void> {
+  if (editingRoute.value === null) return
+  await postRoute('/model-route', {
+    role: editingRoute.value.role,
+    rank: editingRoute.value.rank,
+    provider: routeForm.provider.trim(),
+    model: routeForm.model.trim(),
+    effort: routeForm.effort === '' ? null : routeForm.effort,
+    enabled: routeForm.enabled,
+    note: routeForm.note,
+  })
+}
+
+async function moveRoute(role: string, rank: number, direction: 'up' | 'down'): Promise<void> {
+  await postRoute('/model-route-move', { role, rank, direction })
+}
+
+async function toggleRoute(role: string, candidate: RouteCandidate): Promise<void> {
+  await postRoute('/model-route', {
+    role,
+    rank: candidate.rank,
+    provider: candidate.provider,
+    model: candidate.model,
+    effort: candidate.effort ?? null,
+    enabled: !candidate.enabled,
+    note: candidate.note ?? '',
+  })
+}
+
+async function deleteRoute(role: string, rank: number): Promise<void> {
+  await postRoute('/model-route-delete', { role, rank })
+}
+
+function routeMenuItems(role: string, candidate: RouteCandidate): ContextMenuItem[] {
+  return [
+    { key: 'edit', label: '编辑…', hint: `rank ${String(candidate.rank)}`, run: () => openRouteEdit(role, candidate) },
+    { key: 'up', label: '上移', disabled: candidate.rank === 0, run: () => moveRoute(role, candidate.rank, 'up') },
+    { key: 'down', label: '下移', run: () => moveRoute(role, candidate.rank, 'down') },
+    {
+      key: 'toggle',
+      label: candidate.enabled ? '停用' : '启用',
+      hint: candidate.enabled ? '当前已启用' : '当前已停用',
+      run: () => toggleRoute(role, candidate),
+    },
+    { key: 'del', label: '删除', danger: true, run: () => deleteRoute(role, candidate.rank) },
+  ]
+}
+
 const roles = computed<readonly RoutingRole[]>(() => data.value?.roles ?? [])
 const log = computed<readonly RoutingLogEntry[]>(() => data.value?.log ?? [])
 const uncertain = computed<readonly UncertainCaseOverview[]>(() => data.value?.uncertain ?? [])
@@ -374,6 +471,9 @@ const uncertainColumns: TableColumn<Record<string, unknown>>[] = [
                   v-for="candidate in role.candidates"
                   :key="`${role.role}-${candidate.rank}`"
                   :data-disabled="!candidate.enabled"
+                  class="cand"
+                  @contextmenu="onContextMenu($event, routeMenuItems(role.role, candidate), candidate)"
+                  v-on="touchHandlers(routeMenuItems(role.role, candidate), candidate)"
                 >
                   <div class="cand-line">
                     <span class="rank mono">rank {{ candidate.rank }}</span>
@@ -389,6 +489,17 @@ const uncertainColumns: TableColumn<Record<string, unknown>>[] = [
                     </StatusBadge>
                   </div>
                   <p v-if="candidate.note !== undefined" class="cand-note muted">{{ candidate.note }}</p>
+                  <div class="cand-actions">
+                    <button type="button" class="mini" :disabled="candidate.rank === 0" @click="moveRoute(role.role, candidate.rank, 'up')">
+                      ↑ 上移
+                    </button>
+                    <button type="button" class="mini" @click="moveRoute(role.role, candidate.rank, 'down')">↓ 下移</button>
+                    <button type="button" class="mini" @click="openRouteEdit(role.role, candidate)">编辑</button>
+                    <button type="button" class="mini danger" @click="toggleRoute(role.role, candidate)">
+                      {{ candidate.enabled ? '停用' : '启用' }}
+                    </button>
+                    <button type="button" class="mini danger" @click="deleteRoute(role.role, candidate.rank)">删除</button>
+                  </div>
                 </li>
               </ul>
             </PanelCard>
@@ -519,6 +630,53 @@ const uncertainColumns: TableColumn<Record<string, unknown>>[] = [
       </template>
     </AsyncSection>
   </div>
+
+      <div v-if="editingRoute !== null" class="edit-mask" @click.self="editingRoute = null">
+        <div class="edit-box" role="dialog" aria-modal="true" aria-label="编辑路由">
+          <h3 class="edit-title">编辑路由候选</h3>
+          <p class="mono edit-subject">{{ editingRoute.role }} · rank {{ editingRoute.rank }}</p>
+
+          <label class="edit-field">
+            <span>provider</span>
+            <input v-model="routeForm.provider" class="edit-input mono" />
+          </label>
+          <label class="edit-field">
+            <span>model</span>
+            <input v-model="routeForm.model" class="edit-input mono" />
+          </label>
+          <label class="edit-field">
+            <span>推理强度</span>
+            <select v-model="routeForm.effort" class="edit-input">
+              <!-- 值域是**各模型官方文档的真实值域**：DeepSeek = none/low/high/max、
+                   GLM = low/high/max、MiMo 不区分强度。**没有 medium** ——
+                   它在 DeepSeek 与 GLM 上都不合法（GLM 会直接报错）。 -->
+              <option value="">（不指定，用端点默认）</option>
+              <option value="none">none（关闭思考）</option>
+              <option value="low">low</option>
+              <option value="high">high</option>
+              <option value="max">max（拉满）</option>
+            </select>
+          </label>
+          <label class="edit-field">
+            <span>启用</span>
+            <input v-model="routeForm.enabled" type="checkbox" />
+          </label>
+          <label class="edit-field">
+            <span>备注</span>
+            <input v-model="routeForm.note" class="edit-input" />
+          </label>
+
+          <p v-if="routeError !== ''" class="edit-error">{{ routeError }}</p>
+          <div class="edit-actions">
+            <button type="button" class="mini" @click="editingRoute = null">取消</button>
+            <button type="button" class="mini primary" :disabled="routeSaving" @click="saveRoute">
+              {{ routeSaving ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
@@ -750,5 +908,97 @@ const uncertainColumns: TableColumn<Record<string, unknown>>[] = [
 .mono {
   font-family: var(--font-mono);
   font-size: 0.92em;
+}
+
+.cand {
+  cursor: context-menu;
+}
+.cand-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--s-2);
+}
+.mini {
+  min-height: 28px;
+  padding: 0 var(--s-2);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text-2);
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+.mini:hover:not(:disabled) {
+  border-color: var(--c-brand);
+  color: var(--c-brand);
+}
+.mini:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mini.danger:hover:not(:disabled) {
+  border-color: var(--c-err, #d9534f);
+  color: var(--c-err, #d9534f);
+}
+.mini.primary {
+  border-color: transparent;
+  background: var(--c-brand);
+  color: #fff;
+}
+
+.edit-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  padding: var(--s-4);
+  background: rgb(0 0 0 / 45%);
+}
+.edit-box {
+  width: min(420px, 100%);
+  max-height: 88vh;
+  overflow: auto;
+  padding: var(--s-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-lg);
+}
+.edit-title {
+  font-size: var(--t-md);
+}
+.edit-subject {
+  margin-top: 4px;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.edit-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+  font-size: var(--t-sm);
+}
+.edit-input {
+  width: 190px;
+  min-height: 34px;
+  padding: 0 var(--s-2);
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-sm);
+  color: var(--c-text);
+}
+.edit-error {
+  margin-top: var(--s-3);
+  color: var(--c-err, #d9534f);
+  font-size: var(--t-xs);
+}
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
 }
 </style>
