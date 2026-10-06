@@ -13,6 +13,7 @@
  * @module @forlife/gateway/admin/api
  */
 import { setWakeRule, type WakeCondition } from '../wake.ts'
+import { setConversationImpression, setConversationNote } from '@forlife/store'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -34,6 +35,7 @@ import {
 } from './auth.ts'
 import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
+import { queryConversation } from './queries-conversation.ts'
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
@@ -458,6 +460,81 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         })
         log?.(`[admin] 接管模式 ${body['on'] ? '已开启' : '已关闭'}`)
         json(res, 200, { on: body['on'] })
+        return true
+      }
+
+      // ── 会话详情（子窗口的读接口）──────────────────────────────────
+      // 一次给全：基础信息 + 时区 + 备注 + 画像 + 唤醒规则 + 留痕。
+      // 分成多个接口的话，面板会出现"一半有数据一半转圈"的中间态，
+      // 而那恰恰是用户判断"这个会话到底怎么了"时看的。
+      if (route === '/conversation' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const key = url.searchParams.get('id') ?? ''
+        if (key === '') {
+          json(res, 400, { error: '缺少 id（会话键）' })
+          return true
+        }
+        const detail = queryConversation(db, key)
+        if (detail === undefined) {
+          // 明确 404 而不是返回空壳 —— 空壳会让面板显示一个"什么都是 0"的会话，
+          // 让人以为是数据丢了
+          json(res, 404, { error: `没有这个会话：${key}` })
+          return true
+        }
+        json(res, 200, detail)
+        return true
+      }
+
+      // ── 会话备注（写；**只有人能写**）──────────────────────────────
+      // 刻意不提供"模型写备注"的接口：备注是用户的权威说明，
+      // 模型能写的话，它一次自动总结就会覆盖掉，而用户不会收到任何提示。
+      if (route === '/conversation-note' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const key = typeof body['conversationKey'] === 'string' ? body['conversationKey'] : ''
+        if (key === '') {
+          json(res, 400, { error: 'conversationKey 必填' })
+          return true
+        }
+        const note = typeof body['note'] === 'string' ? body['note'] : null
+        setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 会话画像（写；模型与人都能改，但人改过之后模型不该覆盖）────
+      if (route === '/conversation-impression' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const key = typeof body['conversationKey'] === 'string' ? body['conversationKey'] : ''
+        if (key === '') {
+          json(res, 400, { error: 'conversationKey 必填' })
+          return true
+        }
+        const impression = typeof body['impression'] === 'string' ? body['impression'] : null
+        // 从面板改的 ⇒ source='user'，此后模型自动更新不会覆盖它
+        const written = setConversationImpression(db, {
+          conversationKey: key,
+          impression,
+          source: 'user',
+          updatedBy: session.id.slice(0, 8),
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `画像 ${key} → ${written ? '已保存（标记为用户修正）' : '未写入'}` })
+        json(res, 200, { ok: true, written })
         return true
       }
 
