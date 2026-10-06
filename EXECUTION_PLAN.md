@@ -2481,7 +2481,7 @@ sticker_save / qq_mention_all / qq_group_notice）、「图片存为表情包」
   - [x] **主动 @全体 的额度闸门** —— **未做 —— 用户 2026-10-06 要求立刻做**（此前"用户已降优先级"是**我的误读**，已纠正）。坑：NapCat 该接口返回值与 `group_id` 不完全相关，需同时看群维度与账号维度并**保守取值**。　**证据**：`decideMentionAll` / `decideWithLedger` 已实现并接进 `gateway.ts` L275（注释：「★ @全体 的额度闸门。放在这里（而不是工具侧）是因为…」）；坑已按 PLAN 提示处理：**同时看群维度与账号维度并保守取 min**。
   - [x] **群公告与 @全体 分开**：两者是**独立工具**；`group_notice` 不受 @全体 额度影响；模型能在同一轮里自主选择用哪个。　**证据**：`MENTION_TOOL_NAMES = ['qq_mention_all', 'qq_group_notice']`（两个独立工具）；`gateway.ts` L302 有 `notice` 分支 → `transport.groupNotice()`，**该路径不做 @全体 额度检查**。
 
-### 阶段 7 · 沙箱工作区与端口出口✅（预计 6–10 天）
+### 阶段 7 · 沙箱工作区与端口出口 ✅（预计 6–10 天）
 
 **交付物**
 1. 工作区沙箱：`workspaceRoot` 配置 + 与宿主沙箱模式接线 + 越界访问测试。
