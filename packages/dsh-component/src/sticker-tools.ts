@@ -216,5 +216,5 @@ export function buildStickerTools(defineTool: DefineToolLike, runtime: MemoryRun
     },
   })
 
-  return [stickerSearch, sendSticker]
+  return [stickerSearch, sendSticker, importSticker]
 }
