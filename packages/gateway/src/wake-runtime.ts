@@ -30,6 +30,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { createWakeBridge, isHeaderSafe } from './wake-bridge.ts'
+import { createSystemEventHooks } from './wake-system-hooks.ts'
 import { createWakeEngine, type WakeEngine, type WakeDispatcher } from './wake-engine.ts'
 import { buildWakePrompt } from './wake-prompt.ts'
 import { createSystemWakeSource, type SystemWakeSource } from './wake-system-source.ts'
@@ -188,7 +189,21 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
     }
   }
 
+  // 系统事件钩子（预算超限等要能变成 system 触发）
+  const systemSource = createSystemWakeSource({
+    db,
+    log,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  })
+
+  const systemHooks = createSystemEventHooks({ source: systemSource, log })
+
   const engine = createWakeEngine({
+    // **预算超限 ⇒ system 触发** —— 六道闸里早就判了，但以前没人往外说，
+    // 于是"预算超了"只能靠人去面板上看。
+    onGateBlocked: (trigger, decision, reason) => {
+      if (decision === 'budget') systemHooks.budgetExceeded(trigger.scope, reason)
+    },
     db,
     dispatch,
     log,
@@ -199,11 +214,6 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
   })
 
   // ── 系统事件源（QQ 掉线等由调用方 observe）──
-  const systemSource = createSystemWakeSource({
-    db,
-    log,
-    ...(options.now === undefined ? {} : { now: options.now }),
-  })
 
   // ── 监视 tick：**独立定时器** ──
   if (watchSource !== undefined) {

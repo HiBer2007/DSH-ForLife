@@ -61,6 +61,17 @@ export interface WakeEngineOptions {
   readonly now?: () => Date
   readonly setIntervalImpl?: (fn: () => void, ms: number) => { unref?: () => void }
   readonly clearIntervalImpl?: (handle: unknown) => void
+  /**
+   * 被闸门拦下时的回调（可选）。
+   *
+   * 六道闸里**早就判了预算**，但以前没人往外说 —— 于是"预算超了"这件事
+   * 只能靠人去面板上看，而不是变成一次 `system` 触发让模型自己知道。
+   *
+   * **它是观察者，不是引擎的一部分** —— 抛异常会被吞掉。
+   */
+  readonly onGateBlocked?:
+    | ((trigger: WakeTriggerRow, decision: string, reason: string) => void)
+    | undefined
 }
 
 /** 引擎。 */
@@ -136,6 +147,15 @@ export function createWakeEngine(options: WakeEngineOptions): WakeEngine {
     })
 
     if (!decision.allow) {
+      // **把"为什么没醒"上报出去** —— 六道闸里早就判了预算，但以前没人往外说。
+      // 吞掉异常：它是观察者，不是引擎的一部分。
+      if (decision.decision === 'budget') {
+        try {
+          options.onGateBlocked?.(trigger, decision.decision, decision.reason)
+        } catch (error) {
+          log(`预算上报失败（已忽略）：${String(error).slice(0, 160)}`)
+        }
+      }
       // **被拦下也要留痕**（而且是可区分的原因）—— 否则用户看到"没醒"却查不出为什么
       recordWakeEvent(db, {
         triggerId: trigger.id,
