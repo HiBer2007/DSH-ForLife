@@ -13,7 +13,7 @@
  * @module @forlife/gateway/admin/api
  */
 import { setWakeRule, type WakeCondition } from '../wake.ts'
-import { setConversationImpression, setConversationNote } from '@forlife/store'
+import { setConversationClock, setConversationImpression, setConversationNote } from '@forlife/store'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -506,6 +506,47 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const note = typeof body['note'] === 'string' ? body['note'] : null
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 会话时区（写；**人工设置**，标 user_set）────────────────────
+      if (route === '/conversation-timezone' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const key = typeof body['conversationKey'] === 'string' ? body['conversationKey'] : ''
+        const timezone = typeof body['timezone'] === 'string' ? body['timezone'].trim() : ''
+        if (key === '' || timezone === '') {
+          json(res, 400, { error: 'conversationKey 与 timezone 都必填' })
+          return true
+        }
+        // 校验时区名：写进去一个拼错的名字，之后这个会话的**所有时间表述都会错**，
+        // 而且不会报错（只是算出来的时间不对）—— 这是最难发现的一类问题。
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: timezone })
+        } catch {
+          json(res, 400, { error: `不是合法时区名：${timezone}（应形如 Asia/Shanghai）` })
+          return true
+        }
+        // 复用 store 里既有的 setConversationClock（它带来源分级与校验），
+        // 不重写一套 —— 两套校验迟早分叉。
+        // 来源固定 user_set：面板上改是**人明确做的决定**，优先级最高；
+        // 不这么标的话，模型/小模型之后的自动判断会按优先级把它覆盖掉。
+        setConversationClock(db, {
+          scope: key,
+          timezone,
+          hour24: body['hour24'] !== false,
+          source: 'user_set',
+          ...(typeof body['reason'] === 'string' ? { reason: body['reason'] } : {}),
+          updatedBy: session.id.slice(0, 8),
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `时区 ${key} → ${timezone}` })
         json(res, 200, { ok: true })
         return true
       }

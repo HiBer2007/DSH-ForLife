@@ -38,6 +38,22 @@ const saveError = ref('')
 
 /** 编辑中的草稿（与已保存值分开，取消时不会污染）。 */
 const noteDraft = ref('')
+const timezoneDraft = ref('')
+
+/** 常用时区（只是**建议**，仍允许自由输入 —— 总有人的时区不在短名单里）。 */
+const TIMEZONE_SUGGESTIONS = [
+  'Asia/Shanghai',
+  'Asia/Hong_Kong',
+  'Asia/Taipei',
+  'Asia/Tokyo',
+  'Asia/Seoul',
+  'Asia/Singapore',
+  'Europe/London',
+  'Europe/Berlin',
+  'America/New_York',
+  'America/Los_Angeles',
+  'UTC',
+] as const
 const impressionDraft = ref('')
 
 async function load(): Promise<void> {
@@ -51,6 +67,7 @@ async function load(): Promise<void> {
     detail.value = data
     noteDraft.value = data.note ?? ''
     impressionDraft.value = data.impression ?? ''
+    timezoneDraft.value = data.clock?.timezone ?? ''
   } catch (caught) {
     // 会话不存在时接口给 404 并带原因 —— 如实显示，不显示空壳
     error.value = caught instanceof Error ? caught.message : String(caught)
@@ -67,6 +84,26 @@ watch(() => props.conversationKey, (key) => {
   }
   void load()
 }, { immediate: true })
+
+/** 保存时区（记 user_set，优先级高于模型判断）。 */
+async function saveTimezone(): Promise<void> {
+  const key = props.conversationKey
+  if (key === null) return
+  if (timezoneDraft.value.trim() === '') {
+    saveError.value = '时区不能为空'
+    return
+  }
+  saving.value = true
+  saveError.value = ''
+  try {
+    await api.post('/conversation-timezone', { conversationKey: key, timezone: timezoneDraft.value.trim() })
+    await load()
+  } catch (caught) {
+    saveError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    saving.value = false
+  }
+}
 
 /** 保存备注（只有人能写这条路径）。 */
 async function saveNote(): Promise<void> {
@@ -157,12 +194,32 @@ const kindLabel = computed(() => {
               <!-- 时区 -->
               <section class="block">
                 <h3 class="block-title">时区</h3>
-                <p v-if="detail.clock" class="value">
-                  <span class="mono">{{ detail.clock.timezone }}</span>
-                  <StatusBadge tone="muted">{{ detail.clock.source }}</StatusBadge>
+                <div class="tz-row">
+                  <input
+                    v-model="timezoneDraft"
+                    class="tz-input mono"
+                    list="tz-suggestions"
+                    placeholder="Asia/Shanghai"
+                    aria-label="时区"
+                  />
+                  <datalist id="tz-suggestions">
+                    <option v-for="zone in TIMEZONE_SUGGESTIONS" :key="zone" :value="zone" />
+                  </datalist>
+                  <button type="button" class="btn primary" :disabled="saving" @click="saveTimezone">
+                    {{ saving ? '保存中…' : '保存时区' }}
+                  </button>
+                </div>
+                <p v-if="detail.clock" class="hint">
+                  当前 <span class="mono">{{ detail.clock.timezone }}</span> ·
+                  来源 <span class="mono">{{ detail.clock.source }}</span>
+                  <template v-if="detail.clock.source === 'user_set'"> （人工设置，优先级最高）</template>
                 </p>
-                <p v-else class="value muted">未设置 —— 用系统默认</p>
-                <p v-if="detail.clock?.reason" class="hint">{{ detail.clock.reason }}</p>
+                <p v-else class="hint">未设置 —— 用系统默认</p>
+                <p class="hint">
+                  保存后会记为 <span class="mono">user_set</span>，**优先级高于模型与小模型的自动判断** ——
+                  否则它们之后会把你设的值覆盖掉。时区名写错不会报错，只会让这个会话的
+                  **所有时间表述都错**，所以后端会校验，这里也给了常用值可选。
+                </p>
               </section>
 
               <!-- 备注（主人说的，权威） -->
@@ -469,5 +526,27 @@ const kindLabel = computed(() => {
 }
 .rule-inherit {
   color: var(--c-text-3);
+}
+
+.tz-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.tz-input {
+  flex: 1;
+  min-width: 140px;
+  min-height: 34px;
+  padding: 0 var(--s-3);
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  color: var(--c-text);
+  font-size: var(--t-sm);
+}
+.tz-input:focus {
+  outline: none;
+  border-color: var(--c-brand);
+  box-shadow: 0 0 0 3px var(--c-brand-soft);
 }
 </style>
