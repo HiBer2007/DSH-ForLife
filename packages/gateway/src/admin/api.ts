@@ -38,6 +38,7 @@ import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { queryWakes } from './queries-wakes.ts'
 import { createDshStatusProbe } from '../dsh-status.ts'
+import { probeAllEndpoints } from '../endpoint-health.ts'
 import { createExternalWakeSource } from '../wake-external-source.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
 import { backupNow } from './storage-write.ts'
@@ -531,6 +532,35 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 端点探测（手动触发；用户要求"需要增加手动探测"）────────────
+      if (route === '/endpoint-probe' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+
+        // **顺手回结果** —— 只回 ok 的话用户还得再刷一次页面，
+        // 而"点了按钮没反应"最容易让人以为功能坏了
+        const results = await probeAllEndpoints({ db, log: log ?? ((): void => {}) })
+        const okCount = results.filter((r) => r.ok).length
+        audit(db, {
+          action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path,
+          detail: `手动探测端点：${String(okCount)}/${String(results.length)} 健康`,
+        })
+        json(res, 200, {
+          ok: true,
+          total: results.length,
+          healthy: okCount,
+          results: results.map((r) => ({
+            endpointId: r.endpointId,
+            ok: r.ok,
+            latencyMs: r.latencyMs,
+            note: r.note,
+          })),
+        })
         return true
       }
 
