@@ -16,7 +16,8 @@
  * 数字口径写在每张卡的 hint 里：列表是**一页**（服务端单页 50/30 条），
  * 卡片上的计数是**全库**聚合。混着用会让人以为"待处理 30 条"却只看到 3 行。
  */
-import { computed } from 'vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
+import { computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
 import type {
@@ -28,6 +29,8 @@ import type {
   TurnItem,
 } from '../api/types-qq.ts'
 import AsyncSection from '../components/AsyncSection.vue'
+import ConversationPanel from '../components/ConversationPanel.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import DataTable, { type TableColumn } from '../components/DataTable.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatCard from '../components/StatCard.vue'
@@ -190,6 +193,34 @@ const outboxHint = computed(
 
 // ── 各表的列定义 ────────────────────────────────────────────────────────────
 
+/**
+ * 子窗口与右键菜单。
+ *
+ * 菜单动作与页面按钮调用**同一个** openConversation —— 分成两套的话，
+ * 菜单里改了 A、按钮里改了 B，最后没人知道哪个是对的。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+const openedKey = ref<string | null>(null)
+
+function openConversation(key: string): void {
+  openedKey.value = key
+}
+
+/** 右键/长按菜单项。 */
+function sessionMenuItems(row: Record<string, unknown>): ContextMenuItem[] {
+  const key = String(row['conversationKey'])
+  return [
+    { key: 'detail', label: '打开详情…', hint: '时区/备注/画像', run: () => openConversation(key) },
+    {
+      key: 'copy',
+      label: '复制会话键',
+      run: () => {
+        void navigator.clipboard?.writeText(key)
+      },
+    },
+  ]
+}
+
 const sessionColumns: TableColumn<Record<string, unknown>>[] = [
   // 手机端卡片标题取标题，没标题的会话退回会话键——否则卡片头上是一个没有信息量的 "—"
   {
@@ -272,13 +303,36 @@ const pendingColumns: TableColumn<Record<string, unknown>>[] = [
           />
         </div>
 
-        <PanelCard title="会话" :subtitle="`按最后消息时间倒序；本页 ${formatNumber(sessions.length)} 个`">
-          <DataTable
-            :columns="sessionColumns"
-            :rows="sessions"
-            row-key="conversationKey"
-            empty-text="还没有会话记录。QQ 连接收到第一条消息、或机器人主动发过一条之后，这里会出现会话及其未读数。"
-          />
+        <PanelCard title="会话" :subtitle="`按最后消息时间倒序；本页 ${formatNumber(sessions.length)} 个 · 右键或长按可操作`">
+          <p v-if="sessions.length === 0" class="sessions-empty">
+            还没有会话记录。QQ 连接收到第一条消息、或机器人主动发过一条之后，
+            这里会出现会话及其未读数。
+          </p>
+
+          <ul v-else class="sessions">
+            <li
+              v-for="row in sessions"
+              :key="String(row['conversationKey'])"
+              class="session"
+              @contextmenu="onContextMenu($event, sessionMenuItems(row), row)"
+              v-on="touchHandlers(sessionMenuItems(row), row)"
+            >
+              <div class="session-main">
+                <span class="session-title">{{ text(row['title']) ?? String(row['conversationKey']) }}</span>
+                <span class="mono session-key">{{ row['conversationKey'] }}</span>
+              </div>
+              <div class="session-facts">
+                <StatusBadge tone="muted">{{ kindLabel(row['kind']) }}</StatusBadge>
+                <span>{{ formatRelative(String(row['lastMessageAt'] ?? '')) }}</span>
+                <span v-if="Number(row['unread'] ?? 0) > 0" class="session-unread">
+                  未读 {{ formatNumber(Number(row['unread'])) }}
+                </span>
+              </div>
+              <button type="button" class="session-open" @click="openConversation(String(row['conversationKey']))">
+                详情
+              </button>
+            </li>
+          </ul>
         </PanelCard>
 
         <PanelCard title="入站队列" :subtitle="`按落库时间倒序；本页 ${formatNumber(queue.length)} 条`">
@@ -361,6 +415,8 @@ const pendingColumns: TableColumn<Record<string, unknown>>[] = [
       </template>
     </AsyncSection>
   </div>
+
+    <ConversationPanel :conversation-key="openedKey" @close="openedKey = null" />
 </template>
 
 <style scoped>
@@ -486,5 +542,76 @@ const pendingColumns: TableColumn<Record<string, unknown>>[] = [
     text-align: left;
     padding-top: 0;
   }
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+.session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--touch-min, 44px);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  cursor: context-menu;
+}
+.session:hover {
+  background: var(--c-surface-2);
+}
+.session-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.session-title {
+  color: var(--c-text);
+  font-size: var(--t-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-key {
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.session-facts {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+}
+.session-unread {
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--c-brand-soft);
+  color: var(--c-brand-text, var(--c-brand));
+}
+.session-open {
+  min-height: 28px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text-2);
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+.session-open:hover {
+  border-color: var(--c-brand);
+  color: var(--c-brand);
+}
+.sessions-empty {
+  padding: var(--s-5) 0;
+  color: var(--c-text-3);
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  text-align: center;
 }
 </style>
