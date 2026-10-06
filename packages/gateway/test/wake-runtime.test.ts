@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { createWakeTrigger, listWakeEvents, openDatabase } from '@forlife/store'
+import { createWakeTrigger, listWakeEvents, listWakeRequests, openDatabase } from '@forlife/store'
 
 import { createWakeRuntime, wakeConfigFromEnv } from '../src/wake-runtime.ts'
 
@@ -47,7 +47,7 @@ test('wakeConfigFromEnv：tick 非法值退回 1000ms', () => {
   assert.equal(wakeConfigFromEnv({ FORLIFE_WAKE_TICK_MS: 'abc' }).tickMs, 1000)
 })
 
-test('配齐了：到点会真的调桥，并把提示词发过去', async () => {
+test('配齐了：到点会写队列，并把**组装好的提示词**整段存下来', async () => {
   const opened = openDatabase({ file: ':memory:' })
   let sentBody = ''
   try {
@@ -79,13 +79,15 @@ test('配齐了：到点会真的调桥，并把提示词发过去', async () =>
     const outcomes = await r.engine.tick()
     assert.equal(outcomes[0]?.decision, 'fired')
 
-    const body = JSON.parse(sentBody) as Record<string, unknown>
-    assert.equal(body['sessionId'], 'onebot11:123')
+    // ★ **改成读队列**（方向性调整：不再走 HTTP 桥）
+    const queued = listWakeRequests(opened.db, 5)
+    assert.equal(queued.length, 1, '应当入队一条')
+    assert.equal(queued[0]?.session_id, 'onebot11:123')
     // sourceKind 要区分来源 —— 不能是 'user'
-    assert.equal(body['sourceKind'], 'wake-timer')
-    // 提示词要带上防注入框定
-    assert.match(String(body['text']), /不是用户的新指令/)
-    assert.match(String(body['text']), /提醒用户吃药/)
+    assert.equal(queued[0]?.source_kind, 'wake-timer')
+    // 提示词要带上防注入框定（**整段存下来，插件侧不再拼**）
+    assert.match(String(queued[0]?.text), /不是用户的新指令/)
+    assert.match(String(queued[0]?.text), /提醒用户吃药/)
   } finally {
     opened.db.close()
   }
@@ -125,7 +127,7 @@ test('★ scope=* 的触发器：说清"无处唤醒"，而不是发空 sessionI
   }
 })
 
-test('★ 桥不通 ⇒ 记成 failed（不能记成 fired，否则面板显示"已唤醒"而模型没动）', async () => {
+test('★ 入队失败 ⇒ 记成 failed（不能记成 fired，否则面板显示"已唤醒"而模型没动）', async () => {
   const opened = openDatabase({ file: ':memory:' })
   try {
     const r = createWakeRuntime({
@@ -135,18 +137,17 @@ test('★ 桥不通 ⇒ 记成 failed（不能记成 fired，否则面板显示"
       now: () => T0,
       setIntervalImpl: () => ({ unref: () => {} }),
       clearIntervalImpl: () => {},
-      fetchImpl: async () => {
-        throw new Error('ECONNREFUSED')
-      },
     })
     createWakeTrigger(opened.db, {
       kind: 'timer', scope: 'onebot11:123', title: 't', prompt: 'p', spec: {}, createdBy: 'x',
       nextFireAt: '2026-10-06T11:59:00.000Z', now: T0,
     })
+    // 把队列表删掉，模拟"入队失败"（磁盘满 / 表被删 / 库损坏）
+    opened.db.exec('DROP TABLE wake_requests')
 
     const outcomes = await r.engine!.tick()
-    assert.equal(outcomes[0]?.decision, 'failed')
-    assert.match(outcomes[0]?.reason ?? '', /连不上唤醒桥/)
+    assert.equal(outcomes[0]?.decision, 'failed', '入队失败必须记成 failed')
+    assert.match(String(outcomes[0]?.reason), /入队失败/)
 
     const events = listWakeEvents(opened.db, 10)
     assert.equal(events[0]?.['decision'], 'failed', '必须记成 failed')
@@ -154,6 +155,7 @@ test('★ 桥不通 ⇒ 记成 failed（不能记成 fired，否则面板显示"
     opened.db.close()
   }
 })
+
 
 test('提示词里带上"上次行动"（否则模型会重复劳动）', async () => {
   const opened = openDatabase({ file: ':memory:' })
@@ -184,9 +186,10 @@ test('提示词里带上"上次行动"（否则模型会重复劳动）', async 
       .run(created.row!.id)
 
     await r.engine!.tick()
-    const body = JSON.parse(sentBody) as Record<string, unknown>
-    assert.match(String(body['text']), /## 上次醒来时你做了什么/)
-    assert.match(String(body['text']), /上次查了天气/)
+    // ★ 改成读队列
+    const queued = listWakeRequests(opened.db, 5)
+    assert.match(String(queued[0]?.text), /## 上次醒来时你做了什么/)
+    assert.match(String(queued[0]?.text), /上次查了天气/)
   } finally {
     opened.db.close()
   }

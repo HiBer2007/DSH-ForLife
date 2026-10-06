@@ -30,6 +30,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { createWakeBridge, isHeaderSafe } from './wake-bridge.ts'
+import { enqueueWakeRequest } from '@forlife/store'
 import { createSystemEventHooks } from './wake-system-hooks.ts'
 import { createWakeEngine, type WakeEngine, type WakeDispatcher } from './wake-engine.ts'
 import { buildWakePrompt } from './wake-prompt.ts'
@@ -139,6 +140,9 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
     }
   }
 
+  // 保留：桥的密钥校验/忙判定/flush 守卫逻辑在**轮询侧原样复用**。
+  // 将来 DSH 若提供免鉴权路由机制，可以切回这条路径。
+  void createWakeBridge
   const bridge = createWakeBridge({
     url: config.bridgeUrl,
     secret: config.bridgeSecret,
@@ -173,20 +177,31 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
       ...(trigger.budget_tokens > 0 ? { budgetTokens: trigger.budget_tokens } : {}),
     })
 
-    const result = await bridge.wake({
-      sessionId: trigger.scope,
-      text: prompt,
-      // **sourceKind 必须区分来源**（不能是 'user'）——
-      // 否则系统唤醒在会话里看起来像用户发的消息
-      sourceKind: `wake-${trigger.kind}`,
-      summary: trigger.title,
+    // **写队列，不调 HTTP 桥**（方向性调整）。
+    // 原因：DSH 注册的路由是在**它自己鉴权之后**才被调用的（没法绕过），
+    // 而它的 token 重启即失效 —— gateway 拿不到稳定凭据（真机 401）。
+    // 改成写一行，由**插件侧**（DSH 进程内）轮询认领并直接调 agent.followup()。
+    // **包住入队异常并给一句人话** ——
+    // 原始 SQLite 错误（如 "no such table"）看不出是"入队失败"，
+    // 而"入队失败"和"派发失败"要采取的措施完全不同。
+    let requestId: string
+    try {
+    const requestId = enqueueWakeRequest(db, {
+    triggerId: trigger.id,
+    sessionId: trigger.scope,
+    text: prompt,
+    sourceKind: `wake-${trigger.kind}`,
+    summary: trigger.title,
     })
-
-    return {
-      ok: result.ok,
-      reason: result.reason,
-      ...(result.modelDid === undefined ? {} : { modelDid: result.modelDid }),
+    // **decision 的语义变了**：以前 fired = "桥确认收到了"；
+    // 现在是"**已入队，等插件执行**"。这个区别必须写进 reason ——
+    // 否则看 wake_events 的人会以为"模型已经动了"，而实际可能还在队列里。
+    return { ok: true, reason: `已入队（${requestId}），等插件侧认领执行` }
+    } catch (error) {
+      return { ok: false, reason: `入队失败：${String(error).slice(0, 160)}` }
     }
+
+
   }
 
   // 系统事件钩子（预算超限等要能变成 system 触发）
