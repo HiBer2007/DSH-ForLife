@@ -108,3 +108,13 @@ export type { NoiseFilterOptions, NoiseMessage, NoiseRule, NoiseVerdict, Debounc
 
 export { WAKE_CONDITION_GROUPS } from './wake.ts'
 
+
+// ── 表情与媒体（阶段 6）────────────────────────────────────────────────
+export { createStickerService } from './sticker-service.ts'
+export type { AddStickerResult, SendStickerResult, StickerService, StickerServiceOptions } from './sticker-service.ts'
+export { checkMediaBytes, checkSourceUrl, DEFAULT_MEDIA_WHITELIST, fingerprintOf, ingestSticker, MAX_MEDIA_BYTES } from './stickers.ts'
+export type { IngestStickerInput, IngestStickerResult } from './stickers.ts'
+export { loadSearchable, scoreSticker, searchStickers, tokenize } from './sticker-search.ts'
+export type { ScoredSticker, SearchableSticker, StickerHit } from './sticker-search.ts'
+export { buildStickerVisionRequest, createStickerVisionDescriber, parseStickerVisionResponse, visionConfigFromEnv } from './sticker-vision.ts'
+export type { StickerVisionDescriber, StickerVisionOptions, StickerVisionResult } from './sticker-vision.ts'

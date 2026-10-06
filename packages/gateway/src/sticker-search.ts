@@ -131,6 +131,8 @@ export interface StickerHit {
   readonly asset: StickerAssetRow
   readonly score: number
   readonly matched: readonly string[]
+  /** 描述原文 —— 模型要「看见」它才能决定挑哪个（只给 id 等于让它盲选）。 */
+  readonly description: string
 }
 
 /**
@@ -164,7 +166,15 @@ export function searchStickers(
   const hits: StickerHit[] = []
   for (const result of scored.slice(0, limit)) {
     const asset = byId.get(result.assetId)
-    if (asset !== undefined) hits.push({ asset, score: result.score, matched: result.matched })
+    if (asset !== undefined) {
+      const candidate = candidates.find((item) => item.assetId === result.assetId)
+      hits.push({
+        asset,
+        score: result.score,
+        matched: result.matched,
+        description: candidate?.description ?? '',
+      })
+    }
   }
   return hits
 }

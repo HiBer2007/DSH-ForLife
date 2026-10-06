@@ -32,6 +32,7 @@ import {
 } from '@forlife/gateway'
 
 import type { MemoryRuntime } from './runtime.ts'
+import { buildStickerTools, STICKER_TOOL_NAMES } from './sticker-tools.ts'
 import type { DefineToolLike } from './tools.ts'
 
 /** 文本结果。 */
@@ -50,6 +51,7 @@ export const QQ_TOOL_NAMES = [
   'set_wake_rule',
   'set_status',
   'clear_system_status',
+  ...STICKER_TOOL_NAMES,
 ] as const
 
 /**
@@ -537,6 +539,6 @@ export function buildQqTools(
     },
   })
 
-  return [qqReply, qqReact, qqTyping, deferTurn, readPendingTool, listWakeRulesTool, setWakeRuleTool, setStatusTool, clearSystemStatusTool]
+  return [qqReply, qqReact, qqTyping, deferTurn, readPendingTool, listWakeRulesTool, setWakeRuleTool, setStatusTool, clearSystemStatusTool, ...buildStickerTools(defineTool, runtime)]
 }
 
