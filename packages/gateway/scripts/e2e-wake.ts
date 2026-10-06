@@ -34,7 +34,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createWakeTrigger, listWakeEvents, listWakeTriggers, openDatabase, setWakePaused } from '@forlife/store'
+import { createHash } from 'node:crypto'
+import { mkdirSync, writeFileSync } from 'node:fs'
+
+import { createWakeTrigger, getWakeTrigger, listWakeEvents, listWakeTriggers, openDatabase, setWakePaused } from '@forlife/store'
+
+import { createProgramRunner } from '../src/wake-program-runner.ts'
+import { DEFAULT_LIMITS } from '../src/wake-supervisor.ts'
 // 用相对路径而不是包名：gateway **不该依赖** dsh-component（反向耦合会造出循环）。
 // 这个台子本来就站在两个包**之外**看契约，直接引真实处理器最合适。
 import { handleWakeRequest, type WakeHost } from '../../dsh-component/src/wake-bridge-endpoint.ts'
@@ -297,6 +303,143 @@ async function main(): Promise<void> {
     check('恢复后唤醒成功', () => {
       assert.equal(resumed[0]?.decision, 'fired', `实际 ${String(resumed[0]?.decision)}：${String(resumed[0]?.reason)}`)
       assert.equal(dsh.received.length, before + 1)
+    })
+
+    step(8, '验收②：watcher 监视文件出现 → 秒级唤醒（走真实的监视源）')
+    const wsRoot = join(base, 'ws')
+    mkdirSync(wsRoot, { recursive: true })
+    const watchWake = createWakeRuntime({
+      db: reopened.db,
+      env: {
+        FORLIFE_WAKE_BRIDGE_URL: dsh.url,
+        FORLIFE_WAKE_BRIDGE_SECRET: SECRET,
+        FORLIFE_WORKSPACE_ROOT: wsRoot,
+      },
+      log: () => {},
+      now: () => T0,
+      setIntervalImpl: () => ({ unref: () => {} }),
+      clearIntervalImpl: () => {},
+    })
+    const watched = createWakeTrigger(reopened.db, {
+      kind: 'watcher',
+      scope: SESSION,
+      title: '盯一个新文件',
+      prompt: '文件出现了，看看内容',
+      spec: { condition: 'file.exists', path: 'appeared.txt' },
+      createdBy: 'model',
+      now: T0,
+    })
+    check('监视源已启用（配了工作区）', () => {
+      assert.ok(watchWake.watchSource !== undefined, '监视源未启用：' + String(watchWake.watchDisabledReason))
+    })
+    watchWake.watchSource?.tick() // 首次观察（文件还不存在）
+    const beforeWatch = dsh.received.length
+
+    // **文件出现** —— 真实写盘
+    writeFileSync(join(wsRoot, 'appeared.txt'), 'hello', 'utf8')
+    const watchOut = watchWake.watchSource?.tick() ?? []
+    check('文件出现后监视源标记了它', () => {
+      const hit = watchOut.find((o) => o.triggerId === watched.row?.id)
+      assert.equal(hit?.triggered, true, '实际：' + JSON.stringify(watchOut))
+    })
+    const watchFired = await watchWake.engine!.tick()
+    check('引擎随即唤醒（秒级，不是轮询周期级）', () => {
+      const hit = watchFired.find((o) => o.triggerId === watched.row?.id)
+      assert.equal(hit?.decision, 'fired', '实际 ' + String(hit?.decision) + '：' + String(hit?.reason))
+      assert.equal(dsh.received.length, beforeWatch + 1, '桥应当被调用一次')
+    })
+    check('★ 再轮询 20 次不重复唤醒（边沿检测）', () => {
+      const n = dsh.received.length
+      for (let i = 0; i < 20; i += 1) {
+        watchWake.watchSource?.tick()
+        assert.equal(dsh.received.length, n, '第 ' + String(i + 1) + ' 次轮询后不该有新唤醒')
+      }
+    })
+
+    step(9, '验收②后半：崩溃按退避重启、超限自动停用（走真实运行层）')
+    const progScript = 'console.log("run")\n'
+    writeFileSync(join(wsRoot, 'watch.mjs'), progScript, 'utf8')
+    const progSha = createHash('sha256').update(progScript).digest('hex')
+    reopened.db
+      .prepare(
+        'INSERT INTO wake_programs (id, name, contract, path, sha256, enabled, status, restart_count, created_at, updated_at)' +
+          " VALUES ('wp_e2e', 'e2e程序', 'service', 'watch.mjs', ?, 1, 'stopped', 0, ?, ?)",
+      )
+      .run(progSha, T0.toISOString(), T0.toISOString())
+
+    const runner = createProgramRunner({
+      db: reopened.db,
+      workspaceRoot: wsRoot,
+      limits: { ...DEFAULT_LIMITS, maxRestarts: 2, backoffBaseMs: 1000, backoffMaxMs: 10_000 },
+      log: () => {},
+      // 注入一个"总是崩"的 spawn —— 我们测的是**编排**，不是 child_process
+      spawn: async () => ({ exitCode: 1, durationMs: 5, outputBytes: 5, tail: 'boom' }),
+    })
+    const r1 = await runner.runOnce('wp_e2e')
+    check('第 1 次崩 ⇒ 重启，等 1 秒', () => {
+      assert.equal(r1.action, 'restart')
+      assert.equal(r1.waitMs, 1000, '退避应为 1000ms，实际 ' + String(r1.waitMs))
+    })
+    const r2 = await runner.runOnce('wp_e2e')
+    check('第 2 次崩 ⇒ 重启，等 2 秒（指数退避）', () => {
+      assert.equal(r2.action, 'restart')
+      assert.equal(r2.waitMs, 2000, '退避应为 2000ms，实际 ' + String(r2.waitMs))
+    })
+    const r3 = await runner.runOnce('wp_e2e')
+    check('★ 第 3 次崩 ⇒ **自动停用**（超限）', () => {
+      assert.equal(r3.action, 'disable', '实际 ' + r3.action + '：' + r3.reason)
+      assert.match(r3.reason, /超过上限 2/)
+    })
+    check('停用状态落库（面板能看到）', () => {
+      const row = reopened.db.prepare('SELECT status, last_error FROM wake_programs WHERE id = ?').get('wp_e2e') as {
+        status: string
+        last_error: string | null
+      }
+      assert.equal(row.status, 'disabled')
+      assert.match(String(row.last_error), /自动停用/)
+    })
+
+    step(10, '验收③：QQ 掉线 → system 触发；重连**不重复唤醒**（幂等）')
+    const sysDown = createWakeTrigger(reopened.db, {
+      kind: 'system', scope: SESSION, title: 'QQ 掉线了', prompt: '看看为什么断了',
+      spec: { event: 'qq.disconnected' }, createdBy: 'model', now: T0,
+    })
+    const sysUp = createWakeTrigger(reopened.db, {
+      kind: 'system', scope: SESSION, title: 'QQ 恢复了', prompt: '把断线期间没做成的事补上',
+      spec: { event: 'qq.reconnected' }, createdBy: 'model', now: T0,
+    })
+
+    // **用真实的连接回调路径**：与 createGatewayRuntime 里接的那条一模一样
+    // **用 observeConnection**（盯一个状态量），不是 observe 传两个事件名 ——
+    // 后者会让 qq.disconnected 那一侧永远看不到"恢复"，第二次断线不被唤醒。
+    const observe = (connected: boolean): number =>
+      watchWake.systemSource?.observeConnection(connected).triggered.length ?? 0
+
+    const n0 = dsh.received.length
+    check('掉线 ⇒ 触发 1 条', () => {
+      assert.equal(observe(false), 1)
+    })
+    check('掉线触发的是"掉线"那条（不是恢复那条）', () => {
+      assert.equal(getWakeTrigger(reopened.db, sysDown.row!.id)?.next_fire_at, T0.toISOString())
+      assert.equal(getWakeTrigger(reopened.db, sysUp.row!.id)?.next_fire_at, null)
+    })
+    const downFired = await watchWake.engine!.tick()
+    check('掉线唤醒成功', () => {
+      const hit = downFired.find((o) => o.triggerId === sysDown.row!.id)
+      assert.equal(hit?.decision, 'fired', '实际 ' + String(hit?.decision))
+      assert.equal(dsh.received.length, n0 + 1)
+    })
+    check('★ 断线期间反复观察 50 次 ⇒ **一次都不再触发**（幂等）', () => {
+      for (let i = 0; i < 50; i += 1) assert.equal(observe(false), 0, '第 ' + String(i + 1) + ' 次不该触发')
+    })
+    check('恢复 ⇒ 触发"恢复"那条（1 条）', () => {
+      assert.equal(observe(true), 1)
+    })
+    check('★ 恢复后反复观察 50 次 ⇒ 不再触发', () => {
+      for (let i = 0; i < 50; i += 1) assert.equal(observe(true), 0)
+    })
+    check('再次掉线 ⇒ **再触发一次**（那是新故障，不是同一个的重复观察）', () => {
+      assert.equal(observe(false), 1)
     })
 
     reopened.db.close()

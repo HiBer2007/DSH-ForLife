@@ -13,16 +13,20 @@
  * 一条 `system` 触发器的 spec 形如 `{ event: 'qq.disconnected' }`。
  * 事件发生时，找出所有 spec.event 匹配、且启用的触发器，把它们标成"到点"。
  *
- * ## 为什么"没有匹配的触发器"要如实回报
+ * ## ★ 连接状态为什么用**单独一个量**判边沿
  *
- * 用户看到"QQ 掉线了"却**什么都没发生**时，第一个疑问是"我明明设了触发器"。
- * 如果事件源静默地什么都不做，他只能猜。所以返回值里明确写出
- * "有几个触发器匹配、标记了几个" —— 面板与日志都用它。
+ * 端到端台子抓到的第二个真 bug：如果用两个事件名各判一次边沿
+ * （`qq.disconnected` / `qq.reconnected`），那么 `qq.disconnected` 那一侧
+ * **永远看不到"恢复"** —— 它记住的状态一直是 `down`，
+ * 于是**第二次断线被当成"没变化"**。
  *
- * ## 为什么事件要**逐条**回报而不是只回报"处理完了"
+ * 后果很严重：**断线 → 恢复 → 再断线，第二次永远不会唤醒模型。**
  *
- * 一次观察可能匹配多条触发器（比如一条给用户、一条只记账）。
- * 只说"处理完了"的话，排查时不知道是哪条被触发了。
+ * 正确做法（`observeConnection`）：边沿检测盯**连接状态这一个量**，
+ * 事件名从**状态转移**派生。这样：
+ *  - 断线期间观察 50 次 ⇒ 只发 1 次；
+ *  - 恢复 ⇒ 发一次；
+ *  - **再次断线 ⇒ 再发一次**（那是新故障）。
  *
  * @module @forlife/gateway/wake-system-source
  */
@@ -47,12 +51,15 @@ export interface SystemObserveOutcome {
 /** 事件源。 */
 export interface SystemWakeSource {
   /** 观察一次系统状态。 */
-  readonly observe: (
-    name: string,
-    key: string,
-    state: string,
-    detail?: string,
-  ) => SystemObserveOutcome
+  readonly observe: (name: string, key: string, state: string, detail?: string) => SystemObserveOutcome
+  /**
+   * 观察**连接状态**（QQ 掉线/恢复）。
+   *
+   * 与 `observe` 的区别：边沿检测盯**一个**状态量，事件名从状态转移派生。
+   * 用 `observe` 传两个事件名的话，`qq.disconnected` 那一侧永远看不到"恢复"，
+   * **第二次断线不会被唤醒**。
+   */
+  readonly observeConnection: (connected: boolean, detail?: string) => SystemObserveOutcome
   /** 底层闸门（排障用）。 */
   readonly gate: SystemEventGate
 }
@@ -79,20 +86,26 @@ export function createSystemWakeSource(options: {
   const now = options.now ?? ((): Date => new Date())
   const gate = options.gate ?? createSystemEventGate()
 
-  const observe = (name: string, key: string, state: string, detail?: string): SystemObserveOutcome => {
-    const verdict = gate.observe(name, key, state)
-    if (!verdict.emit) {
-      // **不静默**：把"为什么没动作"如实带回去（名字不认识 / 状态没变）
-      return { changed: verdict.changed, reason: verdict.reason, triggered: [], skipped: [] }
-    }
-
-    // 找匹配的 system 触发器
+  /**
+   * 把一次**已经判定过边沿**的事件派发到匹配的触发器。
+   *
+   * 与 `observe` 分开：`observe` 负责"判边沿"，这个负责"派发"。
+   * 连接观察需要在**一个**状态量上判边沿、再派发到**两个**事件名 ——
+   * 所以这两件事必须能拆开。
+   */
+  const fireEvent = (
+    name: string,
+    _key: string,
+    state: string,
+    _detail: string | undefined,
+    verdictReason: string,
+  ): SystemObserveOutcome => {
     const matched = listWakeTriggers(db).filter((row) => row.kind === 'system' && eventOfSpec(row.spec) === name)
     if (matched.length === 0) {
       // 说清"事件到了但没有触发器接" —— 用户否则会以为是自己设错了
       return {
         changed: true,
-        reason: `${verdict.reason}；但没有匹配「${name}」的 system 触发器（事件已记录，未唤醒）`,
+        reason: `${verdictReason}；但没有匹配「${name}」的 system 触发器（事件已记录，未唤醒）`,
         triggered: [],
         skipped: [],
       }
@@ -118,18 +131,43 @@ export function createSystemWakeSource(options: {
       triggered.push(row.id)
     }
 
-    // 把事件本身也写进 payload 需要的信息留在日志里（引擎派发时会重建 payload）
     log(`${describeSystemEvent(name, state)}　匹配 ${String(matched.length)} 条，标记 ${String(triggered.length)} 条`)
 
     return {
       changed: true,
-      reason: `${verdict.reason}；匹配 ${String(matched.length)} 条，标记 ${String(triggered.length)} 条`,
+      reason: `${verdictReason}；匹配 ${String(matched.length)} 条，标记 ${String(triggered.length)} 条`,
       triggered,
       skipped,
     }
   }
 
-  return { observe, gate }
+  /** **连接状态**（单独一个量，不是按事件名分键）。 */
+  let connectionState: string | undefined
+
+  const observeConnection = (connected: boolean, detail?: string): SystemObserveOutcome => {
+    const state = connected ? 'up' : 'down'
+    const previous = connectionState
+    if (previous === state) {
+      // **这就是防重复唤醒的那一句**：断线期间观察 50 次只发 1 次
+      return { changed: false, reason: `连接状态未变化（仍是 ${state}），去重`, triggered: [], skipped: [] }
+    }
+    connectionState = state
+    const reason = previous === undefined ? `首次观察到连接状态 ${state}` : `连接状态变化 ${previous} → ${state}`
+    // 事件名从**状态转移**派生 —— 而不是把两个名字各判一次边沿
+    return fireEvent(connected ? 'qq.reconnected' : 'qq.disconnected', 'onebot11', state, detail, reason)
+  }
+
+  const observe = (name: string, key: string, state: string, detail?: string): SystemObserveOutcome => {
+    const verdict = gate.observe(name, key, state)
+    if (!verdict.emit) {
+      // **不静默**：把"为什么没动作"如实带回去（名字不认识 / 状态没变）
+      return { changed: verdict.changed, reason: verdict.reason, triggered: [], skipped: [] }
+    }
+    // 边沿已经判过 ⇒ 直接派发（与 observeConnection 共用同一条派发路径）
+    return fireEvent(name, key, state, detail, verdict.reason)
+  }
+
+  return { observe, observeConnection, gate }
 }
 
 /** 造一份系统事件触发的 payload（引擎派发时会用；导出便于测试与一致性）。 */

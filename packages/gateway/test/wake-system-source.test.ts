@@ -193,3 +193,65 @@ test('systemTriggerPayload：只放事实（会被拼进提示词的"数据"段�
   const p = systemTriggerPayload('qq.disconnected', 'onebot11', 'down', AT, 'ECONNRESET')
   assert.deepEqual(p, { event: 'qq.disconnected', source: 'onebot11', state: 'down', at: AT.toISOString(), detail: 'ECONNRESET' })
 })
+
+// ── 连接状态（observeConnection）────────────────────────────────────
+// 端到端台子抓到的第二个真 bug：用 observe 传两个事件名各判一次边沿的话，
+// qq.disconnected 那一侧永远看不到"恢复"，**第二次断线不会被唤醒**。
+
+/** 建一条听某个事件的 system 触发器。 */
+function mkSys(db: ReturnType<typeof openDatabase>['db'], event: string, title: string): string {
+  const r = createWakeTrigger(db, {
+    kind: 'system', scope: 'onebot11:123', title, prompt: 'p',
+    spec: { event }, createdBy: 'test', now: AT,
+  })
+  return r.row!.id
+}
+
+test('★ observeConnection：断线→恢复→**再断线**都要能触发（用 observe 做不到）', () => {
+  const s = setup()
+  try {
+    const down = mkSys(s.db, 'qq.disconnected', '断线')
+    const up = mkSys(s.db, 'qq.reconnected', '恢复')
+    const reset = (): void => { s.db.prepare('UPDATE wake_triggers SET next_fire_at = NULL').run() }
+
+    // 第一次断线
+    assert.deepEqual(s.source.observeConnection(false).triggered, [down])
+    reset()
+    // 恢复
+    assert.deepEqual(s.source.observeConnection(true).triggered, [up])
+    reset()
+    // **再断线** —— 这是关键：用 observe 传两个名字的话这里会是 0
+    const again = s.source.observeConnection(false)
+    assert.deepEqual(again.triggered, [down], '第二次断线必须再触发一次（那是新故障）')
+    assert.match(again.reason, /down → down|连接状态变化/)
+  } finally {
+    s.close()
+  }
+})
+
+test('★ observeConnection：同一状态观察 50 次只触发 1 次（幂等）', () => {
+  const s = setup()
+  try {
+    mkSys(s.db, 'qq.disconnected', '断线')
+    assert.equal(s.source.observeConnection(false).triggered.length, 1)
+    for (let i = 0; i < 50; i += 1) {
+      const out = s.source.observeConnection(false)
+      assert.equal(out.triggered.length, 0, `第 ${String(i + 2)} 次不该触发`)
+      assert.match(out.reason, /去重/)
+    }
+  } finally {
+    s.close()
+  }
+})
+
+test('observeConnection：首次观察就发（那是"第一次看到它断了"）', () => {
+  const s = setup()
+  try {
+    mkSys(s.db, 'qq.disconnected', '断线')
+    const first = s.source.observeConnection(false)
+    assert.equal(first.triggered.length, 1)
+    assert.match(first.reason, /首次观察/)
+  } finally {
+    s.close()
+  }
+})

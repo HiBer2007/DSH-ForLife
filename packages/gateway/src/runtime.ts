@@ -125,8 +125,9 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
           onConnectionState: (connected: boolean, detail?: string) => {
             // 断线与恢复用**独立的事件名** —— 它们是两件不同的事，
             // 用户可能只想被其中一件叫醒
-            const name = connected ? 'qq.reconnected' : 'qq.disconnected'
-            const outcome = wake.systemSource!.observe(name, 'onebot11', connected ? 'up' : 'down', detail)
+            // **用 observeConnection**（盯一个状态量）—— 用 observe 传两个事件名的话，
+            // qq.disconnected 那一侧永远看不到"恢复"，**第二次断线不会被唤醒**
+            const outcome = wake.systemSource!.observeConnection(connected, detail)
             if (outcome.triggered.length > 0) log(`QQ 状态变化已触发 ${String(outcome.triggered.length)} 条唤醒`)
           },
         }),
