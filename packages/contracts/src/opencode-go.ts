@@ -220,9 +220,12 @@ export function planOpenCodeGoRoutes(now: Date = new Date()): readonly OpenCodeR
     plan.push({ role, rank, model, reasoningEffort: effort, note })
   }
 
-  add('L1', 0, 'mimo-v2.6-flash', 'low', '闲聊与简单问答：最便宜的一档')
-  add('L1', 1, 'glm-5.3-flash', 'low', '降级候选：额度高，抖动时顶上')
-  add('L1', 2, 'space-bunny-free', 'low', '最后兜底：限时免费，随时可能消失')
+  // 用户 2026-10-06：deepseek-v4.1-flash 比 glm-5.3-flash 更快，应更优先使用 ⇒ 提到首位。
+  // 便宜的那两个退为降级候选：优先用更好的，抖动/限流时再退。
+  add('L1', 0, 'deepseek-v4.1-flash', 'low', '闲聊与简单问答：快且强，优先用')
+  add('L1', 1, 'mimo-v2.6-flash', 'low', '降级候选：更便宜')
+  add('L1', 2, 'glm-5.3-flash', 'low', '降级候选：额度高，抖动时顶上')
+  add('L1', 3, 'space-bunny-free', 'low', '最后兜底：限时免费，随时可能消失')
 
   add('L2', 0, 'deepseek-v4.1-flash', 'high', '一般任务：授权清单里综合最强')
   add('L2', 1, 'glm-5.3-flash', 'high', '降级候选')
@@ -230,8 +233,9 @@ export function planOpenCodeGoRoutes(now: Date = new Date()): readonly OpenCodeR
   add('L3', 0, 'deepseek-v4.1-flash', 'max', '复杂任务：同模型但拉满推理强度')
   add('L3', 1, 'glm-5.3-flash', 'max', '降级候选')
 
-  add('scorer', 0, 'glm-5.3-flash', 'low', '复杂度评分器：高频小请求，要便宜且快')
-  add('scorer', 1, 'mimo-v2.6-flash', 'low', '降级候选')
+  add('scorer', 0, 'deepseek-v4.1-flash', 'low', '复杂度评分器：高频小请求，优先用快的')
+  add('scorer', 1, 'glm-5.3-flash', 'low', '降级候选')
+  add('scorer', 2, 'mimo-v2.6-flash', 'low', '降级候选')
 
   return plan
 }
