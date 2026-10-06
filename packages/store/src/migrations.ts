@@ -965,6 +965,102 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (at DESC);
 
 const m0017Checksum = createHash('sha256').update(m0017.sql).digest('hex')
 
+/**
+ * 迁移 18：表情库与私有媒体库（PLAN 阶段六）。
+ *
+ * ## 两张表为什么分开
+ *
+ * - `sticker_assets`：**文件本身**（sha256、大小、来源、是否我们自己收藏的）。
+ * - `sticker_descriptions`：**对它的理解**（描述、情绪标签、由哪个模型生成）。
+ *
+ * 分开的理由是**省钱主线**：同一个表情第二次出现时，指纹（sha256）命中
+ * ⇒ 直接复用描述，**0 次视觉调用**。如果把描述塞进 assets 表，
+ * "复用"就退化成"重新生成一遍再覆盖"，省钱这件事就没法保证。
+ *
+ * ## 几个关键列
+ *
+ * - `sha256` **唯一**：这就是去重与指纹复用赖以生效的约束。没有它，
+ *   "重复下载不新增行"这条验收过不了。
+ * - `ours`：别人发的陌生表情我们**能学**（存下来、生成描述），
+ *   但**默认不主动转发**（用户明确要求）。这个标记就是那条界线。
+ * - `scopes`：在哪些会话见过（JSON 数组，累积）。用来回答"这个表情在哪个群流行"。
+ * - `use_count` / `last_used_at`：LRU 淘汰的依据。
+ * - `source_url`：联网抓来的来源要留痕（审计 + 白名单校验的依据）。
+ */
+const m0018 = {
+  version: 18,
+  name: '0018_stickers',
+  sql: `
+CREATE TABLE IF NOT EXISTS sticker_assets (
+  id            TEXT PRIMARY KEY,
+  -- 内容指纹：去重与"零视觉调用复用"的唯一依据
+  sha256        TEXT NOT NULL UNIQUE,
+  kind          TEXT NOT NULL DEFAULT 'image',   -- image | sticker | file
+  mime          TEXT NOT NULL,
+  size_bytes    INTEGER NOT NULL,
+  width         INTEGER,
+  height        INTEGER,
+  -- 存储位置：本地路径或 blob 键（不存二进制进库）
+  storage_path  TEXT NOT NULL,
+  -- 来源：manual（手动）| search（联网抓取）| self-made（自造）| learned（学别人的）
+  source        TEXT NOT NULL,
+  source_url    TEXT,
+  -- 是不是"我们自己的"表情（false = 学来的，默认不主动转发）
+  ours          INTEGER NOT NULL DEFAULT 1,
+  -- 在哪些会话见过（JSON 数组，累积）
+  scopes        TEXT NOT NULL DEFAULT '[]',
+  use_count     INTEGER NOT NULL DEFAULT 0,
+  last_used_at  TEXT,
+  status        TEXT NOT NULL DEFAULT 'active',  -- active | rejected | evicted
+  reject_reason TEXT,
+  created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sticker_assets_use ON sticker_assets (ours, status, last_used_at);
+CREATE INDEX IF NOT EXISTS idx_sticker_assets_source ON sticker_assets (source, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sticker_descriptions (
+  id           TEXT PRIMARY KEY,
+  asset_id     TEXT NOT NULL,
+  -- 描述与情绪标签由视觉模型产出；标签是 JSON 数组
+  description  TEXT NOT NULL,
+  emotion_tags TEXT NOT NULL DEFAULT '[]',
+  model        TEXT,
+  token_count  INTEGER NOT NULL DEFAULT 0,
+  -- 生成时间：配合 sha256 回答"这张图是什么时候被理解的"
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sticker_desc_asset ON sticker_descriptions (asset_id);
+
+-- 私有媒体库（用户明确要保存的图片/文件，与表情分开检索）
+CREATE TABLE IF NOT EXISTS media_assets (
+  id           TEXT PRIMARY KEY,
+  sha256       TEXT NOT NULL UNIQUE,
+  kind         TEXT NOT NULL,                 -- image | file
+  mime         TEXT NOT NULL,
+  size_bytes   INTEGER NOT NULL,
+  storage_path TEXT NOT NULL,
+  source_url   TEXT,
+  -- 原始文件名与备注（用户保存时可能说明用途）
+  original_name TEXT,
+  note         TEXT,
+  -- 并入长期记忆后的条目 id（recall_longterm 靠它命中）
+  long_memory_id TEXT,
+  conversation_key TEXT,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_media_assets_long ON media_assets (long_memory_id);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0018.sql)
+  },
+} as const
+
+const m0018Checksum = createHash('sha256').update(m0018.sql).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1068,6 +1164,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0017.name,
     checksum: m0017Checksum,
     up: m0017.up,
+  },
+  {
+    version: m0018.version,
+    name: m0018.name,
+    checksum: m0018Checksum,
+    up: m0018.up,
   },
 ]
 
