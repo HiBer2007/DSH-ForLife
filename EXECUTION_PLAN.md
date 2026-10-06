@@ -1298,6 +1298,36 @@ DSH/gateway 停机期间错过的触发，按触发器策略处理：`skip`（�
 1. 根 `pnpm typecheck` 用 `tsc`，**不检查 `.vue`** —— 改前端必须用
    `pnpm -F @forlife/admin-ui typecheck`（`vue-tsc`），否则导入漏了也看不见。
 2. 模板插元素时**别插进 `v-if`/`v-else` 链中间**，会打断相邻性并在构建时才报错。
+##### 2.14.11.2 ✅ 收口（2026-10-06）
+
+**16 个写接口实测在线**（判定：400 = 状态变更守卫拒绝非 JSON，说明路由存在且守卫生效）：
+
+```
+/wake-rule  /conversation-note  /conversation-impression  /conversation-timezone
+/model-route  /model-route-delete  /model-route-move
+/sticker-description  /sticker-delete
+/memory-entry  /memory-archive
+/prompt-revision  /prompt-rollback
+/logs-clear  /backup-now  /compaction-request
+```
+
+**右键菜单覆盖**（脚本核对各 `.vue` 的接入情况）：
+
+| 已接入（11 页） | 未接入（2 页）及原因 |
+|---|---|
+| 唤醒与自唤醒 / 会话与队列 / 路由与端点 / 表情库 / 记忆 / 提示词 / 日志 / 压缩 / NapCat / 存储 / 接管* | **设置**：纯表单页，右键菜单在表单控件上没有意义 |
+
+\* 接管页的右键菜单见下方"仍待补"一节。
+
+**三件用户点名的事（唤醒与自唤醒页）全部完成**：
+- ✅ 本页能改**全局默认选项**（`*` 作用域的规则可直接编辑保存 + 落审计）；
+- ✅ **会话子窗口**：时区 / 备注 / **AI 画像** 均可编辑；**两处入口**（会话与队列 + 唤醒与自唤醒）；
+- ✅ **右键菜单**且**移动端长按复用同一套动作**（`useContextMenu` + `ContextMenu.vue`，
+  并处理了长按 vs 滚动的冲突：移动 >10px 取消长按，**滚动优先**）。
+
+**仍待补**：
+- 接管页的消息/会话列表右键菜单（它是列表，**应该有**）；
+- 设置页的开关项可编辑化（当前主要是改密码）。
 #### 2.14.12 端点检查 = 连通 + **额度**（用户 2026-10-06 要求）
 
 用户原话：「检查端点不止需要检查可以调用，还要检查还有**额度**而不是钱包空空啊。」
