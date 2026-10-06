@@ -29,6 +29,8 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { recordEndpointHealth, recordEndpointProbe } from '@forlife/store'
 
+import { describeQuota, probeQuota, quotaBlocksRouting, type QuotaFetch } from './quota.ts'
+
 /** 注入的 fetch（测试用）。 */
 export type HealthFetch = (url: string, init: { signal: AbortSignal }) => Promise<{
   ok: boolean
@@ -43,6 +45,8 @@ export interface EndpointProbeResult {
   readonly latencyMs?: number
   readonly models?: readonly string[]
   readonly error?: string
+  /** 健康/额度结论（面板显示用）。 */
+  readonly note?: string
 }
 
 /** 探测配置。 */
@@ -51,6 +55,10 @@ export interface EndpointHealthOptions {
   readonly fetchImpl?: HealthFetch
   readonly timeoutMs?: number
   readonly log?: (message: string) => void
+  /** 额度查询用的 fetch（测试注入）。 */
+  readonly quotaFetchImpl?: QuotaFetch | undefined
+  /** 取 key 的环境变量表（默认 process.env）。 */
+  readonly env?: NodeJS.ProcessEnv
 }
 
 /** 探测一个端点。 */
@@ -84,8 +92,8 @@ export async function probeEndpoint(baseUrl: string, options: { readonly fetchIm
 export async function probeAllEndpoints(options: EndpointHealthOptions): Promise<readonly EndpointProbeResult[]> {
   const log = options.log ?? ((): void => {})
   const rows = options.db
-    .prepare('SELECT id, base_url FROM inference_endpoints WHERE enabled = 1 ORDER BY id')
-    .all() as { id: string; base_url: string }[]
+    .prepare('SELECT id, base_url, api_key_ref FROM inference_endpoints WHERE enabled = 1 ORDER BY id')
+    .all() as { id: string; base_url: string; api_key_ref: string | null }[]
 
   if (rows.length === 0) {
     log('端点健康探测：没有启用的端点，跳过（不写任何 health 值 —— 让面板继续显示「从未探测」而不是假装健康）')
@@ -100,11 +108,23 @@ export async function probeAllEndpoints(options: EndpointHealthOptions): Promise
     })
 
     if (probe.ok) {
-      const note = `探测成功，发现 ${String(probe.models.length)} 个模型`
-      recordEndpointHealth(options.db, row.id, { ok: true, latencyMs: probe.latencyMs, note })
-      recordEndpointProbe(options.db, { endpointId: row.id, model: null, ok: true, latencyMs: probe.latencyMs, note, models: probe.models })
-      log(`端点 ${row.id} 健康（${String(probe.latencyMs)}ms，${String(probe.models.length)} 个模型）`)
-      results.push({ endpointId: row.id, ok: true, latencyMs: probe.latencyMs, models: probe.models })
+      // ★ 连通之后**还要查额度**：能调用 ≠ 有钱可用。
+      //   余额为 0 时路由照样全线失败，而面板会显示"健康" —— 那是假绿灯，比红灯更危险。
+      const quota = await probeQuota({
+        baseUrl: row.base_url,
+        keyRef: row.api_key_ref,
+        ...(options.quotaFetchImpl === undefined ? {} : { fetchImpl: options.quotaFetchImpl }),
+        ...(options.env === undefined ? {} : { env: options.env }),
+      })
+      const quotaOk = !quotaBlocksRouting(quota)
+      const note = `连通（${String(probe.models.length)} 个模型）；${describeQuota(quota)}`
+
+      // 额度用尽 ⇒ 整个端点判为**不健康**（否则路由会一直选它然后全线失败）。
+      // 但"额度偏低"仍算健康 —— 一低就拦会让系统在还能用的时候提前瘫掉。
+      recordEndpointHealth(options.db, row.id, { ok: quotaOk, latencyMs: probe.latencyMs, note })
+      recordEndpointProbe(options.db, { endpointId: row.id, model: null, ok: quotaOk, latencyMs: probe.latencyMs, note, models: probe.models })
+      log(`端点 ${row.id} ${quotaOk ? '健康' : '额度用尽'}（${String(probe.latencyMs)}ms）；${describeQuota(quota)}`)
+      results.push({ endpointId: row.id, ok: quotaOk, latencyMs: probe.latencyMs, models: probe.models, note })
     } else {
       recordEndpointHealth(options.db, row.id, { ok: false, latencyMs: probe.latencyMs, note: probe.error })
       recordEndpointProbe(options.db, { endpointId: row.id, model: null, ok: false, latencyMs: probe.latencyMs, note: probe.error })
