@@ -16,6 +16,8 @@
  *
  * 没有这一页的话，接管模式等于"消息石沉大海"：开关拨过去，然后什么都做不了。
  */
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
 import { computed, ref } from 'vue'
 
 import { api } from '../api/client.ts'
@@ -47,6 +49,26 @@ const isOn = computed(() => takeover.data.value?.on === true)
 const pendingQueue = computed(() => (conversations.data.value?.queue ?? []).filter((item) => !item.processed))
 
 /** 有消息待处理的会话（按最近消息排序，去重）。 */
+/**
+ * 待处理消息的右键菜单。
+ *
+ * 接管模式下"待处理"是**唯一的工作队列指示器**，所以菜单只放最常用的两件事：
+ * 复制消息内容、复制会话键（要拿它去别处操作）。
+ *
+ * **不给"标记已处理"** —— 那件事应该发生在"你确实回复了"的时候（/send 会自动标记），
+ * 单独一个"标记"按钮会让人为了清空数字而点它，而消息其实没被处理。
+ */
+const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
+
+function messageMenuItems(item: Record<string, unknown>): ContextMenuItem[] {
+  const key = String(item["conversationKey"] ?? "")
+  const text = String(item["text"] ?? "")
+  return [
+    { key: "copyText", label: "复制消息内容", run: () => void navigator.clipboard?.writeText(text) },
+    { key: "copyKey", label: "复制会话键", hint: key, run: () => void navigator.clipboard?.writeText(key) },
+  ]
+}
+
 const pendingSessions = computed(() => {
   const seen = new Map<string, { key: string; title: string; unread: number; lastAt?: string }>()
   for (const item of pendingQueue.value) {
@@ -179,7 +201,9 @@ async function send(conversationKey: string): Promise<void> {
 
               <!-- 该会话的待处理原文：要回复就得先看见对方说了什么 -->
               <ul class="messages">
-                <li v-for="item in pendingQueue.filter((m) => m.conversationKey === session.key)" :key="item.id">
+<li
+                  @contextmenu="onContextMenu($event, messageMenuItems(item), item)"
+                  v-on="touchHandlers(messageMenuItems(item), item)" v-for="item in pendingQueue.filter((m) => m.conversationKey === session.key)" :key="item.id">
                   <span class="who">{{ item.senderName ?? '未知' }}</span>
                   <span class="text">{{ item.text === '' ? '（非文本消息）' : item.text }}</span>
                   <span class="muted small">{{ formatRelative(item.at) }}</span>
@@ -233,6 +257,7 @@ async function send(conversationKey: string): Promise<void> {
       </template>
     </AsyncSection>
   </div>
+    <ContextMenu :state="menuState" :on-close="closeMenu" :on-clamp="clampToViewport" />
 </template>
 
 <style scoped>
