@@ -15,6 +15,7 @@ import { test } from 'node:test'
 import { createWakeTrigger, getWakeTrigger, openDatabase } from '@forlife/store'
 
 import { createWakeRuntime, wakeConfigFromEnv } from '../src/wake-runtime.ts'
+import { isHeaderSafe } from '../src/wake-bridge.ts'
 
 const ENV = { FORLIFE_WAKE_BRIDGE_URL: 'http://127.0.0.1:3080/forlife/wake', FORLIFE_WAKE_BRIDGE_SECRET: 's3cret' }
 const AT = new Date('2026-10-06T12:00:00.000Z')
@@ -207,5 +208,55 @@ test('监视源 tick 能把条件成立的触发器标记为到点（端到端�
   } finally {
     opened.db.close()
     rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('★ 非 ASCII 密钥 ⇒ 明确禁用并说清是哪个字符（端到端抓到的真 bug）', () => {
+  const opened = openDatabase({ file: ':memory:' })
+  try {
+    // 密钥要当 **HTTP 头**发出去，而 HTTP 头只允许 latin-1。
+    // 不拦的话每一次唤醒都会以一句 `Cannot convert argument to a ByteString` 失败 ——
+    // 那句话完全看不出真正原因（谁会想到是密钥的字符集问题）。
+    const r = createWakeRuntime({
+      db: opened.db,
+      env: { FORLIFE_WAKE_BRIDGE_URL: 'http://x/y', FORLIFE_WAKE_BRIDGE_SECRET: 'secret-中文' },
+      log: () => {},
+      setIntervalImpl: () => ({ unref: () => {} }),
+      clearIntervalImpl: () => {},
+    })
+    assert.equal(r.engine, undefined, '该禁用而不是让它每次失败')
+    assert.match(r.disabledReason ?? '', /FORLIFE_WAKE_BRIDGE_SECRET/)
+    assert.match(r.disabledReason ?? '', /latin-1/)
+    // 说清是**第几个字符**（否则长密钥里找哪个字是中文很痛苦）
+    assert.match(r.disabledReason ?? '', /第 8 个字符/)
+  } finally {
+    opened.db.close()
+  }
+})
+
+test('isHeaderSafe：ASCII 通过，非 ASCII 报出位置', () => {
+  assert.equal(isHeaderSafe('abc-123_XYZ').ok, true)
+  assert.equal(isHeaderSafe('').ok, true)
+  const bad = isHeaderSafe('ab中')
+  assert.equal(bad.ok, false)
+  if (!bad.ok) {
+    assert.match(bad.reason, /第 3 个字符/)
+    assert.match(bad.reason, /U\+4E2D/)
+  }
+})
+
+test('ASCII 密钥一切照常（别把正常情况也拦了）', () => {
+  const opened = openDatabase({ file: ':memory:' })
+  try {
+    const r = createWakeRuntime({
+      db: opened.db,
+      env: { FORLIFE_WAKE_BRIDGE_URL: 'http://x/y', FORLIFE_WAKE_BRIDGE_SECRET: 'plain-ascii-secret' },
+      log: () => {},
+      setIntervalImpl: () => ({ unref: () => {} }),
+      clearIntervalImpl: () => {},
+    })
+    assert.ok(r.engine !== undefined, 'ASCII 密钥该正常启用')
+  } finally {
+    opened.db.close()
   }
 })

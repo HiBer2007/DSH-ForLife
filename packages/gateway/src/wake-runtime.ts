@@ -29,7 +29,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
-import { createWakeBridge } from './wake-bridge.ts'
+import { createWakeBridge, isHeaderSafe } from './wake-bridge.ts'
 import { createWakeEngine, type WakeEngine, type WakeDispatcher } from './wake-engine.ts'
 import { buildWakePrompt } from './wake-prompt.ts'
 import { createSystemWakeSource, type SystemWakeSource } from './wake-system-source.ts'
@@ -87,6 +87,12 @@ export function wakeConfigFromEnv(env: Record<string, string | undefined>): {
 export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
   const { db, log } = options
   const config = wakeConfigFromEnv(options.env)
+
+  // **密钥必须是 latin-1**（它要当 HTTP 头发出去）。
+  // 不拦的话，每一次唤醒都会以一句 `Cannot convert argument to a ByteString` 失败 ——
+  // 而那句话完全看不出真正原因。
+  const secretCheck = config.bridgeSecret === undefined ? { ok: true as const } : isHeaderSafe(config.bridgeSecret)
+
   const setIntervalFn = options.setIntervalImpl ?? ((fn, ms) => setInterval(fn, ms))
   const clearIntervalFn = options.clearIntervalImpl ?? ((h) => clearInterval(h as never))
   const handles: unknown[] = []
@@ -106,6 +112,17 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
   }
 
   // ── 引擎：**没配桥就明确禁用**（不假装能唤醒）──
+  if (!secretCheck.ok) {
+    return {
+      engine: undefined,
+      systemSource: undefined,
+      watchSource,
+      disabledReason: `唤醒引擎未启用：FORLIFE_WAKE_BRIDGE_SECRET ${secretCheck.reason}` ,
+      watchDisabledReason,
+      stop: () => {},
+    }
+  }
+
   if (config.bridgeUrl === undefined || config.bridgeSecret === undefined) {
     const missing = [
       ...(config.bridgeUrl === undefined ? ['FORLIFE_WAKE_BRIDGE_URL'] : []),

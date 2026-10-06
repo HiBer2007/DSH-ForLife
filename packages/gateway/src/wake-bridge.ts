@@ -60,6 +60,28 @@ export interface WakeBridge {
 }
 
 /** 造一个桥客户端。 */
+/**
+ * 密钥能不能当 **HTTP 头**发出去。
+ *
+ * HTTP 头只允许 latin-1（ByteString）。密钥里有中文/emoji 时，
+ * `fetch` 会在**构造请求时**抛一句 `Cannot convert argument to a ByteString` ——
+ * 那句话完全看不出真正原因（谁会想到是密钥的字符集问题）。
+ *
+ * **所以要在配置时就拦住，并说清是哪个变量、哪个字符。**
+ */
+export function isHeaderSafe(value: string): { ok: true } | { ok: false; reason: string } {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i)
+    if (code > 255) {
+      return {
+        ok: false,
+        reason: `第 ${String(i + 1)} 个字符「${value[i] ?? "?"}」(U+${code.toString(16).toUpperCase()}) 不是 latin-1 —— HTTP 头不能带它` ,
+      }
+    }
+  }
+  return { ok: true }
+}
+
 export function createWakeBridge(options: WakeBridgeOptions): WakeBridge {
   const doFetch = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   const timeout = options.timeoutMs ?? 15_000
