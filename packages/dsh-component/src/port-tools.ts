@@ -141,7 +141,10 @@ export function buildPortTools(
   const publishTool = defineTool({
     name: 'publish_port',
     description:
-      '把工作区里的一个 HTTP 服务发布到公网地址 https://<host>/svc/<name>/，让别人能访问它。' +
+      '把工作区里的一个服务发布出去，让别人能访问它。' +
+      '默认按 HTTP 发布（地址形如 https://<host>/svc/<name>/）；' +
+      '若服务不是 HTTP 的（数据库、SSH 等），传 protocol="tcp" 并给 listenPort —— ' +
+      '那时地址是 tcp://<host>:<listenPort>。' +
       '**端口必须在白名单内**，否则会被拒绝。' +
       '强烈建议给 ttlSeconds：到期会自动回收；不过期的发布一旦忘掉，就是一条没人记得的公开地址。',
     parameters: {
@@ -151,6 +154,19 @@ export function buildPortTools(
         description: '对外名字（会拼进 URL）。只能小写字母/数字/连字符，如 my-app。',
       },
       targetPort: { type: 'number', required: true, description: '工作区里那个服务监听的端口。' },
+      protocol: {
+        type: 'string',
+        // 可选参数**不能写 required**（写了会破坏所有工具的参数校验）
+        description:
+          '协议：http（默认，适合网页/API）或 tcp（适合数据库、SSH 等**不是 HTTP 的**服务）。' +
+          '选 tcp 时**必须**同时给 listenPort。',
+      },
+      listenPort: {
+        type: 'number',
+        description:
+          '仅 tcp 需要：对外监听的端口。**TCP 没有路径可以分流，所以每个服务要独占一个对外端口** ——' +
+          '白名单判定的就是它。http 不要传这个参数。',
+      },
       ttlSeconds: {
         type: 'number',
         description: '多久后自动取消（秒）。建议填；不填表示一直开着。',
@@ -174,9 +190,12 @@ export function buildPortTools(
     execute: async (args: never): Promise<unknown> => {
       const input = args as Record<string, unknown>
       runtime.recordToolCall()
+      const protocol = input['protocol'] === 'tcp' ? ('tcp' as const) : ('http' as const)
       const result = await service.publish({
         name: String(input['name'] ?? ''),
         targetPort: Number(input['targetPort']),
+        protocol,
+        listenPort: input['listenPort'] === undefined ? null : Number(input['listenPort']),
         ttlSeconds: input['ttlSeconds'] === undefined ? null : Number(input['ttlSeconds']),
         // **一律记 model**，不伪装成 admin —— 审计里要能一眼看出这是模型自己发的
         approvedBy: 'model',

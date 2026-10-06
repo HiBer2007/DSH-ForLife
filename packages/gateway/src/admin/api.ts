@@ -554,10 +554,15 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const targetPort = Number(body['targetPort'])
         const ttlRaw = body['ttlSeconds']
         const ttlSeconds = ttlRaw === null || ttlRaw === undefined ? null : Number(ttlRaw)
+        const protocol = body['protocol'] === 'tcp' ? ('tcp' as const) : ('http' as const)
+        const listenRaw = body['listenPort']
+        const listenPort = listenRaw === null || listenRaw === undefined ? null : Number(listenRaw)
 
         const result = await service.publish({
           name,
           targetPort,
+          protocol,
+          listenPort,
           ttlSeconds,
           approvedBy: `admin:${session.id.slice(0, 8)}`,
           ...(typeof body['note'] === 'string' ? { note: body['note'] } : {}),

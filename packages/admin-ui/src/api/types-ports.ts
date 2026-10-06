@@ -3,6 +3,8 @@ export interface PortRow {
   readonly id: string
   readonly name: string
   readonly target_port: number
+  /** TCP 的**对外端口**（HTTP 为 null）。 */
+  readonly listen_port: number | null
   readonly protocol: string
   readonly ttl_seconds: number | null
   readonly expires_at: string | null

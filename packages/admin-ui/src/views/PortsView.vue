@@ -35,13 +35,13 @@ const stats = computed(() => [
 const publishing = ref(false)
 const formOpen = ref(false)
 const formError = ref('')
-const form = ref({ name: '', targetPort: '', ttlSeconds: '' })
+const form = ref({ name: '', targetPort: '', protocol: 'http' as 'http' | 'tcp', listenPort: '', ttlSeconds: '' })
 
 function openPublish(): void {
   if (!enabled.value) return
   formOpen.value = true
   formError.value = ''
-  form.value = { name: '', targetPort: '', ttlSeconds: '' }
+  form.value = { name: '', targetPort: '', protocol: 'http', listenPort: '', ttlSeconds: '' }
 }
 
 async function submitPublish(): Promise<void> {
@@ -51,6 +51,9 @@ async function submitPublish(): Promise<void> {
     await api.post('/port-publish', {
       name: form.value.name.trim(),
       targetPort: Number(form.value.targetPort),
+      protocol: form.value.protocol,
+      // 只有 tcp 才传对外端口 —— http 传了会被服务端拒（它没有"选对外端口"这回事）
+      listenPort: form.value.protocol === 'tcp' ? Number(form.value.listenPort) : null,
       // 空字符串表示"不过期"，要传 null 而不是 NaN
       ttlSeconds: form.value.ttlSeconds.trim() === '' ? null : Number(form.value.ttlSeconds),
     })
@@ -149,7 +152,12 @@ const rows = computed<Record<string, unknown>[]>(
               </div>
               <p class="mono port-url">{{ row['url'] }}</p>
               <p class="muted cap">
-                目标 <span class="mono">:{{ row['target_port'] }}</span> ·
+                <StatusBadge :tone="row['protocol'] === 'tcp' ? 'warn' : 'muted'">{{ row['protocol'] }}</StatusBadge>
+                目标 <span class="mono">:{{ row['target_port'] }}</span>
+                <template v-if="row['listen_port'] !== null && row['listen_port'] !== undefined">
+                  · 对外 <span class="mono">:{{ row['listen_port'] }}</span>
+                </template>
+                ·
                 {{ row['expires_at'] === null ? '不过期' : `到期 ${String(row['expires_at'])}` }} ·
                 由 {{ row['approved_by'] }} 批准
               </p>
@@ -170,9 +178,28 @@ const rows = computed<Record<string, unknown>[]>(
         <input id="p-name" v-model="form.name" class="edit-input" placeholder="my-app" />
         <p class="muted cap">只能小写字母/数字/连字符；admin / api / svc / health 是保留名。</p>
 
+        <label class="edit-label" for="p-proto">协议</label>
+        <select id="p-proto" v-model="form.protocol" class="edit-input">
+          <option value="http">http（网页 / API）</option>
+          <option value="tcp">tcp（数据库 / SSH 等非 HTTP 服务）</option>
+        </select>
+
         <label class="edit-label" for="p-port">目标端口（工作区里那个服务）</label>
         <input id="p-port" v-model="form.targetPort" class="edit-input" inputmode="numeric" placeholder="8080" />
-        <p class="muted cap">允许的段：{{ whitelistText }}</p>
+
+        <!-- 只有 tcp 才显示对外端口：**不显示的东西不会被填** ——
+             否则用户会给 http 服务填一个，然后收到"HTTP 发布不接受 listenPort"，
+             得试错一次才知道。 -->
+        <template v-if="form.protocol === 'tcp'">
+          <label class="edit-label" for="p-listen">对外端口（别人连的那个）</label>
+          <input id="p-listen" v-model="form.listenPort" class="edit-input" inputmode="numeric" placeholder="18050" />
+          <p class="muted cap">
+            **TCP 没有路径可以分流，所以每个服务要独占一个对外端口**，而且它不能和别人重复。
+            地址会是 <span class="mono">tcp://&lt;host&gt;:&lt;对外端口&gt;</span>。
+          </p>
+        </template>
+
+        <p class="muted cap">允许的端口段：{{ whitelistText }}</p>
 
         <label class="edit-label" for="p-ttl">TTL 秒数（留空 = 不过期）</label>
         <input id="p-ttl" v-model="form.ttlSeconds" class="edit-input" inputmode="numeric" placeholder="留空" />
