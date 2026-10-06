@@ -1399,8 +1399,33 @@ DSH/gateway 停机期间错过的触发，按触发器策略处理：`skip`（�
 - 在网关复制一份触发逻辑：**两份实现迟早分叉**，而分叉的表现是
   「面板点了压缩，实际压缩的参数与自动压缩不一样」—— 这种不一致极难发现。
 
-**待办**：按提示词那次的做法（先查依赖方向、零依赖的纯逻辑先下沉、原文件改再导出桩）
-把压缩引擎下沉，然后压缩页的触发按钮才能接。
+**⚠️ 更正（2026-10-06 当晚查证）**：上面写的"按提示词那次的做法下沉"**是错的**。
+查过 `compaction-engine.ts`（427 行）的依赖后发现它**不是纯 DB 逻辑**：
+
+```
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
+import { BlockAssembler, createUserMessage, … } from '@deepseek-ai/dsh-llm'
+import { activeRuntimes, type MemoryRuntime } from './index.ts'   // 插件运行时
+import { emitForlifeEvent } from './events.ts'
+```
+
+它**深度绑定 DSH 框架与插件运行时**（通过 DSH 自己的压缩 API 驱动），
+和 `prompt-store`（只依赖 node:* 与 contracts）完全不是一类东西。**下沉不可行。**
+
+**真正可行的三条路**（按推荐度）：
+
+1. **压缩仍然只在 DSH 侧触发，面板只做"查看 + 请求"**：
+   面板写一条"请求压缩"的记录，DSH 侧（插件运行时）读到后执行。
+   好处：**逻辑只有一份**，不引入第二套实现；坏处：需要 DSH 在跑（但压缩本来就需要模型调用，
+   而模型调用只在 DSH 侧有）。**这条最符合现状。**
+2. **网关实现一套独立的"整理型"压缩**（只做 DB 层的合并/沉降，不调用模型）：
+   它和 DSH 的模型驱动压缩**不是一回事**，必须起不同的名字、写清各自做什么，
+   否则用户会以为"点了压缩"和自动压缩效果一样。
+3. 让网关内嵌 DSH —— **与"网关是独立进程、部署为一个 Docker 容器"的既定架构冲突**，不建议。
+
+**当前状态**：压缩页的**右键菜单已完成**；触发按钮按路径 1 或 2 实现前，
+页面明确标注"触发需要 DSH 在跑"。
 ### 2.15 时间感知：为什么模型会"时间幻觉"，以及怎么修
 
 > 完整诊断见 `research/time-context-report.md`。这一节给结论与方案。
