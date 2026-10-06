@@ -229,5 +229,11 @@ export const OPENCODE_GO_PROVIDER = 'opencode-go'
 
 /** 端点登记用的能力描述（`inference_endpoints.models` 是 JSON）。 */
 export function endpointModelsJson(now: Date = new Date()): readonly { id: string; image: boolean }[] {
-  return usableModels(now).map((model) => ({ id: model.id, image: false }))
+  // 哪些模型能看图：**实测过的**才算。
+  // deepseek-v4.1-flash 由用户纠正 + 我用真图实测确认（HTTP 200，
+  // prompt_tokens 241 说明图片确实进了上下文，且它按要求的 JSON 格式回了描述）。
+  // 注意它同时是推理模型：max_tokens 给小了会把预算全花在 reasoning 上、
+  // 正文返回**空字符串**（不是报错）—— 这种静默失败必须在调用侧挡住。
+  const VISION_CAPABLE = new Set(['deepseek-v4.1-flash'])
+  return usableModels(now).map((model) => ({ id: model.id, image: VISION_CAPABLE.has(model.id) }))
 }
