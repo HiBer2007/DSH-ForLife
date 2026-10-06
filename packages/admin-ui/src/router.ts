@@ -57,6 +57,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { path: '/stickers', title: '表情库', icon: 'media' },
       { path: '/media', title: '表情与媒体', icon: 'media' },
       { path: '/storage', title: '存储与迁移', icon: 'storage' },
+      { path: '/ports', title: '端口出口', icon: 'external' },
     ],
   },
   {
@@ -81,6 +82,7 @@ const routes: readonly RouteRecordRaw[] = [
   { path: '/stickers', name: 'stickers', component: () => import('./views/StickersView.vue'), meta: { title: '表情库' } },
   { path: '/media', name: 'media', component: () => import('./views/MediaView.vue'), meta: { title: '表情与媒体' } },
   { path: '/storage', name: 'storage', component: () => import('./views/StorageView.vue'), meta: { title: '存储与迁移' } },
+  { path: '/ports', name: 'ports', component: () => import('./views/PortsView.vue'), meta: { title: '端口出口' } },
   { path: '/logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { title: '实时日志' } },
   { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '设置' } },
   // 兜底：不认识的路径回总览（路由从第一天就用稳定命名，不做历史重定向）
