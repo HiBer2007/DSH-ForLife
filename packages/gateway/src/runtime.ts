@@ -17,6 +17,7 @@
  * @module @forlife/gateway/runtime
  */
 import { startEndpointHealthLoop } from './endpoint-health.ts'
+import { createWakeRuntime } from './wake-runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { FLAG_QQ_TAKEOVER, getFlag } from '@forlife/store'
@@ -107,12 +108,28 @@ function makeFakeScript(db: DatabaseSync, log: (message: string) => void): FakeS
 export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGatewayRuntime {
   const log = options.log
 
+  // 唤醒引擎（PLAN 阶段 8）。没配桥时 engine 为 undefined —— 功能**明确禁用**，
+  // 而不是等一次失败去推断。
+  const wake = createWakeRuntime({ db: options.db, env: process.env, log })
+
   const transport = createOneBotTransport({
     port: options.onebot.port,
     host: options.onebot.host,
     path: options.onebot.path,
     ...(options.onebot.accessToken === undefined ? {} : { accessToken: options.onebot.accessToken }),
     log,
+    // QQ 掉线/恢复 → 系统事件源（**边沿检测在里面**，所以重连不会重复唤醒）
+    ...(wake.systemSource === undefined
+      ? {}
+      : {
+          onConnectionState: (connected: boolean, detail?: string) => {
+            // 断线与恢复用**独立的事件名** —— 它们是两件不同的事，
+            // 用户可能只想被其中一件叫醒
+            const name = connected ? 'qq.reconnected' : 'qq.disconnected'
+            const outcome = wake.systemSource!.observe(name, 'onebot11', connected ? 'up' : 'down', detail)
+            if (outcome.triggered.length > 0) log(`QQ 状态变化已触发 ${String(outcome.triggered.length)} 条唤醒`)
+          },
+        }),
   })
 
   let driver: TurnDriver
