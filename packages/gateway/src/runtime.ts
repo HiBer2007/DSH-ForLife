@@ -18,6 +18,7 @@
  */
 import { startEndpointHealthLoop } from './endpoint-health.ts'
 import { createSystemEventHooks } from './wake-system-hooks.ts'
+import { monitorConfigFromEnv, startSystemMonitor } from './wake-system-monitor.ts'
 import { createWakeRuntime } from './wake-runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -126,6 +127,18 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     },
   })
 
+  // 系统监视：磁盘水位 ⇒ system 触发。
+  // **持续看**而不是等写入失败才上报 —— 那时已经晚了（那一次写入已经丢了，
+  // 而模型可能正在压缩记忆，压缩失败会丢数据）。
+  const monitorConfig = monitorConfigFromEnv(process.env)
+  const systemMonitor = startSystemMonitor({
+    hooks: systemHooks,
+    mounts: monitorConfig.mounts,
+    thresholdRatio: monitorConfig.thresholdRatio,
+    intervalMs: monitorConfig.intervalMs,
+    log,
+  })
+
   const transport = createOneBotTransport({
     port: options.onebot.port,
     host: options.onebot.host,
@@ -191,6 +204,7 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     stop: async (): Promise<void> => {
       await gateway.stop()
       stopHealthLoop()
+      systemMonitor.stop()
       await driver.close?.()
       await transport.stop()
     },
