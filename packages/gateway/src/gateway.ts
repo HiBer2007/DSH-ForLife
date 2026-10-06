@@ -22,9 +22,10 @@
  *
  * @module @forlife/gateway/gateway
  */
+import { decideWithLedger, newMentionLedger } from './mention-quota.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
-import { nowIso } from '@forlife/store'
+import { recordEffect, nowIso } from '@forlife/store'
 
 import { ADMIN_CHAT_KEY, appendModelReply, buildAdminPrompt, markHandled, takePendingHumanMessages } from './admin-chat.ts'
 import { claimPendingOutbound, confirmOutbound, failOutbound, reclaimStaleOutbound, type OutboxRow } from './outbox.ts'
@@ -97,6 +98,9 @@ export class Gateway {
   /** 后台对话是否有一轮在跑（避免并发回答同一个人）。 */
   private adminBusy = false
   private running = false
+  /** @全体 的本地账本（只做减法，防 Napke 额度接口滞后导致连发超限）。 */
+  private readonly mentionLedger = newMentionLedger()
+
   private stats = { turnsHandled: 0, turnsFailed: 0, skipped: 0, outboundSent: 0, outboundFailed: 0, lastError: undefined as string | undefined }
 
   constructor(options: GatewayOptions) {
@@ -266,7 +270,25 @@ export class Gateway {
       this.stats.outboundFailed += 1
       return
     }
-    const payload = JSON.parse(row.payload) as { segments?: OutboundSegment[]; messageId?: string; emoji?: string; typing?: boolean }
+    const payload = JSON.parse(row.payload) as { segments?: OutboundSegment[]; messageId?: string; emoji?: string; typing?: boolean; content?: string }
+
+    // ★ @全体 的额度闸门。放在这里（而不是工具侧）是因为：
+    //   ① transport 只在这一侧可见；
+    //   ② `mentionAll()` 的注释写着「额度由调用方保证」—— 消费者就是那个调用方。
+    //   不挡的话，额度用尽时 QQ 侧会拒绝，表现为"偶尔不生效"，极难查。
+    if (row.kind === 'mention_all') {
+      const snapshot = await this.options.transport.getAtAllQuota(parsed.chatId)
+      const decision = decideWithLedger(snapshot ?? {}, this.mentionLedger)
+      if (!decision.allowed) {
+        // **平台侧没有拒绝，是我们自己拦下的** —— 所以要记成"策略拦截"而不是"发送失败"，
+        // 否则统计里会把它算成 QQ 的问题，排障时会往错的方向查。
+        failOutbound(this.options.db, row.id, `额度闸门拦截：${decision.reason}`)
+        this.stats.outboundFailed += 1
+        this.options.log?.(`[gateway] @全体 被额度闸门拦下：${decision.reason}`)
+        return
+      }
+    }
+
     try {
       const result =
         row.kind === 'reaction'
@@ -277,11 +299,26 @@ export class Gateway {
               ? await this.options.transport.deleteMessage(payload.messageId ?? '')
               : row.kind === 'mention_all'
                 ? await this.options.transport.mentionAll(parsed, payload.segments ?? [])
-                : await this.options.transport.sendMessage(parsed, payload.segments ?? [])
+                : row.kind === 'notice'
+                  ? await this.options.transport.groupNotice(parsed.chatId, payload.content ?? '')
+                  : await this.options.transport.sendMessage(parsed, payload.segments ?? [])
 
       if (result.ok) {
         confirmOutbound(this.options.db, row.id, result.messageId)
         this.stats.outboundSent += 1
+        // 成功发出 @全体 ⇒ 本地账本 +1。
+        // 为什么要本地记：NapCat 的额度接口有延迟，连续两次 @全体 之间可能读到同一个旧值，
+        // 于是"还剩 1 次"会被连用两次。账本只做减法，专防这种滞后。
+        if (row.kind === 'mention_all') {
+          this.mentionLedger.sent += 1
+          recordEffect(this.options.db, {
+            id: `eff_${row.id}`,
+            kind: 'mention_all',
+            actor: 'system',
+            subject: parsed.chatId,
+            detail: `@全体 已发送（本进程第 ${String(this.mentionLedger.sent)} 次）`,
+          })
+        }
       } else {
         // 平台明确拒绝 ⇒ 不重试（反复撞只会加重风控）
         failOutbound(this.options.db, row.id, result.error ?? '平台拒绝')

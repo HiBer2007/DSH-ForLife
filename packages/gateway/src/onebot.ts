@@ -23,6 +23,7 @@
  *
  * @module @forlife/gateway/onebot
  */
+import type { MentionQuotaSnapshot } from './mention-quota.ts'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 
@@ -446,14 +447,57 @@ export class OneBotTransport implements QqTransport {
     return { userId: String(result.data.user_id), nickname: result.data.nickname ?? '' }
   }
 
-  /** 查群 @全体剩余次数。 */
-  async getAtAllRemain(groupId: string): Promise<number | undefined> {
-    const result = await this.callAction<{ can_at_all?: boolean; remain_at_all_count_for_group?: number }>('get_group_at_all_remain', {
-      group_id: Number(groupId),
-    })
+  /**
+   * 查 @全体 额度（**两个维度都要**）。
+   *
+   * 为什么不能只读群维度：NapCat 这个接口的返回值**与 group_id 不完全相关** ——
+   * 除了群维度（`remain_at_all_count_for_group`）还有**账号维度**
+   * （`remain_at_all_count_for_uin`，这个号整体还剩多少）。
+   * 只看群维度会**高估**：群维度显示还剩 5 次、账号维度已经 0 次，
+   * 我们就会以为能发，实际发不出去，而且表现为"偶尔不生效"，很难查。
+   *
+   * 判定交给 `decideMentionAll`（保守取最小值），这里只负责**如实取回原始数据**。
+   */
+  async getAtAllQuota(groupId: string): Promise<MentionQuotaSnapshot | undefined> {
+    const result = await this.callAction<{
+      can_at_all?: boolean
+      remain_at_all_count_for_group?: number
+      remain_at_all_count_for_uin?: number
+    }>('get_group_at_all_remain', { group_id: Number(groupId) })
     if (!result.ok) return undefined
-    if (result.data?.can_at_all === false) return 0
-    return result.data?.remain_at_all_count_for_group
+    return {
+      ...(result.data?.can_at_all === undefined ? {} : { canAtAll: result.data.can_at_all }),
+      ...(result.data?.remain_at_all_count_for_group === undefined
+        ? {}
+        : { remainGroup: result.data.remain_at_all_count_for_group }),
+      ...(result.data?.remain_at_all_count_for_uin === undefined
+        ? {}
+        : { remainAccount: result.data.remain_at_all_count_for_uin }),
+    }
+  }
+
+  /**
+   * 发**群公告**（独立于 @全体，**不受 @全体额度影响**）。
+   *
+   * 用户明确要求两者是独立工具、模型能在同一轮里自主选择用哪个。
+   * 所以这里**不做任何 @全体 额度检查** —— 群公告有自己的配额，
+   * 拿 @全体 的额度去挡它会让"想发个公告"莫名其妙失败。
+   */
+  async groupNotice(groupId: string, content: string): Promise<SendResult> {
+    const result = await this.callAction('_send_group_notice', {
+      group_id: Number(groupId),
+      content,
+    })
+    return result.ok ? { ok: true } : { ok: false, ...(result.error === undefined ? {} : { error: result.error }) }
+  }
+
+  /** 兼容旧调用：只要一个数字时用这个（内部仍走两维度判定）。 */
+  async getAtAllRemain(groupId: string): Promise<number | undefined> {
+    const snapshot = await this.getAtAllQuota(groupId)
+    if (snapshot === undefined) return undefined
+    if (snapshot.canAtAll === false) return 0
+    const values = [snapshot.remainGroup, snapshot.remainAccount].filter((v): v is number => typeof v === 'number')
+    return values.length === 0 ? undefined : Math.min(...values)
   }
 
   /** 撤回消息。 */

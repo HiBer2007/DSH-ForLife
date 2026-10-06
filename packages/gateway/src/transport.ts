@@ -129,6 +129,20 @@ export interface QqTransport {
   /** 取自己的账号信息（探活用）。 */
   getSelfInfo(): Promise<{ readonly userId: string; readonly nickname: string } | undefined>
   /** 取群 @全体剩余次数（额度查询）。 */
+  /**
+   * 查 @全体 额度（**两个维度都要**：群维度 + 账号维度）。
+   *
+   * 为什么不能只读群维度：NapCat 该接口返回值**与 group_id 不完全相关**，
+   * 只看群维度会高估（群还剩 5 次、账号已 0 次 ⇒ 实际发不出去）。
+   */
+  getAtAllQuota(groupId: string): Promise<import("./mention-quota.ts").MentionQuotaSnapshot | undefined>
+  /**
+   * 发**群公告**（独立于 @全体，**不受 @全体额度影响**）。
+   *
+   * 与 @全体 是两个独立工具：群公告有自己的配额，
+   * 拿 @全体 的额度去挡它会让"想发个公告"莫名其妙失败。
+   */
+  groupNotice(groupId: string, content: string): Promise<SendResult>
   getAtAllRemain(groupId: string): Promise<number | undefined>
   /** 撤回消息（需要审批的动作，调用方负责放行判断）。 */
   deleteMessage(messageId: string): Promise<SendResult>

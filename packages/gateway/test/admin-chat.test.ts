@@ -77,6 +77,8 @@ function inertTransport(): { transport: QqTransport; sent: unknown[] } {
     async getAtAllRemain() {
       return undefined
     },
+    getAtAllQuota: async () => ({ canAtAll: true, remainGroup: 5, remainAccount: 5 }),
+    groupNotice: async () => ({ ok: true }),
     async deleteMessage() {
       return { ok: true }
     },
