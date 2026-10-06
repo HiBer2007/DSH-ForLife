@@ -36,6 +36,9 @@ function setup(): {
   const service = createStickerService({
     db: opened.db,
     storageRoot: dir,
+    // 水印闸门是 fail-closed 的：不配检查器会拒绝一切导入。
+    // 这里给一个"判定无水印"的替身 —— 水印拒绝路径由本文件末尾的专门用例覆盖。
+    watermark: async () => ({ hasWatermark: false, evidence: 'none', calledModel: true }),
     describer: async () => {
       calls += 1
       return { description: `第 ${String(calls)} 次生成的描述`, emotionTags: ['测试'], model: 'fake', tokenCount: 1 }
@@ -182,11 +185,93 @@ test('add：没有描述器时只入库不描述（检索仍可靠标签工作�
   const opened = openDatabase({ file: ':memory:' })
   const dir = mkdtempSync(join(tmpdir(), 'forlife-svc2-'))
   try {
-    const service = createStickerService({ db: opened.db, storageRoot: dir })
+    const service = createStickerService({
+      db: opened.db,
+      storageRoot: dir,
+      // 这个用例要测的是"没有描述器"，所以水印检查器仍然要给（否则会被 fail-closed 拒掉）
+      watermark: async () => ({ hasWatermark: false, evidence: 'none', calledModel: true }),
+    })
     const result = await service.add({ bytes: fakeImage(256, 3), mime: 'image/png', source: 'manual' })
     assert.equal(result.status, 'created')
     assert.equal(result.calledModel, undefined, '没描述器就不该有"调用了模型"这回事')
     assert.match(result.reason, /未生成描述/)
+  } finally {
+    opened.db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+
+test('★ 水印闸门：带水印的图被拒、不入库、且留下证据', async () => {
+  const opened = openDatabase({ file: ':memory:' })
+  const dir = mkdtempSync(join(tmpdir(), 'forlife-wm-'))
+  try {
+    const service = createStickerService({
+      db: opened.db,
+      storageRoot: dir,
+      watermark: async () => ({ hasWatermark: true, evidence: '右下角有 @某某 昵称水印', calledModel: true }),
+      describer: async () => ({ description: '不该被调用', emotionTags: [], model: 'x', tokenCount: 0 }),
+    })
+    const result = await service.add({ bytes: fakeImage(512, 7), mime: 'image/png', source: 'manual' })
+    assert.equal(result.status, 'rejected')
+    assert.match(result.reason, /带水印/)
+    assert.match(result.reason, /@某某/, '拒绝原因要带上模型的判断依据（便于人工复核误判）')
+
+    // 关键：不能进 active 库（否则就能被发送）
+    assert.equal(
+      (opened.db.prepare("SELECT COUNT(*) AS v FROM sticker_assets WHERE status = 'active'").get() as { v: number }).v,
+      0,
+      '带水印的绝不能进 active 库',
+    )
+    // 但要有证据行
+    const row = opened.db.prepare("SELECT reject_reason FROM sticker_assets WHERE status = 'rejected'").get() as
+      | { reject_reason: string }
+      | undefined
+    assert.match(row?.reject_reason ?? '', /带水印/)
+  } finally {
+    opened.db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('★ 水印闸门：没配检查器 ⇒ 拒绝一切（fail-closed，不许"查不了就放行"）', async () => {
+  const opened = openDatabase({ file: ':memory:' })
+  const dir = mkdtempSync(join(tmpdir(), 'forlife-wm-'))
+  try {
+    const service = createStickerService({
+      db: opened.db,
+      storageRoot: dir,
+      // 这个用例要测的是"没有描述器"，所以水印检查器仍然要给（否则会被 fail-closed 拒掉）
+      watermark: async () => ({ hasWatermark: false, evidence: 'none', calledModel: true }),
+    })
+    const result = await service.add({ bytes: fakeImage(256, 8), mime: 'image/png', source: 'manual' })
+    assert.equal(result.status, 'rejected')
+    assert.match(result.reason, /无法检查水印/)
+    assert.equal(
+      (opened.db.prepare('SELECT COUNT(*) AS v FROM sticker_assets').get() as { v: number }).v,
+      0,
+      '查不了就不该留下任何行',
+    )
+  } finally {
+    opened.db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('★ 水印闸门：检查本身抛错也拒绝（查不了就不许用）', async () => {
+  const opened = openDatabase({ file: ':memory:' })
+  const dir = mkdtempSync(join(tmpdir(), 'forlife-wm-'))
+  try {
+    const service = createStickerService({
+      db: opened.db,
+      storageRoot: dir,
+      watermark: async () => {
+        throw new Error('视觉服务 503')
+      },
+    })
+    const result = await service.add({ bytes: fakeImage(256, 9), mime: 'image/png', source: 'manual' })
+    assert.equal(result.status, 'rejected')
+    assert.match(result.reason, /水印检查失败.*503/s)
   } finally {
     opened.db.close()
     rmSync(dir, { recursive: true, force: true })

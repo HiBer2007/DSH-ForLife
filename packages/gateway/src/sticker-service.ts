@@ -20,11 +20,12 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
-import { describeStickerOnce, getStickerAsset, touchStickerUse, type StickerAssetRow, type StickerSource } from '@forlife/store'
+import { describeStickerOnce, getStickerAsset, rejectStickerAsset, touchStickerUse, type StickerAssetRow, type StickerSource } from '@forlife/store'
 
 import { enqueueOutbound } from './outbox.ts'
-import { checkSourceUrl, DEFAULT_MEDIA_WHITELIST, ingestSticker, MAX_MEDIA_BYTES, type IngestStickerResult } from './stickers.ts'
+import { checkMediaBytes, checkSourceUrl, DEFAULT_MEDIA_WHITELIST, fingerprintOf, ingestSticker, MAX_MEDIA_BYTES, type IngestStickerResult } from './stickers.ts'
 import type { StickerFetcher } from './sticker-restock.ts'
+import type { WatermarkChecker } from './sticker-watermark.ts'
 import { searchStickers, type StickerHit } from './sticker-search.ts'
 import type { StickerVisionDescriber } from './sticker-vision.ts'
 
@@ -38,6 +39,13 @@ export interface StickerServiceOptions {
   readonly whitelist?: readonly string[]
   /** 下载器（注入以便离线测试；不给则用真实 HTTP）。 */
   readonly fetcher?: StickerFetcher | undefined
+  /**
+   * 水印检查器。**不给就拒绝导入**（用户的硬要求：绝对不允许带水印的表情）。
+   *
+   * 为什么 fail-closed：放行的代价是把带水印的表情发到群里 —— 那是对外的错误，
+   * 比「暂时存不进表情」严重得多。
+   */
+  readonly watermark?: WatermarkChecker | undefined
   readonly log?: (message: string) => void
 }
 
@@ -178,6 +186,36 @@ export function createStickerService(options: StickerServiceOptions): StickerSer
     },
 
     async add(input): Promise<AddStickerResult> {
+      // ★ 水印闸门（用户硬要求）。放在**最前面**，且就在这一层 ——
+      //   add 是唯一入口：手动导入 / 联网抓取 / 自造 / 学别人的四条路径都经过它，
+      //   所以没有任何地方能绕过去。先做便宜的字节校验，避免把明显非法的东西送给模型。
+      const bytesCheck = checkMediaBytes({ mime: input.mime, sizeBytes: input.bytes.byteLength })
+      if (!bytesCheck.ok) return { status: 'rejected', reason: bytesCheck.reason }
+
+      const checker = options.watermark
+      if (checker === undefined) {
+        return {
+          status: 'rejected',
+          reason: '没有配置视觉模型 ⇒ 无法检查水印，拒绝导入（绝对不允许带水印的表情）',
+        }
+      }
+      let verdict: Awaited<ReturnType<WatermarkChecker>>
+      try {
+        verdict = await checker(input.bytes, input.mime)
+      } catch (error) {
+        // 检查本身失败也**不能放行**：查不了就不许用
+        return { status: 'rejected', reason: `水印检查失败 ⇒ 拒绝导入：${String(error)}` }
+      }
+      if (verdict.hasWatermark) {
+        const sha256 = fingerprintOf(input.bytes)
+        rejectStickerAsset(db, {
+          sha256,
+          reason: `带水印：${verdict.evidence}`,
+          ...(input.sourceUrl === undefined ? {} : { sourceUrl: input.sourceUrl }),
+        })
+        return { status: 'rejected', reason: `带水印，已拒绝入库：${verdict.evidence}` }
+      }
+
       const ingested = ingestSticker({
         db,
         bytes: input.bytes,
