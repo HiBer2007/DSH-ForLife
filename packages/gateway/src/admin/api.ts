@@ -36,6 +36,7 @@ import {
 import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
+import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts'
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
@@ -506,6 +507,44 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const note = typeof body['note'] === 'string' ? body['note'] : null
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 表情库：改描述/标签 ────────────────────────────────────────
+      if (route === '/sticker-description' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const assetId = typeof body['assetId'] === 'string' ? body['assetId'] : ''
+        const description = typeof body['description'] === 'string' ? body['description'] : ''
+        const tags = Array.isArray(body['emotionTags'])
+          ? body['emotionTags'].filter((t): t is string => typeof t === 'string' && t.trim() !== '')
+          : []
+        if (assetId === '') { json(res, 400, { error: 'assetId 必填' }); return true }
+
+        const result = updateStickerDescription(db, { assetId, description, emotionTags: tags, updatedBy: session.id.slice(0, 8) })
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `表情描述 ${assetId} → ${String(description.length)} 字 / ${String(tags.length)} 标签` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 表情库：删除（标记为 rejected，保留指纹与判定）──────────────
+      if (route === '/sticker-delete' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const assetId = typeof body['assetId'] === 'string' ? body['assetId'] : ''
+        if (assetId === '') { json(res, 400, { error: 'assetId 必填' }); return true }
+
+        const result = deleteStickerAsset(db, { assetId, reason: `by ${session.id.slice(0, 8)}` })
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `删除表情 ${assetId}` })
         json(res, 200, { ok: true })
         return true
       }
