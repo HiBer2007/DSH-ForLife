@@ -13,7 +13,7 @@
  * @module @forlife/gateway/admin/api
  */
 import { setWakeRule, type WakeCondition } from '../wake.ts'
-import { activePrompt, deleteModelRoute, listModelRoutes, PROMPT_SLUGS, rollbackPrompt, savePromptRevision, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute, type PromptSlug } from '@forlife/store'
+import { activePrompt, deleteModelRoute, listModelRoutes, PROMPT_SLUGS, rollbackPrompt, savePromptRevision, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute, type PromptSlug, deleteWakeTrigger, getWakeTrigger, setWakePaused, updateWakeTrigger } from '@forlife/store'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -36,6 +36,7 @@ import {
 import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
+import { queryWakes } from './queries-wakes.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
 import { backupNow } from './storage-write.ts'
 import { setState } from '@forlife/store'
@@ -520,6 +521,73 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 唤醒引擎（PLAN 阶段 8 交付物 7）──────────────────────────
+      if (route === '/wakes' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryWakes(db))
+        return true
+      }
+
+      if (route === '/wake-pause' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const paused = body['paused'] === true
+        setWakePaused(db, paused)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: paused ? '唤醒引擎：全局暂停' : '唤醒引擎：恢复' })
+        json(res, 200, { ok: true, paused })
+        return true
+      }
+
+      if (route === '/wake-toggle' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const enabled = body['enabled'] === true
+        if (getWakeTrigger(db, id) === undefined) { json(res, 404, { error: `没有这条触发器：${id}` }); return true }
+        updateWakeTrigger(db, id, { enabled })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `触发器 ${id} ${enabled ? '启用' : '停用'}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      if (route === '/wake-cancel' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const row = getWakeTrigger(db, id)
+        if (row === undefined) { json(res, 404, { error: `没有这条触发器：${id}` }); return true }
+        deleteWakeTrigger(db, id)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `取消触发器「${row.title}」` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      if (route === '/wake-now' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const row = getWakeTrigger(db, id)
+        if (row === undefined) { json(res, 404, { error: `没有这条触发器：${id}` }); return true }
+        // 与工具侧同一条通道：设成"现在"⇒ 下一次 tick 就扫到（对**所有类型**有效）
+        updateWakeTrigger(db, id, { nextFireAt: new Date().toISOString() })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `立刻执行触发器「${row.title}」` })
+        json(res, 200, { ok: true, note: '已请求立刻执行，gateway 侧下一次 tick（≤1 秒）处理' })
         return true
       }
 
