@@ -84,6 +84,12 @@ export function openDatabase(options: OpenOptions): OpenedDatabase {
       log(`已应用迁移 v${migration.version} ${migration.name}`)
     } catch (error) {
       db.exec('ROLLBACK')
+      // **这里不能走唤醒通道** —— 结构上走不通，不是没做：
+      // 迁移失败意味着**这个库本身不可用**，而"标记 system 触发器为到点"
+      // 需要写这个库。下面紧接着 db.close()，连写的机会都没有。
+      //
+      // 所以迁移失败的**上报必须走带外**（日志 / 面板 / 启动失败退出码），
+      // 而不是"数据库即通道"那条路。真正的告警在 openDatabase 的调用方那里。
       db.close()
       throw new Error(
         `迁移 v${migration.version}（${migration.name}）失败：${String(error)}` +

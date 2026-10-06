@@ -26,6 +26,19 @@
  */
 import type { SystemObserveOutcome, SystemWakeSource } from './wake-system-source.ts'
 
+/**
+ * ## 哪些事件**接不上**（结构性原因，不是没做）
+ *
+ * 九类事件里有三类没有调用点，因为**上游能力还不存在**或**通道不成立**：
+ *
+ * | 事件 | 为什么没有调用点 |
+ * |---|---|
+ * | `migration.failed` | 迁移失败时**库本身不可用**，而"标记触发器到点"要写这个库 —— **通道不成立**。上报必须走带外 |
+ * | `contract.mismatch` | DSH 契约检查（`forlife doctor`）属于阶段 9/10 的交付物，**还没有那个功能** |
+ * | `job.failed` | gateway 侧**还没有 job 系统**（DSH 的 `ctx.jobs` 在插件进程里）|
+ *
+ * 钩子先做好是有意义的（上游一就位就能接），但**不能假装已经接上了**。
+ */
 /** 一组调用钩子。 */
 export interface SystemEventHooks {
   /** 推理端点不可用 / 恢复。 */
