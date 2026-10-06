@@ -10,7 +10,7 @@
  * 顺序 = 排查顺序：规模（槽位 / 版本 / 覆盖 / 生效 token）→ 每个槽位此刻生效的那一版
  * → 历史版本（将来回滚要选的对象）→ 按会话覆盖（谁没用全局版本）。
  */
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 
 import { api } from '../api/client.ts'
 import type { PromptsOverview, PromptSlotOverview } from '../api/types-prompts.ts'
@@ -73,6 +73,48 @@ const stats = computed<StatItem[]>(() => {
     },
   ]
 })
+
+/**
+ * 编辑提示词。
+ *
+ * **编辑前先取全文**：/prompts 给的是 textPreview（截断的），
+ * 拿它去编辑的话，用户一保存就把后半段截掉了 ——
+ * 而他看到的"原文"本来就是残缺的，根本不知道自己删了什么。
+ */
+const editor = ref<{ slug: string; text: string } | null>(null)
+const loadingText = ref(false)
+const saving = ref(false)
+const saveError = ref('')
+
+async function openEditor(slug: string): Promise<void> {
+  editor.value = { slug, text: '' }
+  loadingText.value = true
+  saveError.value = ''
+  try {
+    const data = await api.get<{ readonly text: string }>(`/prompt-text?slug=${encodeURIComponent(slug)}`)
+    editor.value = { slug, text: data.text }
+  } catch (error) {
+    saveError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    loadingText.value = false
+  }
+}
+
+async function save(): Promise<void> {
+  if (editor.value === null) return
+  saving.value = true
+  saveError.value = ''
+  try {
+    await api.post('/prompt-revision', { slug: editor.value.slug, text: editor.value.text })
+    editor.value = null
+    state.refresh()
+  } catch (error) {
+    // **必须显示错误**（且服务端会给出每一条校验错误）
+    saveError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    saving.value = false
+  }
+}
 
 const slots = computed<readonly PromptSlotOverview[]>(() => state.data.value?.slots ?? [])
 
@@ -208,6 +250,10 @@ const overrideColumns: TableColumn<Record<string, unknown>>[] = [
               <p v-if="slot.textPreview !== ''" class="muted cap">
                 预览是服务端截断的前 300 字符，只够看清结构与语气；完整文本在下面「版本历史」里对应的那一版。
               </p>
+            <p class="edit-row">
+              <button type="button" class="mini" @click="openEditor(slot.slug)">编辑…</button>
+              <span class="muted cap">编辑会取**全文**（上面只是截断预览）</span>
+            </p>
             </PanelCard>
           </div>
 
@@ -252,6 +298,28 @@ const overrideColumns: TableColumn<Record<string, unknown>>[] = [
       </template>
     </AsyncSection>
   </div>
+
+    <div v-if="editor !== null" class="edit-mask" @click.self="editor = null">
+      <div class="edit-box" role="dialog" aria-modal="true" aria-label="编辑提示词">
+        <h3 class="edit-title">编辑 {{ editor.slug }}</h3>
+        <p v-if="loadingText" class="muted cap">正在取全文…</p>
+        <template v-else>
+          <textarea v-model="editor.text" class="editor" rows="18" spellcheck="false" />
+          <p v-if="saveError !== ''" class="edit-error">{{ saveError }}</p>
+          <p class="edit-hint muted">
+            保存会**造一个新版本**（内容没变则不造，避免历史被"多点了几次保存"淹没）。
+            变量要写成 <span class="mono">&#123;&#123;变量名&#125;&#125;</span> 的形式，校验在服务端做 ——
+            失败时会把**每一条**错误都列出来，免得你改一条又冒一条。
+          </p>
+          <div class="edit-actions">
+            <button type="button" class="mini" @click="editor = null">取消</button>
+            <button type="button" class="mini primary" :disabled="saving" @click="save()">
+              {{ saving ? '保存中…' : '保存新版本' }}
+            </button>
+          </div>
+        </template>
+      </div>
+    </div>
 </template>
 
 <style scoped>
@@ -378,5 +446,86 @@ const overrideColumns: TableColumn<Record<string, unknown>>[] = [
   align-items: center;
   gap: 6px;
   font-size: var(--t-xs);
+}
+
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+.mini {
+  min-height: 28px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text-2);
+  font-size: var(--t-xs);
+  cursor: pointer;
+}
+.mini:hover:not(:disabled) {
+  border-color: var(--c-brand);
+  color: var(--c-brand);
+}
+.mini.primary {
+  border-color: transparent;
+  background: var(--c-brand);
+  color: #fff;
+}
+.mini:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.edit-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  padding: var(--s-4);
+  background: rgb(0 0 0 / 45%);
+}
+.edit-box {
+  width: min(760px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: var(--s-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-lg);
+}
+.edit-title {
+  font-size: var(--t-md);
+}
+.editor {
+  width: 100%;
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  background: var(--c-bg);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  color: var(--c-text);
+  font-family: ui-monospace, monospace;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  resize: vertical;
+}
+.edit-error {
+  margin-top: var(--s-3);
+  color: var(--c-err, #d9534f);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+}
+.edit-hint {
+  margin-top: var(--s-3);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+}
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
 }
 </style>

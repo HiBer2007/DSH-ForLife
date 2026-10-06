@@ -13,7 +13,7 @@
  * @module @forlife/gateway/admin/api
  */
 import { setWakeRule, type WakeCondition } from '../wake.ts'
-import { deleteModelRoute, listModelRoutes, PROMPT_SLUGS, rollbackPrompt, savePromptRevision, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute, type PromptSlug } from '@forlife/store'
+import { activePrompt, deleteModelRoute, listModelRoutes, PROMPT_SLUGS, rollbackPrompt, savePromptRevision, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute, type PromptSlug } from '@forlife/store'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -509,6 +509,22 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
         json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 提示词：取某个槽位的**全文**（编辑前必须拿全文，不能拿预览）──
+      if (route === '/prompt-text' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const slug = url.searchParams.get('slug') ?? ''
+        if (!(PROMPT_SLUGS as readonly string[]).includes(slug)) {
+          json(res, 400, { error: `未知槽位：${slug}` })
+          return true
+        }
+        const active = activePrompt(db, slug as PromptSlug)
+        // 没有版本时返回空串而不是 404：**"还没写过"是一种正常状态**，
+        // 404 会让面板显示成错误，而用户其实只是还没编辑过
+        json(res, 200, { slug, text: active?.text ?? '', revisionId: active?.id ?? null })
         return true
       }
 
