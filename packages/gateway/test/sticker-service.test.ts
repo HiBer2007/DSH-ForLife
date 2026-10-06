@@ -242,7 +242,6 @@ test('★ 水印闸门：没配检查器 ⇒ 拒绝一切（fail-closed，不许
       db: opened.db,
       storageRoot: dir,
       // 这个用例要测的是"没有描述器"，所以水印检查器仍然要给（否则会被 fail-closed 拒掉）
-      watermark: async () => ({ hasWatermark: false, evidence: 'none', calledModel: true }),
     })
     const result = await service.add({ bytes: fakeImage(256, 8), mime: 'image/png', source: 'manual' })
     assert.equal(result.status, 'rejected')
