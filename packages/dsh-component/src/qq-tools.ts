@@ -129,6 +129,25 @@ export function buildQqTools(
       const target = parseTarget(a.conversation)
       if (!target.ok) return { ok: false, confirmed: false, outboxId: '', hint: target.message }
 
+      // ── 死循环监控（用户要求：重复输出 ⇒ 停本轮 + 重启）────────────────
+      //
+      // **放在入队之前** —— 一旦入队，那条重复消息就会**真的发出去**，
+      // 而"发出去的收不回来"（与备份那条纪律同源）。
+      const verdict = runtime.loopGuard.feed(a.text)
+      if (verdict.action === 'stop-and-restart') {
+        runtime.log(`**检测到死循环，已拦下本条消息**：${verdict.reason}`)
+        return {
+          ok: false,
+          confirmed: false,
+          outboxId: '',
+          // **要把理由告诉模型** —— 悄悄丢掉的话，它不知道发生了什么，
+          // 只会换个说法**接着循环**。
+          hint:
+            `**检测到你在重复输出，这一轮被中止了。** 理由：${verdict.reason}。` +
+            '请**不要再重复**——换一个完全不同的做法，或者说明你卡在哪里、需要什么信息。',
+        }
+      }
+
       const segments: OutboundSegment[] = []
       if (a.reply_to !== undefined && a.reply_to !== '') segments.push({ kind: 'reply', messageId: a.reply_to })
       for (const userId of a.at ?? []) segments.push({ kind: 'at', userId })

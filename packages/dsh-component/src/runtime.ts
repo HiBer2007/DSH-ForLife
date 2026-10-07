@@ -23,6 +23,7 @@ import {
   listConversationClocks,
   setClockSuggestion,
   setConversationClock,
+  LoopGuard,
 } from '@forlife/store'
 
 import { execFileSync } from 'node:child_process'
@@ -104,6 +105,13 @@ export interface MemoryRuntimeOptions {
 /** 记忆运行时。 */
 export class MemoryRuntime {
   readonly db: OpenedDatabase['db']
+  /**
+   * **死循环监控**（用户要求：重复输出 ⇒ 停本轮 + 重启）。
+   *
+   * **必须是长期存在的实例** —— 单次工具调用看不出循环，
+   * 循环是"跨多次输出"才显形的。
+   */
+  readonly loopGuard = new LoopGuard()
   readonly dbPath: string
   private readonly opened: OpenedDatabase
   private readonly config: ForlifeConfig
