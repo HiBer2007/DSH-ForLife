@@ -63,14 +63,26 @@ interface CapturedTool {
   execute(args: never, exec?: unknown): Promise<unknown>
 }
 
-function captureTools(runtime: MemoryRuntime): Map<string, CapturedTool> {
-  const captured = new Map<string, CapturedTool>()
+/**
+ * 捕获工具定义 **与 `buildMemoryTools` 的返回值**。
+ *
+ * ⚠️ 两者必须分开：`index.ts` 注册的是**返回数组**里的东西，
+ * 所以"工具定义出来了但没放进返回数组"照样是断线（模型看不到它）——
+ * 回退验证时这一点被抓到过一次：只看捕获表的话，删掉返回项测试**依然全绿**。
+ */
+interface CapturedTools {
+  readonly byName: Map<string, CapturedTool>
+  readonly returned: readonly CapturedTool[]
+}
+
+function captureTools(runtime: MemoryRuntime): CapturedTools {
+  const byName = new Map<string, CapturedTool>()
   const fake = ((options: CapturedTool): unknown => {
-    captured.set(options.name, options)
+    byName.set(options.name, options)
     return options
   }) as unknown as DefineToolLike
-  buildMemoryTools(fake, runtime)
-  return captured
+  const returned = buildMemoryTools(fake, runtime) as unknown as CapturedTool[]
+  return { byName, returned }
 }
 
 /** 某个函数的函数体（从签名切到下一个顶层 `export`/`}`）—— 源码守卫用，避免匹配到别处。 */
@@ -90,7 +102,7 @@ async function recallViaTool(
   readonly value: RecallValue
   readonly rendered: string
 }> {
-  const tool = captureTools(runtime).get('recall_longterm')
+  const tool = captureTools(runtime).byName.get('recall_longterm')
   assert.ok(tool !== undefined, '**recall_longterm 工具必须注册出来**')
   const args = { query, ...(limit === undefined ? {} : { limit }) }
   const value = (await tool.execute(args as never)) as RecallValue
@@ -120,7 +132,7 @@ interface RecallValue {
 
 /** 取某个工具并跑一次真实 execute。 */
 async function runTool(runtime: MemoryRuntime, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const tool = captureTools(runtime).get(name)
+  const tool = captureTools(runtime).byName.get(name)
   assert.ok(tool !== undefined, `**${name} 工具必须注册出来**`)
   return (await tool.execute(args as never)) as Record<string, unknown>
 }
@@ -257,7 +269,9 @@ test('★★★ §7.4 x §7.6：周期额度**不因新轮重置**，但压缩�
     exhaustCycle(runtime)
     runtime.beginTurn()
     const blocked = await recallViaTool(runtime, '再来一次')
-    assert.deepEqual(blocked.value.results, [], '新轮不等于新周期 ⇒ 仍然要被拦')
+    // ⚠️ 判据不能用"结果为空"：库里本来就没有命中，空结果证明不了闸门存在
+    assert.match(blocked.value.note ?? '', /额度已用尽/, '新轮不等于新周期 ⇒ 仍然要被拦')
+    assert.equal(blocked.value.budget.used, MAX_PER_CYCLE, '被拦下就不该再消耗额度')
 
     // 走真实的压缩提交路径（`compaction-engine.ts` 在事务 commit 后调 resetCompactionAccounting → resetCycle）
     applyCompactionDecision(
@@ -277,7 +291,11 @@ test('★★★ §7.4 x §7.6：周期额度**不因新轮重置**，但压缩�
 test('★★ 接线守卫：周期闸门真的在源码里（不是只算了 remainingThisCycle）', () => {
   const src = read('../src/runtime.ts')
   const body = bodyOf(src, 'recallLongterm(query: string', 'requestRecallExtension(input')
-  assert.match(body, /this\.recallThisCycle >= maxPerCycle/, '**必须判断周期上限**（只计算不判断 = 形同建议）')
+  assert.match(
+    body,
+    /this\.recallThisCycle >= maxPerCycle\)\s*\{/,
+    '**必须判断周期上限**（只计算不判断 = 形同建议）',
+  )
   assert.match(body, /effectiveMaxPerCycle\(\)/, '上限要取生效值（含追加额度）')
   // 反向守卫：`remainingThisCycle` 只被算出来、没被判断 —— 那正是修复前的样子
   assert.ok(
@@ -290,12 +308,31 @@ test('★★ 接线守卫：周期闸门真的在源码里（不是只算了 rem
 // ③ PLAN §7.5 —— 逃生通道 request_recall_extension
 // ════════════════════════════════════════════════════════════════════════════
 
+test('★★★ 接线守卫：`buildMemoryTools` **返回的数组**里必须有全部记忆工具（只定义不返回 = 模型看不到）', async () => {
+  const dir = tempDir()
+  const runtime = makeRuntime(dir)
+  try {
+    const returned = captureTools(runtime).returned.map((t) => t.name)
+    for (const required of MEMORY_TOOL_NAMES) {
+      assert.ok(returned.includes(required), `**${required} 必须在返回数组里**（index.ts 只注册返回值）`)
+    }
+    // 反向：清单外的名字说明清单漂了（测试与实现引用的是同一份）
+    assert.equal(returned.length, MEMORY_TOOL_NAMES.length, `返回的工具数与清单不一致：${returned.join(', ')}`)
+  } finally {
+    runtime.close()
+    await cleanup(dir)
+  }
+})
+
 test('★★★ §7.5：工具真的注册了，且**空理由被拒**（不能让"随便什么理由"换额度）', async () => {
   const dir = tempDir()
   const runtime = makeRuntime(dir)
   try {
-    const names = captureTools(runtime)
-    assert.ok(names.has('request_recall_extension'), '**33 个工具里没有它**正是这次的缺陷，必须真的注册')
+    const captured = captureTools(runtime)
+    assert.ok(
+      captured.returned.some((t) => t.name === 'request_recall_extension'),
+      '**33 个工具里没有它**正是这次的缺陷，必须真的注册',
+    )
     assert.ok(MEMORY_TOOL_NAMES.includes('request_recall_extension'), '工具名清单也要包含它')
 
     for (const reason of ['', '   ', '嗯']) {
@@ -555,8 +592,11 @@ test('★★★ 接线守卫：L2 提示词（稳定前缀）里提到的 `recov
   const dir = tempDir()
   const runtime = makeRuntime(dir)
   try {
-    const names = captureTools(runtime)
-    assert.ok(names.has('recover'), '**提示词指向的工具必须在工具表里** —— 这正是本条缺陷的定义')
+    const names = captureTools(runtime).returned
+    assert.ok(
+      names.some((t) => t.name === 'recover'),
+      '**提示词指向的工具必须在工具表里** —— 这正是本条缺陷的定义',
+    )
   } finally {
     runtime.close()
     await cleanup(dir)

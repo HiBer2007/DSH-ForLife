@@ -645,7 +645,9 @@ export class MemoryRuntime {
       contentChars: cold.content.length,
       note:
         `已提升回热层：正文 ${String(cold.content.length)} 字已回填库内、storage_tier=ssd、archive_path 已清空。` +
-        '冷层归档文件**保留在原处**（提升不删源）。',
+        (cold.source === 'archive'
+          ? '冷层归档文件**保留在原处**（提升不删源）。'
+          : '（这条**没有归档文件**：正文本来就在库内，所以 source=db —— 不假装是从冷层读的。）'),
     }
   }
 

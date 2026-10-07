@@ -360,7 +360,7 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
             : {}),
         })),
         // PLAN §7.1 的声明：**原样透传**运行时算好的那一份（工具层不重算数字）
-        budget: result.budget, // ← 回退验证：故意传内部计数器（应为 result.declaration）
+        budget: result.declaration,
         // 旧字段保留（兼容）：平铺是历史形状，见文件头的"兼容性说明"
         usedThisTurn: result.budget.usedThisTurn,
         remainingThisTurn: result.budget.remainingThisTurn,
