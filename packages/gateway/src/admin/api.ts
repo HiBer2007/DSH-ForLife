@@ -37,6 +37,7 @@ import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { queryWakes } from './queries-wakes.ts'
+import { runBackup, verifyBackup } from '@forlife/store'
 import { createDshStatusProbe } from '../dsh-status.ts'
 import { probeAllEndpoints } from '../endpoint-health.ts'
 import { createExternalWakeSource } from '../wake-external-source.ts'
@@ -534,6 +535,73 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         json(res, 200, { ok: true })
         return true
       }
+
+        // ── 备份（PLAN 阶段 9 交付物 7）────────────────────────────────
+        //
+        // **手动而不是定时**：备份该由人决定何时做、放哪 ——
+        // 定时跑会占磁盘，而"放哪"更要紧（写到系统盘上，盘坏了备份一起没）。
+        if (route === '/backup' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+
+          // **目标目录只来自环境变量** —— 接口只接受一个子目录名。
+          // 允许任意路径的话，拿到管理会话的人就能把文件写到系统任意位置（那是提权）。
+          const baseDir = process.env['FORLIFE_BACKUP_DIR']
+          if (baseDir === undefined || baseDir.trim() === '') {
+            json(res, 400, {
+              error: '没有配置 FORLIFE_BACKUP_DIR —— 备份目标目录必须由部署方指定（不接受请求里的任意路径）',
+            })
+            return true
+          }
+          const body = await readJsonBody(req)
+          const label = typeof body?.label === 'string' ? body.label.trim() : ''
+          // 白名单字符：**挡住 `..` 与路径分隔符**（目录穿越）
+          if (label !== '' && !/^[A-Za-z0-9_-]{1,40}$/.test(label)) {
+            json(res, 400, { error: 'label 只允许字母数字下划线连字符（1-40 个），不允许路径分隔符或 ..' })
+            return true
+          }
+
+          const result = await runBackup({
+            db,
+            dbPath,
+            targetDir: label === '' ? baseDir : `${baseDir}/${label}`,
+            // blobRoot 是**可选**的 ⇒ 不配时不传这个字段（exactOptionalPropertyTypes）
+            ...(process.env['FORLIFE_STICKER_ROOT'] === undefined
+              ? {}
+              : { blobRoot: process.env['FORLIFE_STICKER_ROOT'] }),
+          })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `手动备份：${result.ok ? '成功' : '失败'}｜${result.reason.slice(0, 120)}`,
+          })
+          json(res, result.ok ? 200 : 500, result)
+          return true
+        }
+
+        // 验证一个备份可用吗 —— **恢复之前先确认**，而不是恢复到一半才发现
+        if (route === '/backup-verify' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const baseDir = process.env['FORLIFE_BACKUP_DIR']
+          if (baseDir === undefined || baseDir.trim() === '') {
+            json(res, 400, { error: '没有配置 FORLIFE_BACKUP_DIR' })
+            return true
+          }
+          const body = await readJsonBody(req)
+          const rel = typeof body?.path === 'string' ? body.path.trim() : ''
+          // **必须是 baseDir 之下的相对路径**（挡目录穿越）
+          if (rel === '' || rel.includes('..') || /^[A-Za-z]:/.test(rel) || rel.startsWith('/') || rel.startsWith('\\')) {
+            json(res, 400, { error: 'path 必须是备份目录下的相对路径（不允许绝对路径或 ..）' })
+            return true
+          }
+          const verified = await verifyBackup(`${baseDir}/${rel}`)
+          json(res, verified.ok ? 200 : 400, verified)
+          return true
+        }
 
       // ── 端点探测（手动触发；用户要求"需要增加手动探测"）────────────
       if (route === '/endpoint-probe' && method === 'POST') {

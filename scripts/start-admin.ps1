@@ -71,6 +71,16 @@ $env:FORLIFE_WORKSPACE_ROOT = if ($env:FORLIFE_WORKSPACE_ROOT) { $env:FORLIFE_WO
 
 # 存储分层（PLAN 阶段 9）。只配 hot 也能跑 —— warm/cold 会退回它，
 # 且 gateway 会把"退回了哪几层"报出来（不会让人以为真的分了三层在放）。
+# 备份目标目录（PLAN 阶段 9 交付物 7）。
+#
+# **必须由部署方指定** —— 接口只接受一个子目录名，不接受任意路径
+#（允许任意路径的话，拿到管理会话的人就能把文件写到系统任意位置，那是提权）。
+#
+# 默认放仓库内 .runtime/backups：**不是**因为它是好位置，而是因为
+# 开发机上没有别的盘。生产部署时应当指到**另一块物理盘**上 ——
+# 备份和源数据在同一块盘上，盘坏了备份一起没。
+$env:FORLIFE_BACKUP_DIR = if ($env:FORLIFE_BACKUP_DIR) { $env:FORLIFE_BACKUP_DIR } else { "$root\.runtime\backups" }
+
 $env:FORLIFE_ROOT_HOT = if ($env:FORLIFE_ROOT_HOT) { $env:FORLIFE_ROOT_HOT } else { "$root\.runtime\dsh\forlife\blobs" }
 
 # 驱动：联调阶段用 fake（回复由脚本生成，日志会大声标注）；生产改 headless
