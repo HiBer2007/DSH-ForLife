@@ -14,6 +14,22 @@ services:
   # ── 唯一公网入口：TLS + 路由 + TCP 穿透 ────────────────────────────────────
   caddy:
     image: caddy:2-alpine
+    # ★ **这两个变量必须设**，否则 Caddy 会以一条看不懂的解析错误启动失败：
+    #
+    # `email {$ACME_EMAIL}` 在变量没设时展开成 `email `（有指令没参数）⇒
+    # 报 `wrong argument count or unexpected line ending after 'email'`。
+    #
+    # **那条报错完全没提环境变量** —— 排障的人会去改 Caddyfile 的 email 行，
+    # 而真正的原因在部署侧的 env。**报错指的地方和原因差了一层。**
+    #
+    # 用 `${VAR:?消息}`：**变量没设时 compose 自己报错并打出消息**，
+    # 失败提前到 `up` 那一刻，而且消息里写清了要设什么。
+    #
+    # **不用 `${VAR:-默认值}`** —— 那会让一个用假域名/假邮箱起来的 Caddy
+    # **静默地申请错误的证书**。
+    environment:
+      FORLIFE_HOST: ${FORLIFE_HOST}
+      ACME_EMAIL: ${ACME_EMAIL}
     restart: unless-stopped
     ports:
       - "443:443"
