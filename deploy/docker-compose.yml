@@ -48,10 +48,15 @@ services:
 
   # ── DSH 运行时（我们的便携组件挂在这里）────────────────────────────────────
   dsh:
-    image: node:24-alpine
+    # **构建自 deploy/Dockerfile.app**（多阶段：构建前端 → 运行）
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.app
+    image: forlife-app:local
     restart: unless-stopped
     working_dir: /app
-    command: ["node", "--version"] # 阶段 0 占位；真实入口在阶段 9/10
+    # **真命令**（原来是占位：command: ["node", "--version"]）
+    command: ["dsh", "--profile", "forlife-web", "--no-open"]
     environment:
       # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
       DSH_HOME: /data/dsh
@@ -66,10 +71,17 @@ services:
 
   # ── 伴生服务：QQ 适配、队列、轮次驱动、后台、端口发布、触发引擎 ────────────
   gateway:
-    image: node:24-alpine
+    # **同一个镜像** —— dsh 与 gateway 共用同一份代码与 node_modules，
+    # 打两个镜像的话，同一份代码会有两个版本，而它们的契约必须一致
+    # （那正是"版本漂移"最容易出事的地方）。
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.app
+    image: forlife-app:local
     restart: unless-stopped
     working_dir: /app
-    command: ["node", "--version"] # 阶段 0 占位
+    # **真命令**（原来是占位）—— 入口是 server.ts，**不是 index.ts**
+    command: ["node", "packages/gateway/src/server.ts"]
     environment:
       FORLIFE_GATEWAY_PORT: "8081"
       FORLIFE_DATA_DIR: /data
