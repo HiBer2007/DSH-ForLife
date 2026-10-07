@@ -20,6 +20,7 @@ import AsyncSection from '../components/AsyncSection.vue'
 import PanelCard from '../components/PanelCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
+import { LogStreamFallback } from '../log-stream.ts'
 
 interface LogLine {
   readonly seq: number
@@ -44,6 +45,16 @@ const paused = ref(false)
 const level = ref<'all' | 'warn' | 'error'>('all')
 const keyword = ref('')
 const follow = ref(true)
+
+// ── 实时推送（SSE）优先，失败**回退到轮询** ────────────────────────────
+//
+// **回退不是可选项**：SSE 挂了而面板没回退的话，结果不是"慢一点"，
+// 而是"**日志完全不更新**" —— 用户会以为系统没日志，而真相是面板瞎了。
+const fallback = new LogStreamFallback()
+const transportLabel = ref(fallback.describe())
+let source: EventSource | undefined
+let pollTimer: number | undefined
+let retryTimer: number | undefined
 
 /** 首屏/手动刷新：整段替换。 */
 async function reload(): Promise<void> {
@@ -72,6 +83,86 @@ async function poll(): Promise<void> {
 }
 
 const viewport = ref<HTMLElement>()
+
+/** 收到一批新行（SSE 与轮询**共用这一段** —— 两条路的追加逻辑必须一致）。 */
+function appendLines(incoming: readonly LogLine[], sequence: number): void {
+  if (incoming.length > 0) {
+    lines.value = [...lines.value, ...incoming].slice(-1000)
+    lastSeq.value = sequence
+    if (follow.value) queueMicrotask(scrollToBottom)
+  } else if (sequence !== lastSeq.value) {
+    lastSeq.value = sequence
+  }
+}
+
+/** 启动轮询（**回退路径**）。 */
+function startPolling(): void {
+  if (pollTimer !== undefined) return
+  pollTimer = window.setInterval(() => void poll(), 2000)
+}
+
+function stopPolling(): void {
+  if (pollTimer !== undefined) {
+    window.clearInterval(pollTimer)
+    pollTimer = undefined
+  }
+}
+
+/**
+ * 连 SSE。
+ *
+ * **同源相对路径** —— `EventSource` 对同源请求**自动带 cookie**，
+ * 所以鉴权与别的接口一致（**不把令牌放进 URL**）。
+ */
+function connectSse(): void {
+  closeSse()
+  try {
+    source = new EventSource(`/api/admin/logs/stream?since=${String(lastSeq.value)}`)
+  } catch (error) {
+    fallback.report({ ok: false, reason: `浏览器不支持：${String(error).slice(0, 60)}` })
+    transportLabel.value = fallback.describe()
+    startPolling()
+    return
+  }
+  source.onopen = (): void => {
+    fallback.report({ ok: true })
+    transportLabel.value = fallback.describe()
+    stopPolling()
+  }
+  source.onmessage = (event: MessageEvent<string>): void => {
+    try {
+      const line = JSON.parse(event.data) as LogLine
+      appendLines([line], line.seq)
+    } catch {
+      // 单条解析失败不该断流
+    }
+  }
+  source.onerror = (): void => {
+    // ★ **回退到轮询**（并安排退避后重试 SSE）
+    fallback.report({ ok: false, reason: "连接中断" })
+    transportLabel.value = fallback.describe()
+    closeSse()
+    startPolling()
+    scheduleRetry()
+  }
+}
+
+function closeSse(): void {
+  if (source !== undefined) {
+    source.close()
+    source = undefined
+  }
+}
+
+/** 退避后重试 SSE（**只降级不重试 = 一次抖动就永久锁在轮询上**）。 */
+function scheduleRetry(): void {
+  if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+  retryTimer = window.setTimeout(() => {
+    retryTimer = undefined
+    if (fallback.tick(60_000)) connectSse()
+    else scheduleRetry()
+  }, 1000)
+}
 
 function scrollToBottom(): void {
   const element = viewport.value
@@ -137,13 +228,15 @@ const counts = computed(() => ({
   error: lines.value.filter((line) => line.level === 'error').length,
 }))
 
-let timer: number | undefined
 onMounted(() => {
   void reload()
-  timer = window.setInterval(() => void poll(), 2000)
+  // **先试实时推送**；连不上会自动回退到轮询（见 connectSse 的 onerror）
+  connectSse()
 })
 onBeforeUnmount(() => {
-  if (timer !== undefined) window.clearInterval(timer)
+  closeSse()
+  stopPolling()
+  if (retryTimer !== undefined) window.clearTimeout(retryTimer)
 })
 
 function stamp(iso: string): string {
@@ -168,6 +261,9 @@ function stamp(iso: string): string {
       >
         <template #actions>
           <div class="tools">
+            <!-- ★ **当前传输方式必须能看见** ——
+                 否则排障时没人知道"日志慢"是因为**回退到轮询了** -->
+            <span class="transport" :title="transportLabel">{{ transportLabel }}</span>
             <button type="button" class="btn" :data-active="paused" @click="paused = !paused">
               <AppIcon :name="paused ? 'play' : 'pause'" :size="13" />
               <span>{{ paused ? '继续' : '暂停' }}</span>
