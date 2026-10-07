@@ -64,11 +64,11 @@ const KNOWN_UNCONSUMED = new Set<string>([
   // 中期区独立预算（active 80–85% + 碎片 15–20%，PLAN §5.3）——渲染侧尚未按预算裁剪
   'fragment.activeBudgetRatioMin',
   'fragment.activeBudgetRatioMax',
-  // §7.4 重复查询检测（>0.9 → duplicate_query）——未实现
-  'recall.duplicateSimilarity',
-  // §7.5/§7.6 逃生通道 request_recall_extension——工具未实现
-  // §7.4 联想深度提示（同轮 ≥3 次）——未实现
-  'recall.associativeDepthWarn',
+  // §7.5/§7.6 逃生通道 request_recall_extension 已实现（基线键已被 requestRecallExtension 消费，已移出本清单）
+  // §7.4 重复查询检测（>0.9 → duplicate_query）已实现（`recall.duplicateSimilarity` 已被 runtime 消费，已移出本清单）
+  // §7.4 联想深度提示（同轮 ≥3 次）已实现（`recall.associativeDepthWarn` 已被 runtime 消费，已移出本清单）
+  // （三条的接线守卫在 `packages/dsh-component/test/recall-guardrails-wiring.test.ts` /
+  //   `recall-budget-recover-wiring.test.ts`）
   // 路由二阶段（评分模型/预评分开关/批量/延迟预算/定时复核）——部分参数尚未接线
   'router.scorer.quantization',
   'router.scorer.resident',

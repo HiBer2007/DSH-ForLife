@@ -361,6 +361,36 @@ export const RULE_DEVIATIONS: readonly RuleDeviation[] = [
       'EXECUTION_PLAN §2.8 / §2.17.6（D16，用户要求）+ `prompt.ts:40-53` 的位置论证；' +
       '2026-10-06 1:1 保真度核对（审计 §2.10 的 L0 行，审计把它记为 PLAN 内部张力）补登。',
   },
+  {
+    rule:
+      'PLAN.MD §7.4 硬约束②「重复查询检测：与上轮**语义**相似度 > 0.9 时拒绝并返回 `duplicate_query`」' +
+      '（§7.6 的 `duplicate_similarity_threshold` = 0.9 一分未改）。',
+    behavior:
+      '判据是**词面近似**、不是语义相似度：`querySimilarity()`（`dsh-component/src/runtime.ts`）把两条查询归一化' +
+      '（NFKC / 转小写 / 去空白与标点）后取 **token 集合的 Jaccard 系数**（CJK 段取字符二元组、拉丁与数字段按词切），' +
+      '`> recall.duplicateSimilarity`（0.9，**读基线**）即判重复 ⇒ 返回空结果 + `refusal.code = "duplicate_query"`' +
+      '（`matchedQuery` / `similarity` / `threshold` 一并给出，同一句话也拼进 `note` ⇒ render 出来模型一定看得到）。' +
+      '比对集合是 `queries_this_turn`（**本轮**已查过的查询，PLAN §7.1 自己要求回显的那份清单）；' +
+      '被拒的一次**照样扣额度**、也记进该清单（否则这道闸门就是免费重试）。' +
+      '能力边界如实写明：**抓得到**同一查询的表面变体（空白 / 标点 / 全半角 / 大小写 / 词序），' +
+      '**抓不到**同义改写（`防抖实现` vs `防抖是怎么做的`）。',
+    reason:
+      '语义相似度需要向量（embedding + 余弦），而本仓**没有向量库**：`packages/store/package.json` 只依赖 ' +
+      '`@forlife/contracts`，全仓没有 LanceDB / Qdrant / 任何 embedding 依赖（PLAN §6.4 的选型尚未落地，检索走 FTS5）——' +
+      '审计 §2.6 的 6.4 条（"向量存储选型：找不到对应实现"）已确认这一点。文本侧可用的近似里选 token 集合 Jaccard，而**不**用现成的两个：' +
+      '① `store/src/loop-guard.ts:63` 的 `similarity()` 是"公共前后缀占较短一条的比例"（为死循环检测服务），' +
+      '对语序调换完全不敏感（`防抖消息队列` vs `消息队列防抖` 判 0）——两件事的判据不同，共用一个函数会同时骗过两边；' +
+      '② 编辑距离对"多加一个词"过于敏感（`消息队列` vs `消息队列延迟` 会逼近 0.9，而它们是两个不同的查询）。' +
+      '代价如实写明：① 阈值 0.9 是**保守**方向 —— 同义改写会漏检（少拦几次重复），换"不误杀真正不同的查询"' +
+      '（误杀会让模型以为"记忆里没有这条"，与 §7.3 第 4 条要它"先判断信息是否真的存在"直接冲突）；' +
+      '② 集合语义忽略词序与重复词（换个词序问同一件事判为重复 —— 这是想要的方向）；' +
+      '③ 真要语义判定得等 §6.4 的向量存储落地，届时 `querySimilarity()` 是**唯一**要换的地方。',
+    approvedBy:
+      '2026-10-07 保真度修复：审计 `docs/audit/PLAN_FIDELITY_AUDIT.md`（§2.7 的 7.5 条 + §4「找不到对应实现」清单第 12 条）' +
+      '指出该实现整体缺失、且本仓没有向量库 ⇒ 修法只能是"用近似手段（字符级 / token 集合 / n-gram）并在注释里写清为什么"；' +
+      '`runtime.ts` 的 `querySimilarity()` 注释与 `dsh-component/test/recall-guardrails-wiring.test.ts`' +
+      '（接线守卫 + 近似边界用例）是这条登记的落点。',
+  },
 ]
 
 /** 按 key 建索引，便于测试与 defaults 应用。 */

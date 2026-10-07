@@ -161,6 +161,12 @@ test('★ 直接调 `recallLongterm()`（旧测试的写法）**取不回冷层�
     assert.equal(sync.entries[0]?.content, null, '**同步检索拿到的正文是 NULL**')
     assert.equal(sync.coldLoaded, undefined, '同步检索不做 I/O（按需加载是异步的那一条路）')
 
+    // ⚠️ 这里必须换一轮（`beginTurn()`）再查同一句：
+    // PLAN §7.4 的重复查询检测会拒绝"同一轮里再查一次几乎相同的词"（`duplicate_query`），
+    // 而本用例要比较的是**两条检索路径**（同步 vs 按需加载），不是在测那道闸门。
+    // 换轮之后比对清单（queries_this_turn）清空，两次调用拿到的是同一个查询的同一批命中，
+    // 变量只剩"走哪条路"这一个。
+    runtime.beginTurn()
     // 同一次检索走按需加载那条路 ⇒ 正文回来
     const onDemand = await runtime.recallLongtermOnDemand('防抖')
     assert.equal(onDemand.entries[0]?.content, '防抖：正文在这里', '**按需加载那条路必须能取回**')

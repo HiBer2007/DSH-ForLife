@@ -223,13 +223,26 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
 
   const recallLongterm = defineSpillingTool({
     name: 'recall_longterm',
+    // ★ PLAN §7.3 的**行为约束**就长在这里：5 条使用原则 + 3 条反面示例必须逐条覆盖
+    //   （审计 §7.3 曾判"部分一致"：只覆盖了 2.5 条，且第 4 条**语义相反** ——
+    //   旧文案写"可以换关键词"，PLAN 写的是"先判断信息是否真的存在，而不是立即换词重试"）。
+    //   取舍：这份描述位于**稳定前缀**（L1 工具定义），每多一句都进每次请求的上下文，
+    //   所以只写 PLAN 要求的条目 + 机器/模型绕不过去的运维事实（冷层、recover），
+    //   不复述 PLAN 原文、不加例子、不加解释性从句。改动本身会造成一次缓存未命中（低频、可接受）。
     description: [
-      '检索长期记忆里过去的事。每次返回都附带**预算声明**（本周期还剩几次、重置策略、本轮已查过什么）。',
-      '先想清楚要什么再查；无命中不代表不存在，可以换关键词，但不要为了确认而反复检索。',
-      '结果里的 storage_tier = hdd 表示该条已沉降到冷层：它的正文会**按需从冷层取回**（可能稍慢），随结果一起返回。',
-      '若 note 里说某条"取不回来"，那是**冷层读取失败**，不代表这件事没记过 —— 不要据此当作"记忆里没有"。',
-      '额度用尽时返回空结果并说明原因；确需再查可调用 request_recall_extension(reason) 申请追加额度。',
-      '要让某条已沉降的条目重新变热（正文回到库内）时，用 recover(id) —— 一次一条。',
+      '检索长期记忆里过去的事。返回附带**预算声明**（本周期还剩几次、重置策略、本轮已查过什么）。',
+      '使用原则：',
+      '- 只在短期上下文与当前中期记忆确实缺少该信息时才查。',
+      '- 不要为"确认"或"补充"而反复检索同一主题（重复会被拒：duplicate_query）。',
+      '- 返回的是候选片段，不是最终答案 —— 不要过度联想串联。',
+      '- 一次无结果时，先判断信息是否真的存在，再决定要不要换词；不要立刻换词重试。',
+      '- 每轮额度有限，额度随每次返回告知；额满即拒，确需再查用 request_recall_extension(reason)。',
+      '反面示例（不要这样做）：',
+      '- 为"确保无遗漏"连续检索 3-4 次相似查询。',
+      '- 检索到模糊片段后围绕它做大量推测性检索。',
+      '- 把不相关结果强行关联到当前任务。',
+      '冷层：storage_tier=hdd 表示该条已沉降，正文会按需从冷层取回（可能稍慢），随结果一起返回；' +
+        'note 说"取不回来"是冷层读取失败，不代表这件事没记过。要让条目回热层用 recover(id)（一次一条）。',
     ].join('\n'),
     parameters: {
       query: { type: 'string', required: true, description: '检索关键词或短语（中文按字匹配相邻短语）。' },
@@ -311,6 +324,37 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
           remainingThisTurn: { type: 'integer' },
           remainingThisCycle: { type: 'integer' },
           note: { type: 'string', description: '无命中、触发额度限制、或冷层取不回来时的说明。' },
+          // ★ PLAN §7.4 的 `duplicate_query` 必须是一个**码**，不能只是一句人话
+          //   （只写进 note 的话，模型与将来的面板/统计都只能去正则匹配自然语言）。
+          refusal: {
+            type: 'object',
+            additionalProperties: false,
+            description: '被拒绝时的机器可读原因码（PLAN §7.4 的 duplicate_query 落在这里）。正常/批准返回时没有这一项。',
+            properties: {
+              code: {
+                type: 'string',
+                required: true,
+                description: 'duplicate_query（重复查询）/ turn_exhausted（本轮额度用尽）/ cycle_exhausted（本周期额度用尽）。',
+              },
+              hint: { type: 'string', required: true, description: '该怎么办（可执行的那句话）。' },
+              matchedQuery: { type: 'string', description: '与哪一条已查过的查询相撞（只有 duplicate_query 有）。' },
+              similarity: { type: 'number', description: '近似相似度 0..1（只有 duplicate_query 有；**不是**语义相似度）。' },
+              threshold: { type: 'number', description: '判定阈值（读自基线 recall.duplicateSimilarity）。' },
+            },
+          },
+          // ★ PLAN §7.4 的「同轮连续 N 次以上检索时强制附加提示」：
+          //   提示同时写进 note（模型一定看得到），这里再给一份结构化的 —— 面板/统计不必去正则匹配中文。
+          associationWarn: {
+            type: 'object',
+            additionalProperties: false,
+            description:
+              '联想深度提示（同轮检索次数 ≥ 基线 recall.associativeDepthWarn 时出现；同一句话也在 note 里）。',
+            properties: {
+              depth: { type: 'integer', required: true, description: '本轮第几次检索（含本次）。' },
+              warnAt: { type: 'integer', required: true, description: '触发阈值（读自基线 recall.associativeDepthWarn）。' },
+              hint: { type: 'string', required: true, description: '提示原文。' },
+            },
+          },
         },
       },
       render: (_args: never, value: never): ContentBlock[] => {
@@ -366,6 +410,11 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
         remainingThisTurn: result.budget.remainingThisTurn,
         remainingThisCycle: result.budget.remainingThisCycle,
         ...(result.note === undefined ? {} : { note: result.note }),
+        // ★ PLAN §7.4 的拒绝码（`duplicate_query` / 两道额度闸门）**原样透传**；
+        //   说明同时也进了 note，所以 render 出来模型一定看得到（不依赖它读结构化字段）。
+        ...(result.refusal === undefined ? {} : { refusal: result.refusal }),
+        // ★ PLAN §7.4 的联想深度提示：**原样透传**（提示原文已在 note 里 ⇒ 一定会渲染）
+        ...(result.associationWarn === undefined ? {} : { associationWarn: result.associationWarn }),
       }
     },
   })

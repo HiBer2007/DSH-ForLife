@@ -173,6 +173,42 @@ export interface LongRecoverOutcome {
   readonly contentChars?: number
 }
 
+/**
+ * 一次 recall 被**拒绝**的机器可读原因（PLAN §7.2 / §7.4）。
+ *
+ * PLAN §7.4 对重复查询的要求是"拒绝并返回 `duplicate_query`" ——
+ * **`duplicate_query` 是一个码，不是一句人话**：只把说明写进 `note`，
+ * 模型（与将来的面板/统计）就只能去正则匹配自然语言。所以拒绝一律带码。
+ */
+export interface RecallRefusal {
+  /** `duplicate_query`（§7.4 重复检测）/ `turn_exhausted`（本轮额度）/ `cycle_exhausted`（本周期额度）。 */
+  readonly code: 'duplicate_query' | 'turn_exhausted' | 'cycle_exhausted'
+  /** 该怎么办（**可执行**的那句话，不是重复原因）。 */
+  readonly hint: string
+  /** 与**哪一条**已查过的查询相撞（只有 `duplicate_query` 有）。 */
+  readonly matchedQuery?: string
+  /** 近似相似度 0..1（只有 `duplicate_query` 有；**不是语义相似度**，见 `querySimilarity()`）。 */
+  readonly similarity?: number
+  /** 判定阈值（读自基线 `recall.duplicateSimilarity`，只有 `duplicate_query` 有）。 */
+  readonly threshold?: number
+}
+
+/**
+ * **联想深度提示**（PLAN §7.4「同轮连续 3 次以上检索时强制附加提示」，阈值读
+ * 基线 `recall.associativeDepthWarn`）。
+ *
+ * 它是"同轮检索太多次 ⇒ 大概率在围绕模糊片段过度联想"的告警，
+ * 与 §7.3 的三条反面示例配套：连续相似查询、围绕模糊片段推测、强行关联不相关结果。
+ */
+export interface AssociationWarn {
+  /** 本轮第几次检索（含本次）。 */
+  readonly depth: number
+  /** 触发阈值（基线 `recall.associativeDepthWarn`）。 */
+  readonly warnAt: number
+  /** 给模型看的提示原文（**同时**会被拼进 `note` ⇒ 一定会渲染出来）。 */
+  readonly hint: string
+}
+
 /** 一次 recall 的结果。 */
 export interface RecallResult {
   readonly entries: readonly LongEntryRow[]
@@ -180,6 +216,10 @@ export interface RecallResult {
   /** PLAN §7.1 的声明（工具层原样透传，不再自己拼数字）。 */
   readonly declaration: RecallBudgetDeclaration
   readonly note?: string
+  /** 被拒绝时的原因码（PLAN §7.4 的 `duplicate_query` 就落在这里；批准时没有这一项）。 */
+  readonly refusal?: RecallRefusal
+  /** 联想深度提示（同轮检索次数 ≥ `recall.associativeDepthWarn` 时出现）。 */
+  readonly associationWarn?: AssociationWarn
   /**
    * 冷层（HDD）按需加载的结果 —— 只含**命中且已沉降**的条目。
    *
@@ -342,15 +382,46 @@ export class MemoryRuntime {
   /**
    * 检索长期记忆（阶段 1 用 FTS5；向量检索在阶段 5 接入）。
    *
-   * ## 两道硬闸门（PLAN §7.4「硬性次数上限，超过直接拒绝」）
+   * ## 三道硬闸门（PLAN §7.4「硬性次数上限，超过直接拒绝」+ 重复查询检测）
    *
-   * ① **每轮**上限（`recall.maxPerTurn`，可被已批准的追加额度临时抬高）；
-   * ② **每周期**上限（`recall.maxPerCycle`）—— 周期由 `resetCycle()` 在**压缩提交后**归零
-   *    （PLAN §7.6 的 `reset_policy = on_compaction`）。
+   * ① **每周期**上限（`recall.maxPerCycle`）；
+   * ② **每轮**上限（`recall.maxPerTurn`，可被已批准的追加额度临时抬高）；
+   * ③ **重复查询**：与**本轮已经查过的**查询近似相似度 > `recall.duplicateSimilarity`
+   *    ⇒ 拒绝并返回 `duplicate_query`。
    *
-   * ⚠️ 第 ② 道以前**只用于显示**（`remainingThisCycle` 只算不判）⇒ 周期额度形同建议，
-   * 只有"每轮"那一道真的拦得住。被拒时返回空结果 + 完整预算声明 + 指向
-   * `request_recall_extension` 的提示（PLAN §7.2），**不静默失败**。
+   * 顺序刻意是 ①② 在前：额度已经用尽时，"没额度了"是更要紧的那句话 ——
+   * 只报 `duplicate_query` 会让模型以为"换个词就还能查"。
+   *
+   * ⚠️ 第 ② 道以前只拦每轮、第 ③ 道完全不存在；第 ① 道也**只用于显示**
+   * （`remainingThisCycle` 只算不判）⇒ 周期额度形同建议。被拒时返回空结果 +
+   * 完整预算声明 + 指向 `request_recall_extension` 的提示（PLAN §7.2），**不静默失败**。
+   *
+   * ## ③ 是**近似**、不是语义相似度（关键说明，别读错）
+   *
+   * PLAN 原文是"与上轮**语义**相似度 > 0.9"。语义相似度要向量（embedding + 余弦），
+   * 而本仓**没有向量库**（`packages/store/package.json` 只依赖 `@forlife/contracts`；
+   * PLAN §6.4 的 LanceDB/Qdrant 选型尚未落地，检索走 FTS5）。
+   * 所以这里用**词面近似**（归一化后的 token 集合 Jaccard），
+   * 边界与理由逐条写在 `querySimilarity()` 的注释里 —— **只抓"几乎同一个查询"**。
+   *
+   * ## "与上轮"的取法（一处需要在明处的解释）
+   *
+   * 这里比对的是 `queriesThisTurn`（**本轮**已查过的查询，PLAN §7.1 自己要求回显的
+   * 那份清单，也正是"避免重复检索相近主题"那句提示服务的对象）。
+   * 它覆盖了"上一次检索"这一读法；**不做跨轮比对**，两条理由：
+   *  1. **判据必须与模型看得见的东西一致** —— `queries_this_turn` 每次返回都回显，
+   *     模型因此能预判"什么会被判重复"。跨轮的隐藏记忆会让 `duplicate_query`
+   *     变成一次**不可解释的拒绝**（上一轮查过什么，本轮上下文里未必还留着），
+   *     而 §7.3 要的正是模型**自我约束**，前提是它看得见判据；
+   *  2. 跨轮比对会挡住"新一轮里因新信息而重查同一主题"这种正当行为，
+   *     而总量本来就由**周期额度**（①）封死。
+   *
+   * ## 重复查询被拒时**照样扣额度**（要写在明处）
+   *
+   * 不扣的话这道闸门就是**免费重试**：模型可以拿同一个词无限撞墙，
+   * 而每次撞墙都会产生一条工具结果进上下文 —— 那正是 §7.4 要省的东西。
+   * 扣了之后"被拒绝"与"真的查了"在账面上一致（`used` 会涨、`queries_this_turn` 会记下），
+   * 所以预算声明不会自相矛盾。
    */
   recallLongterm(query: string, limit?: number): RecallResult {
     const maxResults = Math.min(
@@ -369,10 +440,17 @@ export class MemoryRuntime {
       return this.recallRefused('turn_exhausted', maxPerTurn, maxPerCycle, maxResults)
     }
 
+    // ③ 重复查询检测（PLAN §7.4）—— **必须在把本次查询记进清单之前**，否则它会撞上自己
+    const duplicate = this.findDuplicateQuery(query)
     this.recallThisTurn += 1
     this.recallThisCycle += 1
-    // PLAN §7.1 的 queries_this_turn：记"本轮查过什么"，**有界**（见 appendBoundedQuery）
+    // PLAN §7.1 的 queries_this_turn：记"本轮查过什么"，**有界**（见 appendBoundedQuery）。
+    // 被拒的重复查询也记：它确实发生、也确实扣了额度（见方法头）。
     this.queriesThisTurn = appendBoundedQuery(this.queriesThisTurn, query, recallQueryLogLimit())
+    if (duplicate !== undefined) {
+      return this.recallDuplicateRefused(duplicate, maxPerTurn, maxPerCycle, maxResults)
+    }
+
     const entries = searchLongFts(this.db, query, maxResults)
     for (const entry of entries) touchLongEntry(this.db, entry.id)
 
@@ -1472,6 +1550,10 @@ export class MemoryRuntime {
    *
    * **`budget` 与 `declaration` 只在这里拼** —— 两个形状必须同源，
    * 否则迟早出现"平铺字段说还剩 3 次、budget 里说还剩 0 次"那种自相矛盾。
+   *
+   * PLAN §7.4 的**联想深度提示**也在这里附加：它是"这一轮第几次检索"的函数，
+   * 而这里是唯一一处把所有成功路径（有命中 / 无命中 / 退查中期）收口的地方 ——
+   * 放在各分支里迟早会漏掉一条（漏掉的那条就是"提示没出现"的 bug）。
    */
   private recallResult(
     entries: readonly LongEntryRow[],
@@ -1481,11 +1563,109 @@ export class MemoryRuntime {
     note?: string,
   ): RecallResult {
     const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    const associationWarn = this.associationWarn()
+    const notes = [
+      ...(associationWarn === undefined ? [] : [associationWarn.hint]),
+      ...(note === undefined ? [] : [note]),
+    ]
     return {
       entries,
       budget,
       declaration: this.budgetDeclaration(budget),
-      ...(note === undefined ? {} : { note }),
+      ...(notes.length === 0 ? {} : { note: notes.join('\n') }),
+      ...(associationWarn === undefined ? {} : { associationWarn }),
+    }
+  }
+
+  /**
+   * **联想深度提示**（PLAN §7.4「同轮连续 3 次以上检索时强制附加提示」）。
+   *
+   * `depth` 取 `recallThisTurn`（同一轮内的累计检索次数，含本次）——
+   * "连续"在这里按**同轮累计**读：中间夹了 `remember` 之类的调用也算，
+   * 因为它要防的是"这一轮一直在检索"（那才是过度联想的形状）。
+   *
+   * ## ★ 参数张力：基线值下这条规则**不可达**（除非追加过额度）
+   *
+   * 基线 `recall.associativeDepthWarn = 3`，而 `recall.maxPerTurn = 2`：
+   * 同一轮里第 3 次检索会先被**每轮闸门**（②）拒掉，`recallThisTurn` 到不了 3。
+   * ⇒ **基线参数下这条提示永远不会出现**（PLAN §7.4 与 §7.6 的内部张力，审计 §7.6 点了名）。
+   *
+   * 仍然实现它的理由（三个，缺一个都不足以支撑"留着"）：
+   *  1. **它并非永远不可达** —— `request_recall_extension` 批准后每轮额度会 +`recall.extensionMax`（2），
+   *     变成 4：同一轮里第 3、4 次检索会真的发生，此时提示**必须**出现
+   *     （追加额度买的正是"同一轮再多查几次"，而那正是过度联想的高发场景）；
+   *  2. 参数是可调的（面板/配置能改 `recall.maxPerTurn`）—— 规则读基线、不写死，
+   *     谁调了参数它就跟上；
+   *  3. 不实现的话，"提示缺失"与"规则不存在"从代码上分不开（本仓已栽过 7 次）。
+   */
+  private associationWarn(): AssociationWarn | undefined {
+    const warnAt = defaultFor<number>('recall.associativeDepthWarn')
+    if (warnAt <= 0 || this.recallThisTurn < warnAt) return undefined
+    const depth = this.recallThisTurn
+    return {
+      depth,
+      warnAt,
+      hint:
+        `⚠️ 联想深度提示：你在同一轮里已经连续检索 ${String(depth)} 次。` +
+        '返回的是候选片段、不是最终答案 —— 不要再围绕已命中的模糊片段继续做推测性检索，' +
+        '也不要把不相关的结果强行关联到当前任务。',
+    }
+  }
+
+  /**
+   * 找出"与本次查询几乎同一个"的历史查询（PLAN §7.4）。
+   *
+   * 阈值**读基线** `recall.duplicateSimilarity`（0.9），判据用 PLAN 的**严格大于**
+   * （`> 0.9`，不是 `>=`）——阈值是判据，不是目标值。
+   * 返回相似度最高的那一条（提示里要说出"你刚查过的是哪一句"才可执行）。
+   */
+  private findDuplicateQuery(query: string): DuplicateQueryMatch | undefined {
+    const threshold = defaultFor<number>('recall.duplicateSimilarity')
+    let best: DuplicateQueryMatch | undefined
+    for (const previous of this.queriesThisTurn) {
+      const similarity = querySimilarity(previous, query)
+      if (similarity > threshold && (best === undefined || similarity > best.similarity)) {
+        best = { query: previous, similarity, threshold }
+      }
+    }
+    return best
+  }
+
+  /**
+   * 重复查询的拒绝返回（PLAN §7.4：「…时拒绝并返回 `duplicate_query`」）。
+   *
+   * **必须说清三件事**（少一件模型就会接着撞墙，或者以为系统坏了）：
+   *  ① 你刚查过哪一条（`matchedQuery`）、有多像（`similarity` vs `threshold`）；
+   *  ② 上一次的结果就在上文里（不必再查一遍也拿得到）；
+   *  ③ 真想换个角度时，要换**真正不同**的检索词 —— 而不是换个说法问同一件事。
+   *
+   * 额度已由调用方扣过（见 `recallLongterm` 的说明），所以这里报出的 `used` 与
+   * 真实计数一致，不会被读成"这次没花钱"。
+   */
+  private recallDuplicateRefused(
+    matched: DuplicateQueryMatch,
+    maxPerTurn: number,
+    maxPerCycle: number,
+    maxResults: number,
+  ): RecallResult {
+    const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    const hint = '上一次的结果就在上文里：直接用它作答；确需换个角度时，请换一个**真正不同**的检索词。'
+    const note =
+      `duplicate_query：你刚查过相近的查询「${matched.query}」` +
+      `（近似相似度 ${(matched.similarity * 100).toFixed(0)}% > 阈值 ${String(matched.threshold)}）。` +
+      `${hint}（本次仍计入额度：本周期 ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}。）`
+    return {
+      entries: [],
+      budget,
+      declaration: this.budgetDeclaration(budget),
+      note,
+      refusal: {
+        code: 'duplicate_query',
+        hint,
+        matchedQuery: matched.query,
+        similarity: matched.similarity,
+        threshold: matched.threshold,
+      },
     }
   }
 
@@ -1506,7 +1686,13 @@ export class MemoryRuntime {
         ? `本轮检索额度已用尽（本周期 ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}，` +
           `${resetPhrase(this.recallResetPolicy())}）。请基于已有信息作答。${escape}`
         : `本轮 recall 次数已达上限（${String(budget.maxPerTurn)}；本周期还剩 ${String(budget.remainingThisCycle)} 次，下一轮可继续）。${escape}`
-    return { entries: [], budget, declaration: this.budgetDeclaration(budget), note }
+    return {
+      entries: [],
+      budget,
+      declaration: this.budgetDeclaration(budget),
+      note,
+      refusal: { code: kind, hint: escape },
+    }
   }
 
   /** PLAN §7.1 的预算声明（字段名逐字对齐；数字与重置语义都取真实值）。 */
@@ -1779,6 +1965,107 @@ export function appendBoundedQuery(list: readonly string[], query: string, max: 
   const next = [...list, clipped]
   if (next.length <= max) return next
   return next.slice(next.length - Math.max(0, max))
+}
+
+/** 一次"重复查询"的判定结果（`recallLongterm` 的闸门 ③）。 */
+export interface DuplicateQueryMatch {
+  /** 撞上的那条历史查询（`queries_this_turn` 里的原文，可能被 `RECALL_QUERY_MAX_CHARS` 截断过）。 */
+  readonly query: string
+  /** 近似相似度 0..1（**不是语义相似度**，见 `querySimilarity()`）。 */
+  readonly similarity: number
+  /** 判定阈值（读自基线 `recall.duplicateSimilarity`）。 */
+  readonly threshold: number
+}
+
+/**
+ * 检索词归一化：把"表面不同、其实是同一个查询"的差异抹掉。
+ *
+ * 只动**表面**、不动词：
+ *  1. `NFKC` —— 全角/半角与兼容字符统一（`ＱＱ` → `qq`）；
+ *  2. 转小写 —— 大小写不该算"换了个查询"；
+ *  3. 去掉所有空白、标点与符号（Unicode `\p{P}` / `\p{S}`）——
+ *     `防抖 2-3 秒` 与 `防抖2-3秒。` 是同一句。
+ */
+function normalizeQuery(text: string): string {
+  return text
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\u3000]+/gu, '')
+    .replace(/[\p{P}\p{S}]+/gu, '')
+}
+
+/**
+ * 把归一化后的检索词切成 **token 集合**（近似手段的核心，理由见 `querySimilarity()`）。
+ *
+ *  - **CJK 段取字符二元组（bigram）**：中文没有空格，按空格切词会把整句当成一个 token
+ *    ⇒ "防抖窗口"与"防抖窗口延迟"会算成 0 相似（既漏、又没法靠阈值调）；
+ *    bigram 不需要分词器，且"多加一个词"会成比例地拉低相似度（`消息队列` vs `消息队列延迟` ⇒ 3/5）。
+ *    单字成段时取该字本身 —— 否则"猫"这种单字查询得到**空集合**，永远判不出重复；
+ *  - **拉丁/数字段按词切**：`QQ` / `bot` / `2-3`（标点已去掉 ⇒ `23`）。
+ *    不切的话 `q` / `qq` / `qqq` 会变成一堆互相相似的 bigram，把"不同的词"判成同一个。
+ */
+function queryTokenSet(normalized: string): ReadonlySet<string> {
+  const tokens = new Set<string>()
+  for (const word of normalized.match(/[a-z0-9]+/g) ?? []) tokens.add(word)
+  const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu
+  for (const run of normalized.match(cjk) ?? []) {
+    if (run.length === 1) {
+      tokens.add(run)
+      continue
+    }
+    for (let i = 0; i + 1 < run.length; i += 1) tokens.add(run.slice(i, i + 2))
+  }
+  return tokens
+}
+
+/**
+ * 两条检索词的**近似**相似度（0..1）。
+ *
+ * # ⚠️ 这不是语义相似度（先说清楚它是什么）
+ *
+ * PLAN §7.4 要的是「与上轮**语义**相似度 > 0.9」。语义相似度要向量：
+ * 把两条查询各编码成 embedding、再算余弦相似度。而**本仓没有向量库** ——
+ * `packages/store/package.json` 只依赖 `@forlife/contracts`，全仓没有 LanceDB / Qdrant /
+ * 任何 embedding 依赖（PLAN §6.4 的选型尚未落地，当前检索走 FTS5）。
+ * 文本侧能做的只有**词面**近似，所以这里用 **token 集合的 Jaccard 系数**，
+ * 并把它的能力边界写在明处（**不假装**它懂语义）：
+ *
+ *  - **抓得到**：同一个查询的重复，含空白 / 大小写 / 标点 / 全半角的表面差异
+ *    （`防抖 2-3 秒` vs `防抖2-3秒。`⇒ 1.0）；
+ *  - **抓不到**：换一种说法的同义查询（`防抖实现` vs `防抖是怎么做的`）、
+ *    只共享一两个词的不同主题 —— 那需要向量，需要 PLAN §6.4 落地。
+ *    代价是**漏检**（少拦几次重复），而不是误判成"记忆里没有"。
+ *
+ * # 为什么是 Jaccard（而不是编辑距离 / `loop-guard` 的 `similarity()`）
+ *
+ *  - **不用 `store/src/loop-guard.ts` 的 `similarity()`**：那个是"公共前后缀占较短一条的比例"，
+ *    为模型输出的死循环检测服务，对**语序调换完全不敏感**（`防抖消息队列` vs `消息队列防抖`
+ *    前后缀占比是 0，而它明明就是同一个查询）。两件事的判据不同，共用一个函数会同时骗过两边
+ *    （那边注释解释了它为什么必须 O(n) 且只看首尾）；
+ *  - **不用编辑距离**：`O(n·m)` 且对"多加一个词"过于敏感（`消息队列` vs `消息队列延迟`
+ *    的编辑距离相似度接近 0.8，几乎要撞上 0.9 的阈值 —— 那是两个**不同**的查询，不该拦）；
+ *  - **集合语义（Jaccard）刻意忽略词序与重复词**：`防抖 消息队列` 与 `消息队列 防抖`
+ *    判为同一个 —— 换个词序问同一件事，仍然是同一件事。
+ *
+ * # 阈值方向：宁漏不误杀（这里有个真实取舍）
+ *
+ * 判据是 `similarity > 基线 recall.duplicateSimilarity`（0.9，**读基线、不写死**）。
+ * Jaccard ≥ 0.9 意味着两边几乎共享全部 bigram ⇒ **只拦"几乎是同一个查询"**。
+ * 刻意不把阈值调低去"凑"语义：**误杀一个真正不同的查询比漏掉一次重复更贵** ——
+ * 前者会让模型以为"记忆里没有这条"，而 PLAN §7.3 恰恰要求它"无结果时先判断信息是否真的存在"。
+ * 真正的兜底是额度闸门（每轮 2 / 每周期 5），不是把近似判据调激进。
+ *
+ * 空查询（归一化后没有任何 token）返回 0：不判重复，交给检索去如实返回"无命中"。
+ */
+export function querySimilarity(a: string, b: string): number {
+  const left = queryTokenSet(normalizeQuery(a))
+  const right = queryTokenSet(normalizeQuery(b))
+  if (left.size === 0 || right.size === 0) return 0
+  let shared = 0
+  for (const token of left) {
+    if (right.has(token)) shared += 1
+  }
+  return shared / (left.size + right.size - shared)
 }
 
 /** 申请追加额度的理由长度下限（与 `decideSwitch` 同一条既有约定：太短像随手要的）。 */
