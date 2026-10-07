@@ -67,3 +67,48 @@ systemctl is-active docker            # ★ 必须 active（不是的话看 jour
 docker info | grep -A5 'Registry Mirrors'
 docker pull caddy:2-alpine            # 验证（挑小的，别拿几百 MB 的试）
 ```
+
+---
+
+## ★★ 为什么这些说明**不能**写在 JSON 里（真机实测）
+
+原来 `docker-daemon.json` 里有一个 `_comment` 键（JSON 不支持注释，就用键当注释）。
+**Docker 29 的严格解析会直接拒绝启动**：
+
+```
+the following directives don't match any configuration option: _comment
+```
+
+⇒ **不是「忽略这一行」，是 `dockerd` 起不来**（整个 Docker 服务挂掉）。
+⇒ 说明一律写在**本文件**里，JSON 只留真正的配置项。
+
+### 原来写在 JSON 里的说明（原样搬过来）
+
+Docker daemon 的镜像加速配置（毫秒镜像 / 1ms.run）。
+
+## 为什么这个文件是**部署前置条件**（而不是可选项）
+
+`docker compose build` 要拉基础镜像（node:24-alpine、caddy:2-alpine），
+而**国内直连 registry-1.docker.io 会超时**：
+  dialing registry-1.docker.io:443 ... i/o timeout
+本机就是这样 —— 所以我写的 Dockerfile **一次都没构建成功过**。
+
+⇒ 不配这个，阶段 10/11 的构建**必然失败**。
+
+## 怎么用
+  1. 拷到 /etc/docker/daemon.json（**先备份原来的**）
+  2. systemctl restart docker
+  3. docker pull node:24-alpine   # 验证
+
+## ⚠️ 它只管 **Docker Hub**
+
+`registry-mirrors` 只对 **Docker Hub 的镜像**生效。
+本项目里有一个**不在 Docker Hub 上**的镜像：
+  ghcr.io/ggml-org/llama.cpp:server   （评分器，可选）
+⇒ 那个**不会被这个配置加速**，要另外想办法（见 PVE_DEPLOY.md 的说明）。
+
+## ⚠️ 第三方加速源的固有风险（如实说）
+
+它能看到你**拉了哪些镜像**。生产环境如果有合规要求，
+应当用**自建 registry 或云厂商的官方加速**，而不是第三方站点。
+这里列多个是为了**容灾**（单一站点挂掉时还能拉）。
