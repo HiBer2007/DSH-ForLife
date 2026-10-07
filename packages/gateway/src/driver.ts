@@ -3,7 +3,7 @@
  *
  * ## headless 驱动
  *
- * 起 `dsh --profile <name> headless --json -`，**提示词经 stdin 送进去**，逐行读 **NDJSON** 事件。
+ * 起 `dsh --profile <name> --json`（**不传任务位置参数**），**提示词经 stdin 送进去**，逐行读 **NDJSON** 事件。
  * 这一路的好处是**进程隔离**：一次轮次崩了不会带走网关。
  *
  * ## 提示词为什么必须走 stdin（踩过的坑）
@@ -13,8 +13,8 @@
  * 命令串里的换行把命令截断，模型只收到第一行「这不是用户发来的消息，而是你自己之前设的触发器到点了。」，
  * 触发标题/原因/「你当时要自己做的事」**全部丢失** ⇒ 表现为"空唤醒"。
  *
- * `dsh --profile headless` 支持任务参数为 `-` 时从 stdin 读（`dsh-headless/lib/index.js:300`），
- * 所以这里固定传 `-`，提示词原样走 stdin。顺带绕开命令行长度的上限。
+ * `dsh-headless` 在**没有任务位置参数**时把 stdin 整段读完当 task（`dsh-headless/lib/index.js:300`），
+ * 所以这里不传任务参数，提示词原样走 stdin。顺带绕开命令行长度的上限。
  *
  * ## 长连接驱动
  *
@@ -94,11 +94,16 @@ export class HeadlessTurnDriver implements TurnDriver {
     //   const task = program.args.length === 0 ? void 0 : joined
     // 即 `args.length === 0` ⇒ task 为 undefined ⇒ 读 stdin。
     //
-    // **踩过的坑**：我先写成了 `… '--json', '-'`，真机报
-    //   `` `-` must be the only task argument ``
-    // 因为 `--json` 也算进了位置参数（判断是 `args.length > 1 && args.includes('-')`）。
-    // **别传 `-`。**
-    const args = ['--profile', this.options.profile, 'headless', '--json']
+    // **别传 `headless` 这个词。** 启动器里 `dsh <name>` 只是 `--profile <name>`
+    // 的缩写（`dsh/lib/bin.js:128` 的展开），并没有 `headless` 子命令；所以
+    // `--profile <p> headless` 里的 `headless` 会被 headless 应用当成**任务位置参数**：
+    // `program.args = ['headless']` ⇒ `task = 'headless'` ⇒ **stdin 那整段提示词被忽略**
+    // （`dsh-headless/lib/startup.js:76-79`、`lib/index.js:300`）。
+    // 2026-10-07 真机表现：每一轮唤醒的提示词都只有「headless」一个词。
+    // 同理，写成 `… '--json', '-'` 会报 `` `-` must be the only task argument ``，
+    // 因为那时 `program.args` 里同时有 `headless` 和 `-` 两个位置参数 —— 错的是
+    // 多出来的 `headless`，不是 `--json`。
+    const args = ['--profile', this.options.profile, '--json']
     this.log(`启动 headless：${this.options.bin} ${args.join(' ')}（提示词 ${String(request.prompt.length)} 字符，经 stdin）`)
     const child = this.spawnImpl(this.options.bin, args, {
       env: { ...process.env, ...this.options.env },

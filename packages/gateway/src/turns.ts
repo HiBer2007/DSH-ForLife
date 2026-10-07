@@ -5,7 +5,7 @@
  *
  * | 驱动 | 怎么调 | 适用 |
  * | :--- | :--- | :--- |
- * | `headless` | 起 `dsh --profile X headless --json "<提示词>"`，逐行读 NDJSON 事件 | 默认；进程隔离好、崩溃不互相影响 |
+ * | `headless` | 起 `dsh --profile X --json`（**不传任务位置参数**，提示词走 stdin），逐行读 NDJSON 事件 | 默认；进程隔离好、崩溃不互相影响 |
  * | `longconnection` | 复用常驻会话（若 U2 的长连接方案通过） | 省掉每次冷启动 |
  * 两者实现同一个 `TurnDriver` 接口，**配置切换**（`driver.kind`）。
  *

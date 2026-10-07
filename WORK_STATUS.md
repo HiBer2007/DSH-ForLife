@@ -6,26 +6,35 @@
 
 ---
 
-## 一、当前**正在进行**的事（未完成，有明确断点）
+## 一、**上一次的断点已解**（2026-10-07 10:19 订正）
 
-### 修 `list_wakes` 的两个 bug（模型在真机上报出来的）
+### `list_wakes` 的两个 bug + 一个更大的契约 bug —— 源码层已全部修完
 
-**改动已落盘但测试红了**，`packages/dsh-component/src/wake-tools.ts`：
+**先订正上一版的误判**：上次记的"5 个用例红 ⇒ 是我新加的 `prompt` 字段让别的工具输出校验挂了"
+**是错的**。真相是：
 
-| 改动 | 位置 | 状态 |
-|---|---|---|
-| schema 加 `prompt` | L295 | ✅ 已改 |
-| render 去掉非空断言 `!` + 缺失处理 + 带 prompt | L310-322 | ✅ 已改 |
-| execute 里回 `prompt: row.prompt` | L333 | ✅ 已改 |
+- 真宿主拿 `execute` 的返回值**原样**按 `output.schema` 校验；而 `wake-tools.ts` 的 `execute`
+  返回的是旧信封 `{ content, value: {...} }` ⇒ 校验器看到 `content` / `value` 两个未声明属性，
+  报 `missing required property "value.ok" / "value.rows"`。**`list_wakes` / `cancel_wake` /
+  `wake_now` / `schedule_wake` / `register_watcher` 五个工具全中**（同一个 bug）。
+- 红用例为什么红：那会儿源码正被**并发的唤醒轮次**改成"直接返回裸值"，而测试助手
+  `valueOf()` 还在读 `.value` ⇒ 读到 `undefined` ⇒ `actual: undefined, expected: true`。
+  跟 `prompt` 字段没关系。
 
-- `pnpm typecheck` **干净**
-- 但 `node --test packages/dsh-component/test/wake-tools.test.ts` **5 个用例红**
-  - 失败的是 `schedule_wake` / `register_watcher` / `cancel_wake`
-  - 错误是 `actual: undefined, expected: true`
-  - **注意**：这些用例**与 `list_wakes` 无关** ⇒ 很可能是
-    **测试用的假 `defineTool` 会校验 schema**，而我新加的
-    `prompt: { type: 'string', required: true }` 让别的工具的输出校验挂了
-  - **下一步**：先看那个假 `defineTool` 的实现，再决定是改 schema 还是改测试
+**现在的状态（源码，已核实）：**
+
+| 项 | 状态 |
+|---|---|
+| 五个 `execute` 改回裸值 `{ok, id, message}` / `{ok, rows}` / `{ok, message}` | ✅ 全部 |
+| `list_wakes` schema / render / execute 补 `prompt` | ✅ |
+| `test/wake-tools.test.ts` 的 `valueOf()` 改成"返回值本身就是 value" | ✅ |
+| 补一条防回归用例：五个 `execute` 都不许出现 `content` / `value` 两个键 | ✅ 已加 |
+| **`node --test` 真跑一遍** | ❌ **跑不了** —— `pwsh` 起不来（见第六节），**没有测试执行证据** |
+
+**同一个 bug 还在 `port-tools.ts`**（`list_ports` / `publish_port` / `unpublish_port`），已一并改掉。
+核实方式是 `grep "content: text(" packages/dsh-component/src` ⇒ 零命中。
+
+根因与证据：`wake-tools-contract-bug-2026-10-06.md`、`wake-2026-10-06-wake-tools-schema-fix.md`。
 
 **为什么这两个 bug 值得修**（模型原话）：
 > **唤醒列表读不出来** —— `list_wakes` 工具本身报错（返回结构不符合它自己的声明）…
