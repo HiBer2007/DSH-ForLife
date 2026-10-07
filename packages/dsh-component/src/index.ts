@@ -465,6 +465,9 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
       })
       if (typeof dispose === 'function') disposers.push(dispose)
       log('已订阅会话事件：采集缓存命中率')
+      // 与文字侧对称：**挂上时要留一行** ——
+      // 静默的话，"工具侧监控在跑"和"没挂上"从日志上看一模一样。
+      log('已订阅工具调用事件：死循环监控（不发言的循环）')
     } catch (error) {
       always(`⚠️ 无法订阅会话事件（缓存指标不可用）：${String(error)}`)
     }
