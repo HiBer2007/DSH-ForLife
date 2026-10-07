@@ -1,0 +1,30 @@
+# 构建上下文排除表（2026-10-07 新增：原来**没有**这个文件）
+#
+# ⚠️ 为什么这个文件是**安全项**，不只是"瘦身"：
+# 没有它的时候，`docker build` 会把**整个仓库**打进 build context ——
+# 包括 `.runtime/`（本机的私钥、provider key、NapCat token、web.log 里那行明文 token）。
+# `Dockerfile.app` 的构建阶段有一条 `COPY . .` ⇒ 那些文件**会进构建层**，
+# 留在构建缓存里、并可能被后续 `COPY --from=build` 带出去。
+#
+# （本次部署是把仓库 tar 包传到 VM 的，包里**已排除** `.runtime/`；
+#   但"构建机器上恰好有 .runtime"是完全可能的 —— 所以要从构建侧堵住。）
+
+# 运行时数据：私钥 / provider key / token / 日志 —— **绝不进镜像**
+.runtime/
+
+# 依赖与构建产物（容器内会重装）
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.tsbuildinfo
+
+# 版本库与素材
+.git/
+test_photo/
+research/_sources/
+
+# 本地数据库
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

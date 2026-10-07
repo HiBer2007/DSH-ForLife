@@ -12,6 +12,71 @@
 
 ---
 
+## ★★ 2026-10-07：**真机部署实测结果**（这一段是后加的，优先读）
+
+在一台 **Ubuntu 26.04.1 / 4 核 / 7.9 GiB / 63G 单盘 / 无独立 HDD** 的 KVM 虚拟机上，
+**从零**按本文档部署了一遍。结论：**照原文做会失败，且失败点有 5 处**；
+修掉之后**四个容器全部起来且健康**，反代/端口/冷层/持久化都验过了。
+
+### 会致命的 5 处（**都已在仓库里修掉**，原始报错附后）
+
+| # | 位置 | 症状（原始报错） | 修法 |
+|---|---|---|---|
+| 1 | §0 `deploy/docker-daemon.json` 的 `_comment` 字段 | **dockerd 拒绝启动**：`unable to configure the Docker daemon with file /etc/docker/daemon.json: the following directives don't match any configuration option: _comment`（Docker **29** 起是严格解析） | 说明搬到 `deploy/docker-daemon.README.md`，JSON 只留合法字段 |
+| 2 | `deploy/Dockerfile.app` 装 dsh CLI | `ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH`（`pnpm add -g` 要求全局 bin 目录在 PATH 里，而 `/root/.local/share/pnpm/bin` 不在） | 改用 `npm i -g`（装到 `/usr/local/bin`，天然在 PATH） |
+| 3 | 同上，**包名少了 scope** | `pnpm add -g dsh@0.1.7-rc.2` 里的 `dsh` 在 npm 上**是另一个人的包**（实测只有 `1.0.0`/`1.0.1`）；真正的 CLI 是 **`@deepseek-ai/dsh`**（30 个版本，含 `0.1.7-rc.2`） | 改成 `npm i -g @deepseek-ai/dsh@0.1.7-rc.2`（仓库自己的 `scripts/setup-dev.ps1` 就是这么写的）。⚠️ 这**不只是构建失败，是供应链风险** |
+| 4 | `deploy/docker-compose.yml` 的 `- /app:/app:ro` | 宿主没有 `/app` ⇒ Docker 建个**空目录盖住镜像里的代码**：`Error: Cannot find module '/app/packages/gateway/src/server.ts'`（`MODULE_NOT_FOUND`，两个服务都崩溃重启） | **删掉这两行**（那是"阶段 0 用 node 占位镜像"时代的残留） |
+| 5 | 同上，`dsh` 服务的 profile | `Error: dsh: profile "forlife-web" does not exist; create it with 'dsh plugin --profile forlife-web add <package>'` —— **DSH 从 `$DSH_HOME/profiles/<名>` 找 profile，不从 cwd 找**（见 `setup-dev.ps1` 的 junction 做法），而镜像里根本没拷 `profiles/` | ①`Dockerfile.app` 补 `COPY --from=build /build/profiles ./profiles`；②dsh 的 command 先 `ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web` 再 `exec dsh …` |
+
+### 另外 4 处（不致命，但会让"看起来起来了"骗人）
+
+| # | 位置 | 症状 | 修法 |
+|---|---|---|---|
+| 6 | 命名卷属主 | `mkdir: can't create directory '/data/dsh/profiles': Permission denied` / `EACCES … mkdir '/app/.runtime/dsh/forlife/db'` —— 命名卷是 `root:root`，容器却以 `node`(1000) 跑 | 镜像里预建 `/data*` 并 `chown node:node`（Docker 挂**空**命名卷时会连属主一起播种） |
+| 7 | `gateway` 没设 `FORLIFE_DB` | 回落到 `<模块相对路径>/.runtime/…` = 容器里的 `/app/.runtime/…` ⇒ **EACCES**，且那路径在**镜像层**里（容器一重建记忆库就没了） | `FORLIFE_DB: /data/dsh/forlife/db/forlife.sqlite`，并把 `dsh-home` 卷也挂给 gateway（两边必须是**同一个库**） |
+| 8 | `dsh` 服务继承了镜像的 HEALTHCHECK | 镜像那条探 `127.0.0.1:8081/admin/`（gateway 的端口），而 dsh 跑在 **3080** ⇒ 容器永远 `unhealthy` | 在 compose 里覆盖 healthcheck 探 3080 |
+| 9 | 我们自己的组件 import 不到宿主的包 | `IMPORT FAIL: ERR_MODULE_NOT_FOUND Cannot find package '@deepseek-ai/schemastery' imported from /app/packages/dsh-component/src/config.ts` ⇒ dsh 起来了，但 **3 条 entry 全部 `failed to import`**（记忆/面板/压缩**全都没加载**，而容器看着是 Up 的） | 镜像里建 `node_modules/@deepseek-ai` → `/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai`（等价 `setup-dev.ps1` 那条 junction）。目标在**镜像内**，不牵扯宿主 `~/.dsh` |
+
+### 镜像加速源：**顺序很关键，而且卡住不转移**
+
+- `docker.1ms.run`（本文档原来唯一的那个）真机实测**卡死**（13 分钟零字节 / 240 秒超时）
+- 换 `docker.1panel.live` 到第一位后，`caddy:2-alpine` **16 秒**拉完
+- 但 `1panel` / `xuanyuan` 对**非官方库**返回 **403**（`mlikiowa/napcat-docker`）⇒ napcat 要用
+  `docker.m.daocloud.io` 或前缀形式 `docker pull docker.m.daocloud.io/mlikiowa/napcat-docker:latest` 再 `docker tag`
+- ⚠️ **Docker 的 mirror 失败转移只在"明确报错"时发生，连接"卡住"不触发** ⇒ 列表第一位挂掉 = 全部拉取一起挂
+
+### 真机验过的（可以依赖）
+
+- ✅ **四个容器全起来**：`caddy`/`dsh`/`gateway` **healthy**、`qq`(NapCat 4.18.33) Up
+- ✅ **Caddy 反代通**：`https://forlife.local/admin/` → **200 + `Via: 1.1 Caddy` + 真 HTML**（VM 本机与另一台 Windows 各发一次，都是 200）
+- ✅ **只有 80/443 对外**：`ss -tlnp` 里只有 `docker-proxy` 占 80/443（+ sshd 22）；3080/8081/3010/6099/2019 **一个都没对外**
+- ✅ **冷热真的是两个文件系统**：`/cold` = `/dev/loop11`(7.8G, ext4)，`/data` = `/dev/sda2`（容器内 `stat -f` 的 fsid 不同），容器 uid 1000 能往冷层写
+- ✅ **重启后数据还在**：`docker compose restart gateway dsh` 前后 `tables=61 / migrations=27 / maxVersion=27` 完全一致，迁移不重跑、不重新播种
+- ✅ 我们自己的组件**完整加载**：`记忆库就绪 …｜契约基线 v1（参数 143，doc 47）`、注册了 11 个工具、压缩引擎/沉降循环/唤醒轮询器/面板接口全部就位
+
+### 真机**没能验**的（别当成验过了）
+
+- ❌ **公网 ACME 证书**：本环境只有内网 IP、没有公网域名 ⇒ 签不出 Let's Encrypt 证书。
+  实测走的是 **Caddy 自己的内部 CA**（`CN=Caddy Local Authority - ECC Intermediate`），
+  且**只对"非 IP 的站点名"生效**：`FORLIFE_HOST` 写成 IP 时 Caddy **明确不为 IP 启用自动 HTTPS**（443 无证书）。
+  ⇒ **`FORLIFE_HOST` 必须是域名**；真域名 + ACME 那一段仍然**没验过**
+- ❌ **`docker compose up` 全量（含 qq）的端到端**：napcat 起来了，但**没有扫码登录**（要人工）
+- ❌ **重启整机**：模拟 HDD 写进了 `/etc/fstab`（`loop,nofail,noatime`，`findmnt --verify` 0 错误），
+  但**没有真的重启验证**（怕中断当时其它人的 SSH 会话）
+- ❌ **评分器 profile**（`llama-server`）：没拉 ghcr 镜像、没有模型权重
+- ❌ **"记忆系统真的工作"**：本轮验的是**环境与交付**（起得来、端口对、反代通、数据落对盘），
+  **不是一个功能测试** —— 记忆写入/召回的正确性没有被验证
+
+### 一处**行为**上的注意（不是 bug，但要知道）
+
+`deploy/Caddyfile` 刻意**不放兜底 handle** ⇒ `/admin*`、`/svc/*` 之外的路径
+**返回 `200` 空响应**（不是 404/403）。内容确实**拿不到**（响应头里没有 `Via: 1.1 Caddy`、
+没有 CSP，说明根本没被反代到 gateway），但**状态码是 200** ——
+做健康检查/监控的人要按"空 200"来判，别按 404 判。
+
+---
+
+
 ## 一、虚拟机规格
 
 | 项 | 建议 | 为什么 |
@@ -44,13 +109,19 @@
 
 用 **[毫秒镜像（1ms.run）](https://1ms.run/)** 的加速源：
 
+> ⚠️ **2026-10-07 真机实测**：照下面做**会把 dockerd 弄死**（Docker 29 严格解析 `daemon.json`）。
+> 原因与修法见本节开头那张表第 1 行，以及 **`deploy/docker-daemon.README.md`**。
+> **`daemon.json` 里绝不能有任何非 Docker 的字段（包括 `_comment`）。**
+> 另外：实测 `docker.1ms.run` **会卡死**，可用的是 `docker.1panel.live`（顺序见 README）。
+
 ```bash
-sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak 2>/dev/null || true
+sudo cp -n /etc/docker/daemon.json /etc/docker/daemon.json.bak 2>/dev/null || true
 sudo cp /opt/forlife/deploy/docker-daemon.json /etc/docker/daemon.json
 sudo systemctl restart docker
+systemctl is-active docker     # ★ 这一步必须 active，否则先看 journalctl -u docker
 
 # 验证
-docker pull node:24-alpine
+docker pull caddy:2-alpine     # ★ 挑小的验；别拿 node:24-alpine 试（1ms 上会卡 13 分钟）
 ```
 
 配置在 `deploy/docker-daemon.json`（列了**四个**源，**为了容灾** ——

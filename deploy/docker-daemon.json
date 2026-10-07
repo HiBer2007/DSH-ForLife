@@ -34,5 +34,10 @@
     "https://docker.1panel.live",
     "https://docker.xuanyuan.me",
     "https://docker.m.daocloud.io"
-  ]
+  ],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
 }

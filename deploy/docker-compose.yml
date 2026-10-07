@@ -61,10 +61,24 @@ services:
       # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
       DSH_HOME: /data/dsh
       FORLIFE_MODE: container
+      # ★★ 2026-10-07 **真机部署**发现：**原来一个 tier 根都没设** ⇒
+      #   冷热分层根本没生效（`resolveTierRoots()` 连 HOT 都拿不到，而它没有默认值）。
+      #   ⇒ 三层的根全落在同一个卷上，**HDD 冷层形同虚设**。
+      #
+      #   生产：把 `FORLIFE_COLD_DIR` 指向**真 HDD 的挂载点**即可，容器侧路径不用改。
+      #   单盘：不设也行（cold 会退回 warm，面板显示"冷层退回了"）。
+      FORLIFE_ROOT_HOT: /data/tiers/hot
+      FORLIFE_ROOT_WARM: /data/tiers/warm
+      FORLIFE_ROOT_COLD: /cold/tiers/cold
+      FORLIFE_ARCHIVE_DIR: /cold/archives
+      FORLIFE_BACKUP_DIR: /cold/backups
     volumes:
       - /app:/app:ro
       - forlife-data:/data # db / vectors / attachments / workspace / models
       - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
+      # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
+      #   将来换真 HDD：把盘挂到那个路径（或改这个变量），**内容 rsync 过去即可**。
+      - ${FORLIFE_COLD_DIR:-/mnt/forlife-cold}:/cold
     networks: [edge, internal]
     # 只在内网暴露，公网一律经 Caddy
     expose: ["3080"]
@@ -84,11 +98,25 @@ services:
     command: ["node", "packages/gateway/src/server.ts"]
     environment:
       FORLIFE_GATEWAY_PORT: "8081"
+      # ★★ 2026-10-07 **真机部署**发现：**原来一个 tier 根都没设** ⇒
+      #   冷热分层根本没生效（`resolveTierRoots()` 连 HOT 都拿不到，而它没有默认值）。
+      #   ⇒ 三层的根全落在同一个卷上，**HDD 冷层形同虚设**。
+      #
+      #   生产：把 `FORLIFE_COLD_DIR` 指向**真 HDD 的挂载点**即可，容器侧路径不用改。
+      #   单盘：不设也行（cold 会退回 warm，面板显示"冷层退回了"）。
+      FORLIFE_ROOT_HOT: /data/tiers/hot
+      FORLIFE_ROOT_WARM: /data/tiers/warm
+      FORLIFE_ROOT_COLD: /cold/tiers/cold
+      FORLIFE_ARCHIVE_DIR: /cold/archives
+      FORLIFE_BACKUP_DIR: /cold/backups
       FORLIFE_DATA_DIR: /data
       FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
     volumes:
       - /app:/app:ro
       - forlife-data:/data
+      # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
+      #   将来换真 HDD：把盘挂到那个路径（或改这个变量），**内容 rsync 过去即可**。
+      - ${FORLIFE_COLD_DIR:-/mnt/forlife-cold}:/cold
       - caddy-admin:/run/caddy
     networks: [edge, internal]
     expose: ["8081"]

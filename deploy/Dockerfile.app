@@ -66,13 +66,79 @@ WORKDIR /app
 #
 # ⚠️ **这一步要构建时能访问 npm registry** —— 我**没能验证**
 # （本机连不上 Docker Hub，更别说在容器里跑 install）。
-RUN pnpm add -g dsh@0.1.7-rc.2
+#
+# ── 2026-10-07 真机部署时发现的两处错误（已修，实测见报告）───────────────
+#
+# ❌ 原来写的是 `pnpm add -g dsh@0.1.7-rc.2`，**两处都错**：
+#
+#  1. **包名少了 scope**。npm 上的 `dsh`（无 scope）**是另一个人的包**
+#     （registry 实测只有 `1.0.0` / `1.0.1`，**没有** `0.1.7-rc.2`）。
+#     真正的 CLI 是 **`@deepseek-ai/dsh`**（实测有 30 个版本，含 `0.1.7-rc.2`）。
+#     仓库自己的 `scripts/setup-dev.ps1:15` 写的就是 `npm i -g @deepseek-ai/dsh`。
+#     ⚠️ 就算版本恰好撞上，装进来的也会是**别人的包** —— 这是供应链风险，不只是构建失败。
+#
+#  2. **`pnpm add -g` 在这里必然失败**（实测原始错误）：
+#       Error: ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH
+#         × The configured global bin directory "/root/.local/share/pnpm/bin" is not in PATH
+#     pnpm 12 会检查全局 bin 目录在不在 PATH 里，不在就拒绝安装。
+#     改用 **npm**（node 镜像自带，装到 /usr/local/bin，天然在 PATH 里）。
+RUN npm i -g @deepseek-ai/dsh@0.1.7-rc.2
 
 # 只带**运行需要的东西**：清单 + 依赖 + 源码 + 前端产物。
 # **不带** devDependencies（`--prod`）、不带构建缓存。
 COPY --from=build /build/package.json /build/pnpm-lock.yaml /build/pnpm-workspace.yaml ./
 COPY --from=build /build/packages ./packages
+
+# ★ **profiles 必须带进来**（2026-10-07 真机部署时发现的缺陷：原来没拷）。
+#
+# 两件事都依赖它：
+#   1. `dsh --profile forlife-web` 要能找到这个 profile；
+#   2. pnpm workspace 要在 `profiles/forlife-web/node_modules/` 里建出
+#      `forlife-memory -> ../../packages/dsh-component` 这条链接 ——
+#      而 profile 的 `dsh.profile.bundles` 里就列着 `forlife-memory`。
+#      不拷的话 bundle 解析不到，dsh 起不来。
+COPY --from=build /build/profiles ./profiles
+
 RUN pnpm install --frozen-lockfile --prod && pnpm store prune
+
+# ★ **让 /app 下的包能解析到宿主 DSH 的包树**（2026-10-07 真机部署实测踩到）。
+#
+# 我们的组件（`forlife-memory` = `packages/dsh-component`）**不声明** `@deepseek-ai/dsh-*`
+# 为依赖 —— 那是刻意的设计（见 EXECUTION_PLAN：声明 peer 会让 pnpm 在有网/无网环境下
+# 行为不一致），它靠**宿主 DSH 提供**这些包。
+#
+# 开发机上这件事由 `scripts/setup-dev.ps1` 做：往仓库根 `node_modules/@deepseek-ai`
+# 建一条指向宿主全局安装的 **junction**。镜像里没有这一步 ⇒ 实测原始错误：
+#   IMPORT FAIL: ERR_MODULE_NOT_FOUND
+#   Cannot find package '@deepseek-ai/schemastery'
+#   imported from /app/packages/dsh-component/src/config.ts
+# 表现是 dsh 起来了、但**我们自己的三条 entry 全部 failed to import**：
+#   forlife-memory (forlife-memory): failed to import
+#   forlife-memory-panel (forlife-memory/panel): failed to import
+#   forlife-compaction (forlife-memory/compaction): failed to import
+#
+# ⇒ 在镜像里建同一条链接（目标就是上面 `npm i -g` 装出来的那棵树，283 个包）。
+#   **不必把宿主 ~/.dsh 或任何本机路径扯进来** —— 目标在镜像内。
+RUN rm -rf /app/node_modules/@deepseek-ai && \
+    ln -sfn /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai /app/node_modules/@deepseek-ai && \
+    ls /app/node_modules/@deepseek-ai | wc -l
+
+# ★ **profile 目录必须对 node 可写**（2026-10-07 真机部署实测踩到）。
+#
+# DSH **每次启动都无条件写** profile 根配置：
+#   `writeFileSync(join(profile.dir, 'cordis.yml'), PROFILE_ROOT_CONFIG)`
+#   —— `dsh-app-boot/lib/index.js` 的 `prepareProfile()`，没有"存在就跳过"的判断。
+#
+# 而 profile 是在 `$DSH_HOME/profiles/forlife-web` 被读到的（compose 把那里链到
+# `/app/profiles/forlife-web`）⇒ **镜像里那份的属主必须是 node**，否则实测：
+#   Error: EACCES: permission denied, open '/data/dsh/profiles/forlife-web/cordis.yml'
+#       at writeFileSync (node:fs:2482:20)
+#       at prepareProfile (…/dsh-app-boot/lib/index.js:189:2)
+#
+# ⚠️ 这一条**很容易被"别的构建"打回原形**：目录权限取决于构建上下文里的 mode，
+#    重建一次就可能从 777 变成 775 ⇒ 服务从"好的"变成"崩溃重启"。
+#    **显式 chown 一次，就跟构建上下文的 mode 无关了。**
+RUN chown -R node:node /app/profiles
 
 # 前端静态产物（gateway 从它服务 /admin/）
 COPY --from=build /build/packages/admin-ui/dist ./packages/admin-ui/dist
@@ -88,6 +154,18 @@ VOLUME ["/data"]
 ENV FORLIFE_ADMIN_HOST=0.0.0.0
 ENV FORLIFE_ADMIN_PORT=8081
 EXPOSE 8081
+
+# ★ **命名卷的属主**（2026-10-07 真机部署实测踩到）：
+#
+# compose 把两个**命名卷**挂在 `/data` 与 `/data/dsh` 上，而 Docker 新建命名卷是
+# `root:root`，容器却以 `node`(uid 1000) 跑 ⇒ 实测原始错误：
+#   mkdir: can't create directory '/data/dsh/profiles': Permission denied     （dsh）
+#   errno: -13, code: 'EACCES', syscall: 'mkdir', path: '/app/.runtime/dsh/forlife/db'  （gateway）
+#
+# ⇒ 在镜像里**先把这些目录建好并 chown 给 node**。Docker 挂载**空命名卷**时会把
+#   镜像里该路径的内容与属主一起"播种"进卷里（非空卷不播种）⇒ 部署侧不需要
+#   额外的 chown 步骤，`docker compose up` 就能起来。
+RUN mkdir -p /data/dsh /data/tiers/hot /data/tiers/warm && chown -R node:node /data
 
 # **非 root 运行**（node 镜像自带 uid 1000 的 node 用户）
 USER node
