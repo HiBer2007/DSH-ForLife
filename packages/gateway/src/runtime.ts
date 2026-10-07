@@ -18,12 +18,13 @@
  */
 import { startEndpointHealthLoop } from './endpoint-health.ts'
 import { createSystemEventHooks } from './wake-system-hooks.ts'
+import { startSettleLoop } from './settle-loop.ts'
 import { monitorConfigFromEnv, startSystemMonitor } from './wake-system-monitor.ts'
 import { createWakeRuntime } from './wake-runtime.ts'
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import { FLAG_QQ_TAKEOVER, getFlag } from '@forlife/store'
+import { FLAG_QQ_TAKEOVER, getFlag, moveFileWithVerify } from '@forlife/store'
 
 import { FakeTurnDriver, HeadlessTurnDriver, type FakeScript } from './driver.ts'
 import { Gateway, type GatewayState } from './gateway.ts'
@@ -186,6 +187,17 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     log,
   })
 
+  // ── blob 沉降循环（PLAN 阶段 9 交付物 1 的"定时"那一半）──────────────
+  //
+  // 只有 settleBlobs 函数不算交付物完成 —— 交付物要的是「**定时**沉降任务」。
+  // 没配 FORLIFE_ROOT_HOT 时它**明确不启动**（而不是跑一个空循环）。
+  const settleLoop = startSettleLoop({
+    db: options.db,
+    env: process.env,
+    moveFile: moveFileWithVerify,
+    log,
+  })
+
   const transport = createOneBotTransport({
     port: options.onebot.port,
     host: options.onebot.host,
@@ -257,6 +269,7 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     stop: async (): Promise<void> => {
       await gateway.stop()
       stopHealthLoop()
+    settleLoop.stop()
       systemMonitor.stop()
       await driver.close?.()
       await transport.stop()
