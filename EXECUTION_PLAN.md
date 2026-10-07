@@ -3066,7 +3066,22 @@ NapCat 那一侧**已经就绪** —— ③ 的真机验证（真的停掉容器
 - [x] 通过 QQ 与运维双向通信：接管模式下读入站表，用 `/api/admin/send` 或直接入队回复（实测 confirmed=1）
 - [x] 提示词**编辑**。　**证据**：`GET /prompt-text`（取**全文**，不是截断预览）+ `POST /prompt-revision`（保存新版本）+ `POST /prompt-rollback`（版本回滚）；界面在 `PromptsView.vue`。逻辑已下沉到 `@forlife/store`（插件与网关共用同一份，见 §2.14.13）。
 - [ ] 部署：多阶段 Dockerfile（构建前端 → 运行服务）+ compose 接线 + Caddy 反代验证
-- [ ] 服务端事件推送（SSE）替代轮询
+- [x] 服务端事件推送（SSE）替代轮询
+      - 后端：`LogBuffer` 订阅 + `GET /api/admin/logs/stream`（`packages/gateway/src/admin/sse.ts`，测试 **8/8**）
+      - 前端：`LogsView` 换成 `EventSource`，**连不上自动回退到 2 秒轮询**，退避后再试 SSE
+        （`packages/admin-ui/src/log-stream.ts` 纯状态机，测试 **10/10**）
+      - **真机证据（2026-10-07）**：
+        1. 未登录访问 `/api/admin/logs/stream` ⇒ **401**
+           —— **SSE 是长连接，忘了鉴权就等于开了一个持续泄露日志的口子**；
+           （这条能验是因为它**不需要浏览器**：一个 HTTP 请求就够。）
+        2. **用户在浏览器里看到了 SSE**（面板工具条显示实时推送状态）
+           —— 这条**只有用户能验**（我拿不到浏览器）。
+      - ⚠️ **一条刻意的设计**：SSE 失败时**回退到轮询**，而不是「日志不更新」。
+        **如果 SSE 挂了而面板没回退，结果不是「慢一点」，而是「面板瞎了」** ——
+        用户会以为系统没日志，而真相是面板不工作。
+      - ⚠️ **降级后还会再试 SSE**（退避 5s→10s→20s…封顶 120s）：
+        只降级不重试的话，一次瞬时抖动就把标签页**永久锁在轮询上**（而用户完全不知道）。
+      - 回退验证：去掉退订 ⇒ `sse.test.ts` **pass 6 / fail 2**。
 - [x] 端口出口页。　**证据**：`PortsView.vue`（协议选择、TTL、右键/长按菜单、未启用时禁用按钮并显示原因）；接口 `/ports` `/port-publish` `/port-unpublish`；模型侧工具 `publish_port` / `unpublish_port` / `list_ports`。真机验收 HTTP 9/9 + TCP 11/11（见 §2.14.15、§2.14.16）。
 
 **QQ 链路排障记（都写进了代码注释，因为每一条都花了时间）**
