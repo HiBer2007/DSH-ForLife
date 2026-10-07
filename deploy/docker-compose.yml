@@ -82,6 +82,15 @@ services:
     # 只在内网暴露，公网一律经 Caddy
     expose: ["3080"]
 
+    # ★★ 2026-10-07 真机部署发现：**镜像里那条 HEALTHCHECK 探的是 8081**（gateway 的端口），
+    #   而 dsh 跑在 **3080** ⇒ 容器**永远 unhealthy**（服务其实是好的）。
+    #   ⚠️ 「永远红」的下场是**人开始忽略健康状态**，那比不检查更糟 ⇒ 必须覆盖。
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
   # ── 伴生服务：QQ 适配、队列、轮次驱动、后台、端口发布、触发引擎 ────────────
   gateway:
     # **同一个镜像** —— dsh 与 gateway 共用同一份代码与 node_modules，
