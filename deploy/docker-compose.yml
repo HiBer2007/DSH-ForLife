@@ -82,6 +82,35 @@ services:
     networks: [internal] # 只有内网；OneBot 端口不上公网
     expose: ["3001", "6099"]
 
+  # ── 本地评分器（PLAN 阶段 10 的第五个服务）──────────────────────────────
+  #
+  # 用本地小模型给"这条消息重不重要"打分，比调远端便宜也快。
+  #
+  # **默认不起**（profiles）：它要几个 GB 的模型权重，而开发机上没有；
+  # 默认拉起来会让 `docker compose up` 直接失败，
+  # 而那种失败会让人以为"整个 compose 是坏的"。
+  # 要它的时候：`docker compose --profile scorer up`
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    profiles: [scorer]
+    environment:
+      # 上下文给足：评分要看完整对话，截断会让打分失真
+      LLAMA_ARG_CTX_SIZE: "4096"
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8080"
+    # **权重挂载进来，不打进镜像**：几个 GB 打进镜像的话，
+    # 每次改配置都要重建镜像，镜像仓库也存不下。
+    # 挂载让"换模型"变成"换个文件"。
+    volumes:
+      - ${FORLIFE_MODELS_DIR:-./models}:/models:ro
+    command: ["-m", "/models/scorer.gguf"]
+    networks: [internal] # 只有内网；与 qq 同理，对外没有暴露的理由
+    expose: ["8080"]
+    # **没有 healthcheck**：llama.cpp 的镜像里没有 curl/wget，
+    # 写一个必然失败的 healthcheck 比不写更糟（它会一直报 unhealthy，
+    # 而人就会开始忽略 health 状态）。
+
 volumes:
   forlife-data:
   dsh-home:
