@@ -14,6 +14,21 @@
 #   ① 6099 能发布到宿主机（只在 127.0.0.1，同网段仍够不到）；
 #   ② NapCat 有路由出网，才能反向连到宿主机上的 gateway（`host.docker.internal`）。
 #
+  # ## ⚠️ **不要单独校验这个文件**（我自己踩过）
+  #
+  # `docker compose -f deploy/docker-compose.dev.yml config` **必然失败**：
+  #     service "qq" has neither an image nor a build context specified
+  #
+  # 因为这是**覆盖文件** —— 它只写"要改的那几项"，本来就没有 `image`。
+  # 看到那个报错时**不要急着"修"它**（我差点给 qq 补一个 image，
+  # 而那会让覆盖变成"重新定义一个服务"，与主文件冲突）。
+  #
+  # **正确的校验方式**（组合起来）：
+  #     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml config --quiet
+  #
+  # **教训**：校验一个东西之前，先确认**它是怎么被使用的**。
+  # 拿单文件的规则去量一个覆盖文件，得到的报错是**假的**。
+
 # 生产环境**不要**用这个文件：QQ 侧就该待在 internal 里不出来。
 services:
   qq:
