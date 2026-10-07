@@ -287,3 +287,22 @@ export type { EvictableFragment, FragmentPlan, FragmentPolicy } from './fragment
 // 仓库里没有 Parquet 依赖，而手写写入器的正确性风险太高。理由见 archive.ts 模块头。
 export { archiveDirFromEnv, archiveEntries, listArchives, readArchive, recoverEntry } from './archive.ts'
 export type { ArchiveManifest, ArchiveResult } from './archive.ts'
+
+// ── 迁移机制（PLAN §2.4 + 阶段 9 交付物 2）────────────────────────────
+export {
+  acquireLock,
+  activeLock,
+  BLOB_LOCK,
+  finishMigration,
+  getMigrationRun,
+  heartbeat,
+  LOCK_STALE_MS,
+  listResumable,
+  migrateBatch,
+  preflight,
+  releaseLock,
+  rollbackMigration,
+  startMigration,
+  switchReferences,
+} from './migration.ts'
+export type { BatchResult, CopyFile, JournalEntry, MigrationRun, PreflightResult } from './migration.ts'

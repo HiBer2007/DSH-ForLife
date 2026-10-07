@@ -1364,6 +1364,68 @@ CREATE INDEX IF NOT EXISTS idx_media_assets_tier ON media_assets (storage_tier, 
 
 const m0025Checksum = createHash('sha256').update(m0025.sql + m0025.name).digest('hex')
 
+const m0026 = {
+  version: 26,
+  name: '0026_migration_engine',
+  sql: `
+-- 一次迁移的状态（PLAN §2.4）。
+CREATE TABLE IF NOT EXISTS migration_runs (
+  id             TEXT PRIMARY KEY,
+  -- 从哪个根搬到哪个根（**逻辑层名 + 实际路径**都记，排障时两个都要看）
+  from_tier      TEXT NOT NULL,
+  to_tier        TEXT NOT NULL,
+  from_root      TEXT NOT NULL,
+  to_root        TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'preflight',  -- preflight|running|done|rolledback|failed
+  -- **预估与实际**分开记：预估错了要看得出是"估错了"而不是"搬多了"
+  estimated_bytes INTEGER NOT NULL DEFAULT 0,
+  copied_bytes   INTEGER NOT NULL DEFAULT 0,
+  total_items    INTEGER NOT NULL DEFAULT 0,
+  copied_items   INTEGER NOT NULL DEFAULT 0,
+  -- 失败/中断的原因（**必须能看出是"被中断"还是"搬错了"**）
+  note           TEXT,
+  started_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  finished_at    TEXT
+);
+
+-- **每个 blob 的账** —— 这是"可续传"的全部依据。
+--
+-- 状态机：pending → copied → verified → switched
+-- **只有 verified 才允许切换引用**（半个文件比没有文件更危险）。
+CREATE TABLE IF NOT EXISTS migration_journal (
+  run_id         TEXT NOT NULL,
+  item_id        TEXT NOT NULL,
+  sha256         TEXT NOT NULL,
+  from_path      TEXT NOT NULL,
+  to_path        TEXT NOT NULL,
+  byte_size      INTEGER NOT NULL DEFAULT 0,
+  state          TEXT NOT NULL DEFAULT 'pending',
+  note           TEXT,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (run_id, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_migration_journal_state ON migration_journal (run_id, state);
+
+-- **跨进程的闸门**：core 侧读到未过期的锁就拒绝新的沉降/blob 写入。
+--
+-- **单独一张表 + 心跳**：并进 migration_runs 的话，崩溃留下的 run
+-- 会让锁永远解不开 ⇒ 系统永久拒绝写入。心跳超时才能自愈。
+CREATE TABLE IF NOT EXISTS migration_lock (
+  name           TEXT PRIMARY KEY,          -- 目前只有 'blobs'
+  run_id         TEXT NOT NULL,
+  heartbeat_at   TEXT NOT NULL,
+  note           TEXT
+);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0026.sql)
+  },
+} as const
+
+const m0026Checksum = createHash('sha256').update(m0026.sql + m0026.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1515,6 +1577,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0025.name,
     checksum: m0025Checksum,
     up: m0025.up,
+  },
+  {
+    version: m0026.version,
+    name: m0026.name,
+    checksum: m0026Checksum,
+    up: m0026.up,
   },
 ]
 
