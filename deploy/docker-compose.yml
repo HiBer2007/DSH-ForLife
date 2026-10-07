@@ -73,7 +73,6 @@ services:
       FORLIFE_ARCHIVE_DIR: /cold/archives
       FORLIFE_BACKUP_DIR: /cold/backups
     volumes:
-      - /app:/app:ro
       - forlife-data:/data # db / vectors / attachments / workspace / models
       - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
       # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
@@ -110,9 +109,13 @@ services:
       FORLIFE_ARCHIVE_DIR: /cold/archives
       FORLIFE_BACKUP_DIR: /cold/backups
       FORLIFE_DATA_DIR: /data
+      # ★★ 2026-10-07 真机部署发现：**没设这个** ⇒ 库落到 `/app/.runtime/`：
+      #   ① `/app` 在镜像层 ⇒ **EACCES**（容器以 node 跑）；
+      #   ② 即使能写，**镜像重建就丢** —— 而 gateway 的沉降/维护循环写的就是这个库。
+      #   ⇒ 显式指向**与 dsh 同一个库**（两个进程本来就该共用一份，契约必须一致）。
+      FORLIFE_DB: /data/dsh/forlife/db/forlife.sqlite
       FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
     volumes:
-      - /app:/app:ro
       - forlife-data:/data
       # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
       #   将来换真 HDD：把盘挂到那个路径（或改这个变量），**内容 rsync 过去即可**。
