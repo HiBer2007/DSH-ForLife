@@ -556,38 +556,46 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   // ③ 工具
   const tools = ctx.get('tools') as { register(definition: unknown): () => void } | undefined
   if (config.registerTools && tools !== undefined) {
+      // ★★ 2026-10-07 真机部署发现：这里原来**没有收集器** ——
+      //   末尾那行"已注册工具 …"是**硬编码字符串**，不管实际注册了什么。
+      //   ⇒ 加了工具它也不变（代码到 13 个时它还说 11 个），
+      //     而我们**拿它当"生产里注册了什么"的证据** ⇒ 差点得出错误结论。
+      //   ⇒ **一个会说谎的证据源比没有证据更危险。**
+      const registeredNames: string[] = []
+      /** 注册一个定义，并**记下它的名字**（日志要用真实数据，不能写死）。 */
+      const registerOne = (definition: unknown): void => {
+        const dispose = tools.register(definition as never)
+        disposers.push(dispose)
+        const name = (definition as { name?: unknown }).name
+        if (typeof name === 'string') registeredNames.push(name)
+      }
     if (defineToolImpl === undefined) {
       always('⚠️ 未找到 @deepseek-ai/dsh-tools 的 defineTool：记忆工具未注册（记忆仍在写入，但模型看不到工具）。')
     } else {
       for (const definition of buildMemoryTools(defineToolImpl, runtime)) {
-        const dispose = tools.register(definition)
-        disposers.push(dispose)
+        registerOne(definition)
       }
       // 时间工具（阶段 4）：`now()` 是"主动看时间"的唯一实现方式（§2.15.1 根因 4）
       for (const definition of buildClockTools(defineToolImpl, runtime)) {
-        const dispose = tools.register(definition)
-        disposers.push(dispose)
+        registerOne(definition)
       }
       // 路由工具（阶段 5 §2.18）：switch_model / revert_model / router_status。
       // **主代理才有** —— 子代理连工具都拿不到（第一道防线）
       for (const definition of buildRouterTools(defineToolImpl, runtime)) {
-        const dispose = tools.register(definition)
-        disposers.push(dispose)
+        registerOne(definition)
       }
 
   // 端口出口工具（PLAN 阶段 7）。**未配置 Caddy 时返回空数组** ——
   // 注册了只会让模型调用一个注定失败的工具，而它会把这个失败当成"我操作错了"，反复重试。
   for (const definition of buildPortTools(defineToolImpl, runtime, portToolOptionsFromEnv(process.env))) {
-    const dispose = tools.register(definition)
-    disposers.push(dispose)
+    registerOne(definition)
   }
 
       // 唤醒工具（PLAN 阶段 8）。**总是注册** —— 它们只写数据库，不需要外部配置就能成功；
       // "安排一个唤醒"在 gateway 侧引擎起来之前也是有效的，只是暂时不会响。
       // （对比端口工具：没有 Caddy 时注定失败，所以那种才"没配就不注册"。）
       for (const definition of buildWakeTools(defineToolImpl, runtime, wakeToolHost(runtime))) {
-        const dispose = tools.register(definition)
-        disposers.push(dispose)
+        registerOne(definition)
       }
 
       // ★ QQ 工具（PLAN §8.1）。**总是注册** —— 与唤醒工具同理：
@@ -603,8 +611,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
       // ⇒ 典型的「接线断了但测试全绿」。
       // 守卫见 `test/qq-tools-wiring.test.ts`。
       for (const definition of buildQqTools(defineToolImpl, runtime)) {
-        const dispose = tools.register(definition)
-        disposers.push(dispose)
+        registerOne(definition)
       }
 
       // 唤醒桥端点（PLAN 阶段 8）。**缺任何一样就不挂** ——
@@ -630,7 +637,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
           always(`压缩失败上报失败（已忽略）：${String(error).slice(0, 160)}`)
         }
       })
-      log('已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock / set_clock / list_clocks / switch_model / revert_model / router_status')
+      log(`已注册工具（${String(registeredNames.length)} 个）：${registeredNames.join(' / ')}`)
     }
   }
 
