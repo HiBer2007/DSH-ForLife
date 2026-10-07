@@ -45,6 +45,46 @@
   `docker.m.daocloud.io` 或前缀形式 `docker pull docker.m.daocloud.io/mlikiowa/napcat-docker:latest` 再 `docker tag`
 - ⚠️ **Docker 的 mirror 失败转移只在"明确报错"时发生，连接"卡住"不触发** ⇒ 列表第一位挂掉 = 全部拉取一起挂
 
+### ★★ 一次「假证据」的教训：工具数**不是 11 个，是 34 个**
+
+真机部署时，`docker logs dsh | grep 已注册工具` 给出的是：
+
+```
+[forlife] 已注册工具 remember / push_mid_memory / recall_longterm / recall_full / now / get_clock /
+set_clock / list_clocks / switch_model / revert_model / router_status
+```
+
+**⇒ 看起来只注册了 11 个。** 我和子代理都拿它当证据，甚至一度怀疑
+「代码里明明有 `request_recall_extension` / `recover`，为什么生产里没有」。
+
+**根因：那行日志是【硬编码字符串】。**
+
+```js
+// packages/dsh-component/src/index.ts（修复前）
+log('已注册工具 remember / push_mid_memory / … / router_status')
+```
+
+⇒ **它不管实际注册了什么，永远说这 11 个。** 代码加到 34 个工具后，它还说 11 个。
+
+**已修**：加 `registeredNames` 收集器 + `registerOne()`（6 处注册点全改走它），
+日志改成从真实列表生成。修完立刻看到：
+
+```
+[forlife] 已注册工具（34 个）：remember / push_mid_memory / recall_longterm / recall_full /
+request_compaction / request_recall_extension / recover / now / get_clock / set_clock /
+list_clocks / switch_model / revert_model / router_status / schedule_wake / register_watcher /
+list_wakes / cancel_wake / wake_now / qq_reply / qq_react / qq_typing / defer_turn /
+read_pending / list_wake_rules / set_wake_rule / set_status / clear_system_status /
+sticker_search / qq_send_sticker / sticker_import / sticker_save / qq_mention_all / qq_group_notice
+```
+
+**⇒ 所有工具都在**（含 `qq_reply` —— 那是「`buildQqTools` 生产零调用」修复生效的直接证据）。
+
+> **★ 一个会说谎的证据源，比没有证据更危险。**
+> 它不仅**掩盖问题**，还会**制造假问题** ——
+> 如果没修这行日志，我们会一直以为「生产里缺 3 个工具」，
+> 甚至可能去「修」一个**根本不存在的 bug**。
+
 ### 真机验过的（可以依赖）
 
 - ✅ **四个容器全起来**：`caddy`/`dsh`/`gateway` **healthy**、`qq`(NapCat 4.18.33) Up
