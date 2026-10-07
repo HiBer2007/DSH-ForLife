@@ -1,5 +1,11 @@
 /**
- * 沉降循环（PLAN 阶段 9 交付物 1 的**最后一块**）。
+ * 维护循环（PLAN 阶段 9 交付物 1 的"定时"那一半 + 交付物 4 的"定时"那一半）。
+ *
+ * **它做两件事**：blob 沉降 + 碎片索引合并与淘汰。
+ * 两者都是**低频运维动作**，各自起一个定时器只会让日志更难读、间隔更难协调。
+ * （文件名还叫 settle-loop 是历史原因；职责已经是"维护"了。）
+ *
+ * ## 沉降循环（原说明）
  *
  * ## 为什么需要一个"循环"而不只是 `settleBlobs` 函数
  *
@@ -24,7 +30,15 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
-import { resolveTierRoots, settleBlobs, settlePolicyFromEnv, type MoveFile } from '@forlife/store'
+import {
+  evictFragments,
+  mergeFragmentIndex,
+  planFragmentMaintenance,
+  resolveTierRoots,
+  settleBlobs,
+  settlePolicyFromEnv,
+  type MoveFile,
+} from '@forlife/store'
 
 /** 循环配置（从环境变量解析）。 */
 export interface SettleLoopConfig {
@@ -32,6 +46,18 @@ export interface SettleLoopConfig {
   readonly intervalMs: number
   readonly limit: number
   readonly disabledReason: string | undefined
+}
+
+/** 从环境变量读碎片维护策略。 */
+export function fragmentPolicyFromEnv(env: Record<string, string | undefined>): { keepDays: number; limit: number } {
+  const rawDays = Number(env['FORLIFE_FRAGMENT_KEEP_DAYS'] ?? '')
+  const rawLimit = Number(env['FORLIFE_FRAGMENT_LIMIT'] ?? '')
+  return {
+    // 默认 30 天：刚沉淀完就删的话，"长期记忆写得对不对"还没人验证过，
+    // 而那时碎片是**唯一的对照物**。
+    keepDays: Number.isFinite(rawDays) && rawDays >= 0 ? rawDays : 30,
+    limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 200,
+  }
 }
 
 /** 从环境变量读循环配置。 */
@@ -61,6 +87,8 @@ export interface SettleTickResult {
   readonly failed: number
   /** 失败的原因（最多几条，够排障就行）。 */
   readonly failures: readonly string[]
+  /** 碎片维护：合并了几次、淘汰了几条、拒删了几条。 */
+  readonly fragments?: { readonly merged: boolean; readonly evicted: number; readonly refused: number; readonly orphans: number }
 }
 
 /** 沉降循环。 */
@@ -89,7 +117,7 @@ export function startSettleLoop(options: {
   const setTimeoutFn = options.setTimeoutImpl ?? ((fn, ms) => setTimeout(fn, ms))
 
   if (!config.enabled) {
-    log(`沉降循环未启用：${String(config.disabledReason)}`)
+    log(`维护循环未启用：${String(config.disabledReason)}`)
     return {
       config,
       tick: async () => ({ moved: 0, skipped: 0, failed: 0, failures: [] }),
@@ -116,9 +144,37 @@ export function startSettleLoop(options: {
     const failed = outcomes.filter((o) => o.action === 'failed').length
     const failures = outcomes.filter((o) => o.action === 'failed').map((o) => `${o.id}：${o.reason}`)
     if (moved > 0 || failed > 0) {
-      log(`沉降一轮：搬了 ${String(moved)} 条、跳过 ${String(skipped)} 条、失败 ${String(failed)} 条`)
+      log(`维护一轮（沉降）：搬了 ${String(moved)} 条、跳过 ${String(skipped)} 条、失败 ${String(failed)} 条`)
     }
-    return { moved, skipped, failed, failures }
+
+    // ── 碎片维护（PLAN 阶段 9 交付物 4）──────────────────────────────
+    //
+    // **为什么放在同一个循环里**：两者都是"低频运维动作"，
+    // 各自起一个定时器只会让日志更难读、间隔更难协调。
+    //
+    // **顺序有讲究：先合并索引、再淘汰** ——
+    // 合并不动数据，先做它可以让后面的淘汰在一个更紧凑的索引上跑。
+    let fragments: SettleTickResult['fragments']
+    try {
+      const merged = mergeFragmentIndex(options.db)
+      // **先算计划再执行** —— 删除不可逆，计划是唯一能提前发现"算法写错了"的机会
+      const plan = planFragmentMaintenance(options.db, fragmentPolicyFromEnv(options.env))
+      const evicted = evictFragments(options.db, plan.evictable.map((f) => f.id))
+      fragments = {
+        merged: merged.ok,
+        evicted: evicted.evicted,
+        refused: evicted.refused.length,
+        orphans: plan.orphaned.length,
+      }
+      if (evicted.evicted > 0 || plan.orphaned.length > 0) {
+        log(`碎片维护：淘汰 ${String(evicted.evicted)} 条、拒删 ${String(evicted.refused.length)} 条、归宿已丢 ${String(plan.orphaned.length)} 条｜${plan.reason}`)
+      }
+    } catch (error) {
+      // **碎片维护失败不该让沉降也失败** —— 两件事互相独立
+      log(`碎片维护异常（沉降不受影响）：${String(error).slice(0, 160)}`)
+    }
+
+    return { moved, skipped, failed, failures, ...(fragments === undefined ? {} : { fragments }) }
   }
 
   /**
@@ -134,7 +190,7 @@ export function startSettleLoop(options: {
       void tick()
         .catch((error: unknown) => {
           // **自己接住异常** —— 定时器里抛异常会静默杀死整个循环
-          log(`沉降一轮异常：${String(error).slice(0, 200)}`)
+          log(`维护一轮异常：${String(error).slice(0, 200)}`)
         })
         .finally(() => {
           schedule()
@@ -144,7 +200,7 @@ export function startSettleLoop(options: {
   }
 
   schedule()
-  log(`沉降循环已启动：每 ${String(Math.round(config.intervalMs / 60_000))} 分钟一轮，每次最多 ${String(config.limit)} 条`)
+  log(`维护循环已启动：每 ${String(Math.round(config.intervalMs / 60_000))} 分钟一轮（沉降每次最多 ${String(config.limit)} 条 + 碎片合并/淘汰）`)
 
   return {
     config,

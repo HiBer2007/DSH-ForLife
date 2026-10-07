@@ -189,3 +189,59 @@ test('★ 用 setTimeout 而不是 setInterval（一轮跑完再排下一轮，�
     opened.db.close()
   }
 })
+
+test('★ 循环也做碎片维护（交付物 4 的"定时"那一半）', async () => {
+  const opened = setup()
+  try {
+    // 造一条**归宿已丢**的碎片 —— 它必须被"拒删"，而不是被删掉
+    opened.db
+      .prepare(
+        `INSERT INTO mid_memory_entries
+           (id, entry_type, summary, entities, token_count, window_offset, status, fragmented_into, compaction_epoch, source_short_ids, created_at, storage_tier, revision)
+         VALUES ('frag1', 'semantic', '碎片', '[]', 100, 0, 'fragmented', 'L-gone', 1, '[]', ?, 'hot', 1)`,
+      )
+      .run(new Date(Date.now() - 999 * 86_400_000).toISOString())
+
+    const loop = startSettleLoop({
+      db: opened.db,
+      env: ENV,
+      moveFile: async () => ({ ok: true, reason: 'ok' }),
+      log: () => {},
+      setTimeoutImpl: () => ({ unref: () => {} }),
+    })
+    const r = await loop.tick()
+    assert.ok(r.fragments !== undefined, 'tick 结果里要有碎片那一项')
+    assert.equal(r.fragments?.orphans, 1, '归宿已丢的要被报出来')
+    assert.equal(r.fragments?.evicted, 0, '**归宿已丢的绝不能被删**')
+    // 那条还在
+    const still = opened.db.prepare("SELECT COUNT(*) AS n FROM mid_memory_entries WHERE id = 'frag1'").get()
+    assert.equal(still?.n, 1, '它是唯一副本，必须留着')
+    loop.stop()
+  } finally {
+    opened.db.close()
+  }
+})
+
+test('★ 碎片维护失败**不影响沉降**（两件事互相独立）', async () => {
+  const opened = setup()
+  try {
+    // 把 FTS 表删掉 ⇒ mergeFragmentIndex 会失败
+    opened.db.exec('DROP TABLE mid_memory_fts')
+    const loop = startSettleLoop({
+      db: opened.db,
+      env: ENV,
+      moveFile: async () => ({ ok: true, reason: 'ok' }),
+      log: () => {},
+      setTimeoutImpl: () => ({ unref: () => {} }),
+    })
+    const r = await loop.tick()
+    assert.equal(r.moved, 1, '**沉降必须照常完成** —— 碎片维护坏了不该带走它')
+    // mergeFragmentIndex **自己接住异常**（返回 ok:false）⇒ 碎片那项仍然有值。
+    // 那比"整项消失"更好：能看到"合并失败了"，而不是什么都没有。
+    assert.equal(r.fragments?.merged, false, '合并失败要如实报 false')
+    assert.ok(r.fragments !== undefined, '碎片那项不该消失 —— 消失就看不出"合并失败了"')
+    loop.stop()
+  } finally {
+    opened.db.close()
+  }
+})
