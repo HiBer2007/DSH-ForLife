@@ -1335,6 +1335,35 @@ CREATE INDEX IF NOT EXISTS idx_wake_requests_pending ON wake_requests (status, c
 
 const m0024Checksum = createHash('sha256').update(m0024.sql + m0024.name).digest('hex')
 
+const m0025 = {
+  version: 25,
+  name: '0025_media_tier',
+  sql: `
+-- blob 的分层归属（PLAN 阶段 9 交付物 1）。
+--
+-- long_memory_entries 早前已有 storage_tier/archive_path，但 media_assets
+--（blob 的载体，**表情库也在里面**）没有 —— 于是
+-- "LanceDB 向量目录与表情库 blob 同受 tier 策略管理"这条落不了地。
+--
+-- 默认 hot：既有的行都在热层（它们本来就在本地盘上），
+-- 迁移只负责**以后**的沉降，不改写历史判断。
+ALTER TABLE media_assets ADD COLUMN storage_tier TEXT NOT NULL DEFAULT 'hot';
+
+-- **为什么还要 settled_at**：只看 tier 分不清
+-- "从来没沉降过"与"沉降过又搬回来了" —— 而这两者排障时含义完全不同
+--（前者是策略没跑到，后者是有人手动提升过）。
+ALTER TABLE media_assets ADD COLUMN settled_at TEXT;
+
+-- 沉降任务的扫描索引：按 tier + 创建时间找候选
+CREATE INDEX IF NOT EXISTS idx_media_assets_tier ON media_assets (storage_tier, created_at);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0025.sql)
+  },
+} as const
+
+const m0025Checksum = createHash('sha256').update(m0025.sql + m0025.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1480,6 +1509,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0024.name,
     checksum: m0024Checksum,
     up: m0024.up,
+  },
+  {
+    version: m0025.version,
+    name: m0025.name,
+    checksum: m0025Checksum,
+    up: m0025.up,
   },
 ]
 

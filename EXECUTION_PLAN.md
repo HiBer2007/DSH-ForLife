@@ -2843,7 +2843,7 @@ NapCat 那一侧**已经就绪** —— ③ 的真机验证（真的停掉容器
 | **断线期间反复观察幂等** | 单测 `★ observeConnection：同一状态观察 50 次只触发 1 次（幂等）` | ✅ |
 | **断开 ⇒ 产生 system 触发** | **真机**：`真机：QQ 掉线` **`fired=52`**，`wake_trigger_events` 有 `fired` 记录 | ✅ |
 | **连接回调真的被调用** | **真机日志**：`[诊断] 连接回调 connected=true → changed=true triggered=1｜首次观察到连接状态 up；匹配 1 条，标记 1 条` | ✅ |
-| 恢复 ⇒ 触发 | 触发器 `真机：QQ 恢复`（`spec={"event":"qq.reconnected"}`）已就位；`fired=0`（尚未遇到真实恢复边沿） | ⏳ 未观测到 |
+| 恢复 ⇒ 触发 | **真机通过（2026-10-07 11:15:42 +08）**：真实 down→up 边沿触发了 `真机：QQ 恢复`。证据：`admin.log` 记「连接回调 connected=true → changed=true triggered=1｜连接状态变化 down → up；匹配 1 条，标记 1 条｜QQ 状态变化已触发 1 条唤醒」+「启动 headless：dsh --profile forlife-headless --json（提示词 434 字符，经 stdin）」；投递到 `onebot11:2166227840` 的唤醒**提示词全文完整**（标题 / 原因 / 「你当时要自己做的事」/ payload 齐全，无截断、无 `headless` 碎片）。同一边沿只触发 1 条（重复观察走去重；`fired=1` 而非 141 ⇒ 防重入有效） | ✅ |
 | `docker stop` 真断线 | **故意不跑**（见上） | ⛔ 跳过 |
 
 **单测**：`wake-system-source.test.ts` **14/14**（含上面两条 ★）。

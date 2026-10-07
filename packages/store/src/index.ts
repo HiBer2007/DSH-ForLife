@@ -257,3 +257,12 @@ export {
   listWakeRequests,
 } from './wake-requests.ts'
 export type { WakeRequestRow } from './wake-requests.ts'
+
+// ── blob 沉降（PLAN 阶段 9 交付物 1）──────────────────────────────────
+export {
+  listBlobCandidates,
+  moveFileWithVerify,
+  settleBlobs,
+  tierPathFor,
+} from './settle.ts'
+export type { BlobCandidate, MoveFile, MoveOutcome, SettleOptions, SettleOutcome } from './settle.ts'
