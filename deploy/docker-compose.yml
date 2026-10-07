@@ -67,6 +67,13 @@ services:
       - sh
       - -c
       - >-
+        # ★★ 2026-10-07 真机部署发现（**第 11 处缺陷**）：
+        #   冷层的**子目录**（`tiers/cold` / `archives` / `backups`）没人建 ——
+        #   文档 §4 只让建挂载点本身。在一块**空的**冷盘上：
+        #     touch: /cold/tiers/cold/x: No such file or directory
+        #   而**应用一句话都不报** ⇒ 沉降/归档/备份全部写不进去。
+        #   ⇒ 入口里补建（幂等）。
+        mkdir -p /cold/tiers/cold /cold/archives /cold/backups
         mkdir -p /data/dsh/profiles
         && ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web
         && exec dsh --profile forlife-web --no-open

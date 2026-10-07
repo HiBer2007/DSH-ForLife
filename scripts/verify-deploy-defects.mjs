@@ -66,6 +66,9 @@ const checks = [
       const g = ls.findIndex((l) => l === '  gateway:')
       return ls.slice(g).some((l) => /^\s*-\s*dsh-home:\/data\/dsh/.test(l))
     })() },
+  // ★ 第 11 处（只有"干净冷层"才会暴露）：冷层**子目录**不存在 ⇒ 写入静默失败
+  { n: 11, what: 'dsh 的入口建了冷层子目录（否则沉降/归档/备份写不进去且不报错）',
+    ok: /mkdir -p \/cold\/tiers\/cold/.test(compose) },
   { n: 10, what: 'Dockerfile 固定 /app/profiles 属主（防权限随构建漂移）',
     ok: /chown -R node:node \/app\/profiles/.test(dockerfile) },
 ]

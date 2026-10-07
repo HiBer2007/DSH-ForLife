@@ -225,6 +225,18 @@ export ACME_EMAIL=you@example.com           # ACME 账号邮箱
 mkdir -p /mnt/forlife-cold
 # 容器里的 uid/gid 要对得上（NapCat 用 1000:1000）
 sudo chown -R 1000:1000 /mnt/forlife-cold
+
+> ⚠️ **2026-10-07 真机实测（第 11 处缺陷）**：**光建挂载点不够** ——
+> 冷层的**子目录**也要建，否则写入**静默失败**（`No such file or directory`，而应用不报错）：
+>
+> ```bash
+> sudo mkdir -p /mnt/forlife-cold/{tiers/cold,archives,backups}
+> sudo chown -R 1000:1000 /mnt/forlife-cold
+> ```
+>
+> 这两个子目录分别对应 `FORLIFE_ROOT_COLD` / `FORLIFE_ARCHIVE_DIR` / `FORLIFE_BACKUP_DIR`。
+> 镜像入口现在也会幂等地补建一遍，但**文档步骤不能省** ——
+> 因为"照文档做"的人不该依赖镜像里的兜底。
 ```
 
 ### 5. 起服务
