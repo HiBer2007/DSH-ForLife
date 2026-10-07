@@ -56,7 +56,20 @@ services:
     restart: unless-stopped
     working_dir: /app
     # **真命令**（原来是占位：command: ["node", "--version"]）
-    command: ["dsh", "--profile", "forlife-web", "--no-open"]
+    # ★★ 2026-10-07 真机部署发现（**缺陷 5 的后半截**）：
+    #   **DSH 只从 `$DSH_HOME/profiles/<名>` 找 profile**，而 `DSH_HOME=/data/dsh`
+    #   是一个**命名卷** —— 镜像里的 `/app/profiles/…` **不在它下面**。
+    #   ⇒ 必须先建符号链接，否则：
+    #     Error: dsh: profile "forlife-web" does not exist;
+    #            create it with 'dsh plugin --profile forlife-web add <package>'
+    #     ⇒ **dsh 崩溃重启循环**。
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /data/dsh/profiles
+        && ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web
+        && exec dsh --profile forlife-web --no-open
     environment:
       # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
       DSH_HOME: /data/dsh
@@ -126,6 +139,12 @@ services:
       FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
     volumes:
       - forlife-data:/data
+      # ★★ 2026-10-07 真机部署发现（**缺陷 7 的后半截**）：
+      #   不挂这个 ⇒ gateway 的 `/data/dsh` 落在 **forlife-data 卷**里，
+      #   而 dsh 的 `/data/dsh` 是 **dsh-home 卷** ⇒
+      #   **两个进程各写各的 SQLite，互不相同的两个库**（契约会漂移）。
+      #   ⚠️ 这条**比崩溃更难发现**：两个容器都是 Up、日志也不报错。
+      - dsh-home:/data/dsh
       # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
       #   将来换真 HDD：把盘挂到那个路径（或改这个变量），**内容 rsync 过去即可**。
       - ${FORLIFE_COLD_DIR:-/mnt/forlife-cold}:/cold

@@ -57,6 +57,15 @@ const checks = [
   { n: 9, what: '镜像里建了 @deepseek-ai 链接（否则组件 import 不到宿主包）',
     ok: /ln -sfn .*@deepseek-ai/.test(dockerfile) },
 
+  // ★★ 以下两条是「**文档说修法是两半、但仓库只有一半**」的第二半（2026-10-07 子代理核对发现）
+  { n: '5b', what: 'dsh 的 command 里有 profile 符号链接（否则 profile 找不到 ⇒ 崩溃重启）',
+    ok: /ln -sfn \/app\/profiles\/forlife-web/.test(compose) },
+  { n: '7b', what: 'gateway 挂了 dsh-home 卷（否则两个进程各写各的库）',
+    ok: (() => {
+      const ls = readFileSync('deploy/docker-compose.yml', 'utf8').split(/\r?\n/)
+      const g = ls.findIndex((l) => l === '  gateway:')
+      return ls.slice(g).some((l) => /^\s*-\s*dsh-home:\/data\/dsh/.test(l))
+    })() },
   { n: 10, what: 'Dockerfile 固定 /app/profiles 属主（防权限随构建漂移）',
     ok: /chown -R node:node \/app\/profiles/.test(dockerfile) },
 ]
