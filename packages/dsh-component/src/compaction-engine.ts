@@ -24,6 +24,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 import { getState, setState } from '@forlife/store'
+import { defaultFor } from '@forlife/contracts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { BlockAssembler, createUserMessage, type ContentBlock, type Message, type TokenUsage } from '@deepseek-ai/dsh-llm'
@@ -309,6 +310,28 @@ export function applyCompactionDecision(
 }
 
 
+/**
+ * 自动压缩触发阈值（占上下文窗口比例）：PLAN §4.2 Step 1 / §12.1 的「50%」。
+ *
+ * **唯一真源是 `plan-baseline.json` 的 `compaction.autoTriggerRatio`** ——
+ * 代码里**不允许**出现 `0.5` 这个字面量（基线改了这里必须跟着改）。
+ *
+ * ## 为什么必须在这里补上
+ *
+ * 宿主 `BasicCompactionEngine` 自己的缺省是
+ * `DEFAULT_THRESHOLD_RATIO = 0.8`（`node_modules/@deepseek-ai/dsh-compaction-basic/lib/index.js:15`），
+ * 而四个 profile 插入 `forlife-compaction` 时**都没有写 config** ⇒ 不显式补的话，
+ * 生效阈值就是宿主的 **0.8**，与 PLAN 的 0.5 差 30 个百分点
+ * （真机后果：上下文压到 80% 才开始压缩，比 PLAN 晚得多，L4 明显更胖）。
+ *
+ * ## 为什么补在插件缺省、而不是四个 profile 的 YAML 里
+ *
+ * 一处生效、四个 profile 同时覆盖，也不会在 YAML 里留下一份
+ * **会和基线漂移**的 `0.5` 字面量（YAML 读不了 `plan-baseline.json`）。
+ * profile 若显式写了 `thresholdRatio`，仍然以 profile 为准（运维可覆盖）。
+ */
+const AUTO_TRIGGER_RATIO = defaultFor<number>('compaction.autoTriggerRatio')
+
 /** 引擎可选注入（测试可替换）。 */
 export interface EngineHooks {
   /** 取运行时（默认从活动登记表取第一个）。 */
@@ -341,11 +364,15 @@ export class ForlifeCompactionEngine extends BasicCompactionEngine {
    * 所以这个子类被挂上的那一刻，`ctx.compaction` 就是我们。
    */
   constructor(...args: ConstructorParameters<typeof BasicCompactionEngine>) {
-    super(...args)
-    const config = args[1]
+    const [ctx, config] = args
+    // 把 PLAN 的自动压缩阈值**显式**交给宿主（见 AUTO_TRIGGER_RATIO 的说明）：
+    // 不传的话宿主用它的 DEFAULT_THRESHOLD_RATIO = 0.8，而四个 profile 都不写 config。
+    super(ctx, { ...config, thresholdRatio: config?.thresholdRatio ?? AUTO_TRIGGER_RATIO })
     console.log(
       `[forlife] 压缩引擎已挂载（ctx.compaction = ForlifeCompactionEngine）｜摘要模型：` +
-        `${config?.summarizationProvider ?? '(跟随路由)'}/${config?.summarizationModel ?? '(跟随路由)'}｜maxTokens=${String(config?.maxTokens ?? '默认')}`,
+        `${config?.summarizationProvider ?? '(跟随路由)'}/${config?.summarizationModel ?? '(跟随路由)'}` +
+        `｜自动压缩阈值=${String(Math.round(this.config.thresholdRatio * 100))}%（PLAN §4.2 Step 1 / §12.1）` +
+        `｜maxTokens=${String(config?.maxTokens ?? '默认')}`,
     )
   }
   /**

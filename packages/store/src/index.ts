@@ -321,6 +321,18 @@ export type { FragmentThresholdPolicy, ThresholdDecision } from './fragment-thre
 export { loadLongEntry, loadStats, recordLoad, SLOW_LOAD_MS } from './cold-load.ts'
 export type { ColdLoadResult, ReadTextFile } from './cold-load.ts'
 
+// ── 长期记忆的 HDD 沉降（PLAN §6.3 的"扫描"那一半）───────────────────
+// 扫描 + 写归档 + 读回校验 + 置空。**定时那一半在 gateway 的维护循环里**
+// （`packages/gateway/src/settle-loop.ts`）—— 这里只提供"一次搬运"。
+export {
+  DEFAULT_LONG_SETTLE_POLICY,
+  defaultColdArchivePort,
+  longArchivePath,
+  longSettlePolicyFromEnv,
+  settleLongEntries,
+} from './long-settle.ts'
+export type { ColdArchivePort, LongSettleOptions, LongSettleOutcome, LongSettlePolicy } from './long-settle.ts'
+
 // ── 模型死循环监控（用户要求：重复输出 ⇒ 停本轮 + 重启）──────────────
 export { DEFAULT_LOOP_POLICY, LoopGuard, normalizeForLoop, scanForLoop } from './loop-guard.ts'
 export type { LoopPolicy, LoopVerdict } from './loop-guard.ts'

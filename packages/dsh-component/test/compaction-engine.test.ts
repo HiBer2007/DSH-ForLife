@@ -368,7 +368,12 @@ test('压缩日志写的是**真实读数**，不是写死的 0', async () => {
   const dir = tempDir()
   try {
     const runtime = makeRuntime(dir)
-    // 让运行时有真实的短期读数（真实链路里由 observeShortTokens 在每轮后写入）
+    // 让运行时有真实的短期读数。
+    // **真实链路**（这句以前是假的 —— 那时全仓没有任何地方调 `observeShortTokens`）：
+    // `index.ts` 的 `registerTurnAccounting()`（由 `apply()` 调用）订阅宿主的 `session/event`，
+    // 在 `turn/end` 上取真实读数（`ctx.tokenMeter.measure(session).totalTokens`，
+    // 退化到本轮最后一条 `assistant/message` 的 `usage`）后调这里。
+    // 接线守卫：`test/turn-accounting-wiring.test.ts`（读源码断言那个调用点存在 + 假 ctx 端到端）。
     runtime.observeShortTokens(4321)
 
     applyCompactionDecision(

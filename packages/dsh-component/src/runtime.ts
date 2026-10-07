@@ -47,6 +47,7 @@ import {
   insertSpill,
   listRenderableMidEntries,
   listSpills,
+  loadLongEntry,
   midStats,
   openDatabase,
   searchLongFts,
@@ -85,6 +86,24 @@ export interface RecallResult {
   readonly entries: readonly LongEntryRow[]
   readonly budget: RecallBudget
   readonly note?: string
+  /**
+   * 冷层（HDD）按需加载的结果 —— 只含**命中且已沉降**的条目。
+   *
+   * 它存在的理由与 `cold-load.ts` 的 `source` 字段一样：
+   * **不假装做了一件没做的事**（"从 HDD 加载了"和"正文本来就在库里"必须能分开）。
+   */
+  readonly coldLoaded?: readonly ColdLoadOutcome[]
+}
+
+/** 一条冷层命中的加载结果（延迟与来源都要如实报）。 */
+export interface ColdLoadOutcome {
+  readonly id: string
+  /** **读成了没有** —— `false` 时正文不可用，必须让模型知道。 */
+  readonly ok: boolean
+  /** 正文从哪读的（`archive` 才是真的"按需加载"）。 */
+  readonly source: 'archive' | 'db' | 'none'
+  readonly latencyMs: number
+  readonly note: string
 }
 
 /** 手动档位覆盖（可撤销）。 */
@@ -254,6 +273,81 @@ export class MemoryRuntime {
     return { entries, budget: this.budget(maxPerTurn, maxPerCycle, maxResults) }
   }
 
+  /**
+   * **检索 + 冷层按需加载**（PLAN §6.3 的"回读"那一半）。
+   *
+   * ## 为什么必须存在（不是"多一个方法"）
+   *
+   * `recallLongterm` 走的是 FTS，而 FTS 索引里**留着沉降前的正文**
+   * （`markLongSettled` 只清表里的 `content`，不动 FTS）——
+   * 所以沉降过的条目**仍然会命中**，但返回的行里 `content` 是 NULL。
+   *
+   * 没有这一跳的话：**命中 = 拿到一条空正文**。对模型而言，
+   * 那和"这条记忆被删了"没有区别 —— 也就是 **沉降变成了静默的数据丢失**。
+   *
+   * ## 纪律（照抄 `cold-load.ts` 的模块头，不另立一套）
+   *
+   *  - **命中 HDD ⇒ 去归档读**（`loadLongEntry`），不拿库里的副本凑数；
+   *  - **归档读不出来 ⇒ 明确报错**，绝不悄悄回落到库内副本
+   *    （那会掩盖"归档坏了"，而归档坏了正是最该被发现的事）；
+   *  - **取不回来要告诉模型**（`coldLoaded` 里的 `ok:false` + 原因），
+   *    而不是返回一条空内容让它自己猜。
+   *
+   * @param query - 检索词（与 `recallLongterm` 同一套预算与命中规则）。
+   * @param limit - 期望条数（受硬上限约束）。
+   * @returns 与 `recallLongterm` 同形；HDD 命中的条目会带上取回的正文，
+   *          另附 `coldLoaded` 说明每一条**从哪读的、花了多久、有没有读成**。
+   */
+  async recallLongtermOnDemand(query: string, limit?: number): Promise<RecallResult> {
+    // 检索与预算**不重复实现** —— 这里只加"命中冷层之后那一跳"，
+    // 否则两套预算迟早会不一致（面板显示 3 条、工具给 5 条那种）。
+    const result = this.recallLongterm(query, limit)
+    const coldIds = result.entries.filter((e) => e.storage_tier === 'hdd')
+    if (coldIds.length === 0) return result
+
+    const loaded: ColdLoadOutcome[] = []
+    const entries: LongEntryRow[] = []
+    for (const entry of result.entries) {
+      if (entry.storage_tier !== 'hdd') {
+        entries.push(entry)
+        continue
+      }
+      const cold = await loadLongEntry({ db: this.db, id: entry.id })
+      loaded.push({
+        id: entry.id,
+        ok: cold.found && cold.content !== undefined,
+        source: cold.source,
+        latencyMs: cold.latencyMs,
+        note: cold.note,
+      })
+      // **取回正文才替换**；取不回来则**把库内那份也遮掉** ——
+      //
+      // ⚠️ 这里必须 `content: null`，不能"原样返回"：FTS 命中带回来的行里
+      // **可能还留着库内的副本**（例如 `insertLongEntry({storageTier:'hdd'})`
+      // 造出的行，或沉降中途留下的残留）。把那份当成功返回，正好**掩盖了
+      // "归档坏了"** —— 而那正是最该被发现的事（归档是"很久以后才回来读"的东西）。
+      // 这条纪律与 `cold-load.ts` 模块头写的是同一条：**不悄悄回落到库内副本**。
+      entries.push(cold.found && cold.content !== undefined ? { ...entry, content: cold.content } : { ...entry, content: null })
+    }
+
+    const failed = loaded.filter((l) => !l.ok)
+    return {
+      ...result,
+      entries,
+      coldLoaded: loaded,
+      // **失败必须显式说出来**（静默返回空内容 = 模型以为"记忆里没有这条"）
+      ...(failed.length === 0
+        ? {}
+        : {
+            note: [
+              ...(result.note === undefined ? [] : [result.note]),
+              `⚠️ 有 ${String(failed.length)} 条命中在冷层但**取不回来**（正文不可用）：` +
+                failed.map((f) => `${f.id}（${f.note}）`).join('；'),
+            ].join('\n'),
+          }),
+    }
+  }
+
   /** 取回被截断的大结果全文（PLAN §3.2）。 */
   recallFull(id: string): { readonly found: boolean; readonly content?: string; readonly meta?: { toolName: string; bytes: number; lines: number } } {
     const row = getSpill(this.db, id)
@@ -261,8 +355,22 @@ export class MemoryRuntime {
     return { found: true, content: row.content, meta: { toolName: row.tool_name, bytes: row.byte_size, lines: row.line_count } }
   }
 
-  /** 存入一份大工具结果的全文（供未来的截断层调用）。 */
-  spill(input: { readonly toolName: string; readonly content: string; readonly sessionId?: string; readonly toolCallId?: string }): { readonly id: string; readonly head: string } {
+  /**
+   * 存入一份大工具结果的全文（PLAN §3.2 的存储原语）。
+   *
+   * **谁调用**：`./tool-spill.ts`（统一接缝）——工具结果过大时，那里把全文送到这里，
+   * 只把 `head` + id 还给模型。本函数**只负责存**，不判断"多大算大"
+   * （阈值在 `tool.spill.thresholdBytes` 基线里，判断在接缝里做）。
+   *
+   * 返回 `bytes` / `lines` 是为了让接缝能在提示里如实报出"省略了多少"
+   * （模型据此决定要不要 recall_full，而不是猜）。
+   */
+  spill(input: {
+    readonly toolName: string
+    readonly content: string
+    readonly sessionId?: string
+    readonly toolCallId?: string
+  }): { readonly id: string; readonly head: string; readonly bytes: number; readonly lines: number } {
     const id = `spill_${createHash('sha1').update(`${input.toolName}:${String(Date.now())}:${input.content.slice(0, 64)}`).digest('hex').slice(0, 12)}`
     const row = insertSpill(this.db, {
       id,
@@ -270,8 +378,9 @@ export class MemoryRuntime {
       content: input.content,
       sessionId: input.sessionId ?? null,
       toolCallId: input.toolCallId ?? null,
+      headLines: defaultFor<number>('tool.spill.headLines'),
     })
-    return { id, head: row.head }
+    return { id, head: row.head, bytes: row.byte_size, lines: row.line_count }
   }
 
   /** 推进压缩 epoch（压缩事务开始时调用；阶段 2 使用）。 */
@@ -333,9 +442,29 @@ export class MemoryRuntime {
     return this.db.prepare('SELECT * FROM compaction_log ORDER BY timestamp DESC LIMIT ?').all(limit) as Record<string, unknown>[]
   }
 
-  /** 轮次边界：重置"每轮"额度的计数，并推进"自上次压缩以来的轮次"（PLAN §4.4 记账）。 */
+  /**
+   * 轮次边界：重置"每轮"额度的计数，并推进"自上次压缩以来的轮次"（PLAN §4.4 记账）。
+   *
+   * ## ★ 真实调用点（不要删）
+   *
+   * `index.ts` 的 `registerTurnAccounting()` —— 它订阅宿主的 `session/event`，
+   * 在 `turn/start` 上调这里（宿主的 `agent-loop` 在**每一轮开始时**追加该事件，
+   * 早于它 claim 本轮的输入）。
+   *
+   * ⚠️ 这一跳以前**只被测试调用**（生产链路里没有任何地方调它），后果是：
+   *  - `acct_turns_since_compaction` 恒为 0 ⇒ `decideCompaction` 里 `turnsOk=false`；
+   *  - `recallThisTurn` 永不归零 ⇒ 累计 2 次 `recall_longterm` 之后**永久失效**；
+   * 两者都是"函数写好了、测试全绿、线上根本没跑"。
+   */
   beginTurn(): void {
     this.recallThisTurn = 0
+    this.turnsThisCycle += 1
+    // 基线值是 `on_compaction`（见 PLAN §7.6）：周期额度由压缩提交时的 `resetCycle()` 归零。
+    // 若有人把策略改成按轮重置，这里也要跟着归零（否则改了个寂寞）。
+    if (isPerTurnResetPolicy(this.recallResetPolicy())) {
+      this.recallThisCycle = 0
+      this.turnsThisCycle = 1
+    }
     this.bumpCounter('acct_turns_since_compaction', 1)
   }
 
@@ -344,9 +473,23 @@ export class MemoryRuntime {
     this.bumpCounter('acct_toolcalls_since_compaction', 1)
   }
 
-  /** 观测当前短期 token 数（宿主 tokenMeter 或网关估算）。 */
+  /**
+   * 观测当前短期 token 数（宿主 tokenMeter 或网关估算）。
+   *
+   * ## ★ 真实调用点（不要删）
+   *
+   * `index.ts` 的 `registerTurnAccounting()` —— 在 `turn/end` 上用**真实读数**写：
+   *  1. 优先 `ctx.tokenMeter.measure(session).totalTokens`（宿主权威计量）；
+   *  2. 退化到本轮最后一条 `assistant/message` 的 `usage`（provider 报的账）。
+   * 拿不到真实读数时**宁可不写**，也不写 0 —— 0 会让 `decideCompaction` 判 `too_thin`。
+   */
   observeShortTokens(tokens: number): void {
     this.setState('acct_short_tokens', String(Math.max(0, Math.trunc(tokens))))
+  }
+
+  /** PLAN §7.6 的 `reset_policy`（唯一有文档的值是 `on_compaction`；基线里也只有它）。 */
+  private recallResetPolicy(): string {
+    return String(defaultFor<unknown>('recall.resetPolicy'))
   }
 
   /**
@@ -834,13 +977,23 @@ export class MemoryRuntime {
   /** 是否还在接受新请求（排水期间为 false）。 */
   acceptingRequests = true
 
-  /** 压缩成功后重置记账基线（在压缩事务提交后调用）。 */
+  /**
+   * 压缩成功后重置记账基线（在压缩事务提交后调用）。
+   *
+   * **真实调用点**：`compaction-engine.ts` 的 `applyCompactionDecision()`
+   * （压缩事务 `commit` 之后那一行）—— 那是全仓唯一"压缩真的成功"的位置。
+   */
   resetCompactionAccounting(): void {
     const now = new Date().toISOString()
     this.setState('acct_turns_since_compaction', '0')
     this.setState('acct_toolcalls_since_compaction', '0')
     this.setState('acct_tokens_at_last_compaction', this.getState('acct_short_tokens') ?? '0')
     this.setState('acct_last_compaction_at', now)
+    // ★ 召回周期额度也归零：PLAN §7.6 的 `reset_policy = on_compaction`。
+    // 没有这一跳的话 `resetCycle()` 是**零调用**的死代码，
+    // 于是 `recallThisCycle` 只会单向增长 ⇒ 进程生命周期内累计 5 次 recall 之后
+    // **模型再也想不起长期记忆**（本仓最致命的一条接线缺口）。
+    this.resetCycle()
   }
 
   /**
@@ -918,8 +1071,28 @@ export class MemoryRuntime {
     return { fragmented, archived, notes: plan.notes }
   }
 
-  /** 压缩后重置周期额度（PLAN §7.6 的 reset_policy = on_compaction）。 */
+  /**
+   * 压缩后重置周期额度（PLAN §7.6 的 `reset_policy = on_compaction`）。
+   *
+   * ## ★ 真实调用点（不要删）
+   *
+   * `resetCompactionAccounting()`（本文件）—— 它由 `compaction-engine.ts` 的
+   * `applyCompactionDecision()` 在**压缩事务提交后**调用 ⇒ "压缩完成时重置"。
+   *
+   * ⚠️ 这个函数以前**全仓零调用**：`recallThisCycle` 只增不减，
+   * 额度（`recall.maxPerCycle=5`）用光之后 `recall_longterm` 永远返回空 +
+   * "已达上限" —— 跑一会儿之后模型再也想不起长期记忆。
+   *
+   * 策略语义（`defaultFor('recall.resetPolicy')`，基线值 `on_compaction`）：
+   *  - `on_compaction`（基线）⇒ 压缩提交时归零（就是本函数的调用点）；
+   *  - `per_turn` / `each_turn` ⇒ 每轮都归零（`beginTurn()` 里做，这里再做一次也无害）；
+   *  - 未知值 ⇒ 按 `on_compaction` 处理并**喊一声**（宁可多给额度，也不能让额度永久锁死）。
+   */
   resetCycle(): void {
+    const policy = this.recallResetPolicy()
+    if (!isKnownResetPolicy(policy)) {
+      this.log(`⚠️ 未知的 recall.resetPolicy=${policy}：按 on_compaction 处理（否则 recall 额度会永久锁死）`)
+    }
     this.recallThisTurn = 0
     this.recallThisCycle = 0
     this.turnsThisCycle = 1
@@ -963,6 +1136,182 @@ export class MemoryRuntime {
 export function resolveDbPath(config: ForlifeConfig, dshHome: string): string {
   const root = isAbsolute(config.storageRoot) ? config.storageRoot : join(dshHome, config.storageRoot)
   return join(root, config.dbFile)
+}
+
+/** 沉降只用到这一个方法（便于测试注入替身：不必开真库）。 */
+export interface SettleTimerTarget {
+  settle(options?: { readonly olderThanDays?: number; readonly limit?: number }): {
+    readonly fragmented: number
+    readonly archived: number
+    readonly notes: readonly string[]
+  }
+}
+
+/** 一次沉降的结果（与 `MemoryRuntime.settle()` 的返回同形）。 */
+export interface SettleOutcome {
+  readonly fragmented: number
+  readonly archived: number
+  readonly notes: readonly string[]
+}
+
+/** 沉降定时循环的配置（从环境变量解析；与 gateway 侧共用同一批旋钮）。 */
+export interface SettleTimerConfig {
+  readonly enabled: boolean
+  readonly intervalMs: number
+  /** 每轮批量上限；undefined = 用 `tiering.settleBatchSize`。 */
+  readonly limit: number | undefined
+  /** 没启用时的原因（要能说清"为什么没跑"）。 */
+  readonly reason: string
+}
+
+/** 缺省间隔 30 分钟：沉降是**低频运维**动作，跑太勤只会白扫表。 */
+const SETTLE_DEFAULT_INTERVAL_MS = 30 * 60_000
+
+/**
+ * 从环境变量解析沉降循环配置。
+ *
+ * 旋钮与 `packages/gateway/src/settle-loop.ts` **刻意同名**（`FORLIFE_SETTLE_INTERVAL_MS`
+ * / `FORLIFE_SETTLE_LIMIT`）：那边管的是 blob 文件搬到 HDD，这边管的是中期条目沉到
+ * 长期记忆 —— 同一次"维护"的两半，用户不该去记两套变量名。
+ *
+ * @param env - 环境变量（默认 `process.env`）。
+ * @returns 配置（含"没启用"的原因）。
+ */
+export function settleTimerConfigFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): SettleTimerConfig {
+  const disabled = (env['FORLIFE_SETTLE_DISABLED'] ?? '').trim().toLowerCase()
+  if (disabled === '1' || disabled === 'true' || disabled === 'yes') {
+    return { enabled: false, intervalMs: 0, limit: undefined, reason: 'FORLIFE_SETTLE_DISABLED 已设置' }
+  }
+  const rawInterval = Number(env['FORLIFE_SETTLE_INTERVAL_MS'] ?? '')
+  // 与 gateway 同一条纪律：太小的值视为"没配"，而不是"每秒扫一次表"
+  const intervalMs =
+    Number.isFinite(rawInterval) && rawInterval >= 10_000 ? Math.trunc(rawInterval) : SETTLE_DEFAULT_INTERVAL_MS
+  const rawLimit = Number(env['FORLIFE_SETTLE_LIMIT'] ?? '')
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.trunc(rawLimit) : undefined
+  return { enabled: true, intervalMs, limit, reason: '已启用' }
+}
+
+/** 沉降定时循环的句柄。 */
+export interface SettleTimer {
+  readonly config: SettleTimerConfig
+  /** 手动跑一轮（测试直接调它，不必等定时器）。 */
+  readonly tick: () => SettleOutcome
+  /** 停表（反注册器要能真的停掉它）。 */
+  readonly stop: () => void
+}
+
+/** 沉降定时循环的选项。 */
+export interface SettleTimerOptions {
+  readonly log: (message: string) => void
+  /** `⚠️` 级别（拿不到定时器、整轮失败这类**必须让人看见**的事）。不传则用 `log`。 */
+  readonly always?: (message: string) => void
+  readonly env?: Readonly<Record<string, string | undefined>>
+  /** 显式间隔（覆盖环境变量；测试用）。 */
+  readonly intervalMs?: number
+  /** 显式批量上限（覆盖环境变量；测试用）。 */
+  readonly limit?: number
+  readonly setTimeoutImpl?: (fn: () => void, ms: number) => { unref?: () => void }
+  readonly clearTimeoutImpl?: (handle: unknown) => void
+}
+
+/**
+ * 启动**插件侧**的沉降定时循环（PLAN §4.1 第二类压缩 / §6.3 的"定时"那一半）。
+ *
+ * ## ★ 为什么必须有一个真的定时器
+ *
+ * `MemoryRuntime.settle()` 只是**一次**沉降（中期条目 → 长期记忆全文 + `[F→]` 指针）。
+ * 交付物要的是「**定时**沉降任务」—— 没有这一层，"沉降能力"就只是躺在模块里的一个函数
+ * （全仓此前只有验收测试在调它，生产路径零调用）。
+ *
+ * 与 `packages/gateway/src/settle-loop.ts` 的分工：那边搬的是 blob **文件**（要挂载点），
+ * 这边搬的是**库里的条目**（不需要任何外部配置）；两者共用 `FORLIFE_SETTLE_*` 旋钮。
+ *
+ * ## 四条设计（都从项目里已有的循环学来）
+ *
+ * 1. **一轮跑完再排下一轮**（不是固定间隔硬塞）—— 沉降可能跑很久，固定间隔会让轮次堆积；
+ * 2. **自己接住异常** —— 定时器里抛异常会**静默杀死整个循环**，沉降从此失效而没人知道；
+ * 3. **`unref()`** —— 一个维护定时器不该让进程无法退出（测试进程尤其明显）；
+ * 4. **能停** —— 反注册器要能真的停掉它（热重载不能重复挂）。
+ *
+ * 拿不到 `setTimeout` 时**不启动**，但**必须喊一声**（静默的话"在跑"和"没挂上"看不出来）。
+ *
+ * @param target - 沉降目标（真跑时就是 `MemoryRuntime`）。
+ * @param options - 日志、环境变量、定时器注入。
+ * @returns 句柄（`tick` / `stop` / `config`）。
+ */
+export function startSettleTimer(target: SettleTimerTarget, options: SettleTimerOptions): SettleTimer {
+  const log = options.log
+  const always = options.always ?? options.log
+  const env = options.env ?? process.env
+  const parsed = settleTimerConfigFromEnv(env)
+  const intervalMs = options.intervalMs ?? parsed.intervalMs
+  const limit = options.limit ?? parsed.limit
+  const config: SettleTimerConfig = { ...parsed, intervalMs }
+
+  const tick = (): SettleOutcome => {
+    try {
+      const result = target.settle(limit === undefined ? {} : { limit })
+      if (result.fragmented > 0 || result.archived > 0) {
+        log(`沉降一轮：碎片化 ${String(result.fragmented)} 条、淘汰 ${String(result.archived)} 条｜${result.notes.join('；')}`)
+      }
+      return result
+    } catch (error) {
+      // **绝不让一轮失败杀死循环**（下一轮照跑），但**要让人看见** ——
+      // 静默的沉降失效与"没有东西可沉"从日志上看一模一样。
+      always(`⚠️ 沉降一轮失败（下一轮继续）：${String(error).slice(0, 200)}`)
+      return { fragmented: 0, archived: 0, notes: ['本轮失败'] }
+    }
+  }
+
+  if (!parsed.enabled) {
+    log(`沉降循环未启动：${parsed.reason}`)
+    return { config, tick, stop: () => {} }
+  }
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    always(`⚠️ 沉降循环未启动：间隔非法（${String(intervalMs)}ms）`)
+    return { config, tick, stop: () => {} }
+  }
+
+  const scheduleFn = options.setTimeoutImpl ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+  const clearFn = options.clearTimeoutImpl ?? ((handle: unknown) => clearTimeout(handle as never))
+
+  let stopped = false
+  let handle: { unref?: () => void } | undefined
+
+  const schedule = (): void => {
+    if (stopped) return
+    handle = scheduleFn(() => {
+      tick()
+      schedule()
+    }, intervalMs)
+    handle.unref?.()
+  }
+  schedule()
+  log(
+    `沉降循环已启动：每 ${String(Math.round(intervalMs / 60_000))} 分钟一轮` +
+      `（中期→长期，每轮最多 ${String(limit ?? defaultFor<number>('tiering.settleBatchSize'))} 条）`,
+  )
+
+  return {
+    config,
+    tick,
+    stop: () => {
+      stopped = true
+      if (handle !== undefined) clearFn(handle)
+    },
+  }
+}
+
+/** `reset_policy` 的已知取值：`on_compaction`（基线）与按轮重置的别名。 */
+function isPerTurnResetPolicy(policy: string): boolean {
+  return policy === 'per_turn' || policy === 'each_turn'
+}
+
+/** 认不认这个策略值（未知值按 `on_compaction` 处理，但要喊一声）。 */
+function isKnownResetPolicy(policy: string): boolean {
+  return policy === 'on_compaction' || isPerTurnResetPolicy(policy)
 }
 
 

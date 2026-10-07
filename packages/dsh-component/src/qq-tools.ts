@@ -34,6 +34,7 @@ import {
 import type { MemoryRuntime } from './runtime.ts'
 import { buildMentionTools, MENTION_TOOL_NAMES } from './mention-tools.ts'
 import { buildStickerTools, STICKER_TOOL_NAMES } from './sticker-tools.ts'
+import { withToolResultSpill } from './tool-spill.ts'
 import type { DefineToolLike } from './tools.ts'
 
 /** 文本结果。 */
@@ -70,6 +71,9 @@ export function buildQqTools(
   options: { readonly confirmTimeoutMs?: number } = {},
 ): readonly unknown[] {
   const confirmTimeoutMs = options.confirmTimeoutMs ?? defaultFor<number>('delivery.confirmTimeoutMs')
+  // ★ PLAN §3.2 分层降噪：`read_pending` 这类工具会把积压消息整批吐出来（可能很长），
+  //   超过基线阈值就落 spill、只留 head + id（模型用 recall_full 取回）。
+  const defineSpillingTool = withToolResultSpill(defineTool, runtime)
 
   /** 把会话键字符串解析成 Ref，并校验。 */
   const parseTarget = (conversation: string): { ok: true; key: string; kind: 'private' | 'group' | 'temp' } | { ok: false; message: string } => {
@@ -82,7 +86,7 @@ export function buildQqTools(
     return { ok: true, key: conversation, kind }
   }
 
-  const qqReply = defineTool({
+  const qqReply = defineSpillingTool({
     name: 'qq_reply',
     description: [
       // ★ **工具调用限制**（用户明确要求写进描述）：
@@ -173,7 +177,7 @@ export function buildQqTools(
     },
   })
 
-  const qqReact = defineTool({
+  const qqReact = defineSpillingTool({
     name: 'qq_react',
     description: '给一条消息加表情回应（比回一条"哈哈"更轻，适合表示收到/认同）。',
     parameters: {
@@ -212,7 +216,7 @@ export function buildQqTools(
     },
   })
 
-  const qqTyping = defineTool({
+  const qqTyping = defineSpillingTool({
     name: 'qq_typing',
     description: [
       '打开/关闭"正在输入"状态。**只对私聊有效** —— 群聊没有这个能力，调用会明确告诉你失败。',
@@ -257,7 +261,7 @@ export function buildQqTools(
     },
   })
 
-  const deferTurn = defineTool({
+  const deferTurn = defineSpillingTool({
     name: 'defer_turn',
     description: [
       '挂起当前轮次：你需要等一个长任务（外部进程、下载、别人回复）而暂时无法给出结论时用。',
@@ -301,7 +305,7 @@ export function buildQqTools(
     },
   })
 
-  const readPendingTool = defineTool({
+  const readPendingTool = defineSpillingTool({
     name: 'read_pending',
     description: [
       // ★ 它不只是「看看有什么」—— 它是**发送前的必经步骤**。
@@ -361,7 +365,7 @@ export function buildQqTools(
     },
   })
 
-  const listWakeRulesTool = defineTool({
+  const listWakeRulesTool = defineSpillingTool({
     name: 'list_wake_rules',
     description: [
       '看你当前的唤醒规则：哪些条件会叫醒你、概率多少、有没有限额或静默期。',
@@ -421,7 +425,7 @@ export function buildQqTools(
     },
   })
 
-  const setWakeRuleTool = defineTool({
+  const setWakeRuleTool = defineSpillingTool({
     name: 'set_wake_rule',
     description: [
       '调你自己的唤醒规则（这是你能自己决定"什么时候被叫醒"的地方）。',
@@ -488,7 +492,7 @@ export function buildQqTools(
     },
   })
 
-  const setStatusTool = defineTool({
+  const setStatusTool = defineSpillingTool({
     name: 'set_status',
     description: [
       '设置你自己的在线状态（对外可见，用来表达你的处境：在线/离开/忙碌/自定义文案）。',
@@ -525,7 +529,7 @@ export function buildQqTools(
     },
   })
 
-  const clearSystemStatusTool = defineTool({
+  const clearSystemStatusTool = defineSpillingTool({
     name: 'clear_system_status',
     description: [
       '清除系统设置的故障状态（当你确认问题已经解决时用）。',

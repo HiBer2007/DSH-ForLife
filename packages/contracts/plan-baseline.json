@@ -625,6 +625,14 @@
     "router.review.intervalHours": {
       "v": 24,
       "src": "模型路由.MD §6.2（T15：定期用 L3 复盘，不实时调用）"
+    },
+    "tool.spill.thresholdBytes": {
+      "v": 16384,
+      "src": "EXECUTION_PLAN §2.3（design：PLAN §3.2 只说「大工具结果」没给数值，阈值由我们定：16 KiB ≈ 4k token）"
+    },
+    "tool.spill.headLines": {
+      "v": 20,
+      "src": "EXECUTION_PLAN §2.3（design：PLAN §3.2 的「前 N 行」，与 store.insertSpill 的默认 head 一致）"
     }
   },
   "timings": [

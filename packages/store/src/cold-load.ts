@@ -72,7 +72,7 @@ export async function loadLongEntry(options: {
   const row = options.db
     .prepare('SELECT id, content, storage_tier, archive_path FROM long_memory_entries WHERE id = ?')
     .get(options.id) as
-    | { id: string; content: string; storage_tier: string; archive_path: string | null }
+    | { id: string; content: string | null; storage_tier: string; archive_path: string | null }
     | undefined
 
   if (row === undefined) {
@@ -116,6 +116,20 @@ export async function loadLongEntry(options: {
   // 正文本来就在库里 ⇒ 从库里读（**如实报 source: 'db'**）
   const latencyMs = Math.max(0, Math.round(nowMs() - started))
   recordLoad(options.db, tier, latencyMs, slowMs, options.now ?? ((): number => Date.now()))
+  if (row.content === null) {
+    // ⚠️ **"正文是 NULL" 与 "正文是空字符串" 是两件事**：
+    // 后者是一条真的空记忆，前者是**取不回来**（归档路径也没了）。
+    // 早先这里直接返回 `content: row.content` ⇒ `{found: true, content: null}`，
+    // 调用方（recall 路径）会把它当成功、给模型一条空正文 ——
+    // 而那正是"静默的数据丢失"看起来的样子。**如实报失败。**
+    return {
+      found: false,
+      tier,
+      source: 'none',
+      latencyMs,
+      note: `这条的 content 是 NULL 且没有归档文件（archive_path 为空）：**正文不在了**（不是"读不到"，是"没有"）`,
+    }
+  }
   return {
     found: true,
     content: row.content,

@@ -12,9 +12,13 @@
  * 4. **汇报结果** —— 否则"沉降没生效"和"没有东西可沉"看起来一模一样。
  */
 import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 
-import { openDatabase } from '@forlife/store'
+import { insertLongEntry, openDatabase } from '@forlife/store'
 
 import { settleLoopConfigFromEnv, startSettleLoop } from '../src/settle-loop.ts'
 
@@ -247,6 +251,155 @@ test('★ 碎片维护失败**不影响沉降**（两件事互相独立）', asy
     // 那比"整项消失"更好：能看到"合并失败了"，而不是什么都没有。
     assert.equal(r.fragments?.merged, false, '合并失败要如实报 false')
     assert.ok(r.fragments !== undefined, '碎片那项不该消失 —— 消失就看不出"合并失败了"')
+    loop.stop()
+  } finally {
+    opened.db.close()
+  }
+})
+
+// ── 长期记忆的 HDD 沉降（PLAN §6.3 的"定时任务扫描"）──────────────────────
+//
+// ⚠️ **为什么这几条必须存在**：`listSettleCandidates` / `markLongSettled` 早就写好了、
+// 也测过，但**生产路径上零调用** —— 也就是说"定时扫描"从来没发生过，
+// 而单元测试全绿。**接线正是本项目反复栽跟头的地方。**
+
+const tempDir = (): string => mkdtempSync(join(tmpdir(), 'forlife-gw-longsettle-'))
+
+async function cleanup(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch {
+      await delay(40)
+    }
+  }
+}
+
+/** 造一条 100 天没访问的长期条目（**走真实写入路径**）。 */
+function addOldLongEntry(db: ReturnType<typeof openDatabase>['db'], id: string, content: string): void {
+  insertLongEntry(db, { id, content, summary: `摘要 ${id}` })
+  const old = new Date(Date.now() - 100 * 86_400_000).toISOString()
+  db.prepare('UPDATE long_memory_entries SET created_at = ?, last_accessed_at = ? WHERE id = ?').run(old, old, id)
+}
+
+test('★★ 接线守卫：维护循环真的调了 settleLongEntries（否则"定时扫描"永远不发生）', () => {
+  const src = readFileSync(new URL('../src/settle-loop.ts', import.meta.url), 'utf8').split(/\r?\n/).join('\n')
+  const tickAt = src.indexOf('const tick = async')
+  const settleAt = src.indexOf('await settleLongEntries({', tickAt)
+  assert.ok(tickAt > 0, '找不到 tick')
+  assert.ok(settleAt > tickAt, '**长期沉降必须在 tick 里被调用** —— 写在模块里但没人调等于没接')
+  // 参数不能硬编码：90 天 / 200 条只能从基线派生
+  assert.ok(src.includes('longSettlePolicyFromEnv(options.env)'), '策略必须从环境/基线读，不能就地写死')
+  assert.ok(!/afterDays:\s*90/.test(src), '**不许把 90 写进 gateway** —— 那个数在 plan-baseline 里')
+  assert.ok(/^\s*settleLongEntries,$/m.test(src), '从 @forlife/store 导入才算接上')
+})
+
+test('★ tick 真的把 90 天没访问的长期条目沉到 HDD（正文移出库、归档落盘）', async () => {
+  const opened = setup()
+  const dir = tempDir()
+  try {
+    addOldLongEntry(opened.db, 'L1', '很久以前的正文')
+    const logs: string[] = []
+    const loop = startSettleLoop({
+      db: opened.db,
+      env: { ...ENV, FORLIFE_ROOT_COLD: dir },
+      moveFile: async () => ({ ok: true, reason: 'ok' }),
+      log: (m) => logs.push(m),
+      setTimeoutImpl: () => ({ unref: () => {} }),
+    })
+    const r = await loop.tick()
+    assert.equal(r.longTerm?.settled, 1, `应当沉 1 条长期条目：${JSON.stringify(r.longTerm)}`)
+    assert.equal(r.longTerm?.failed, 0)
+    assert.equal(r.longTerm?.fellBack, false, '配了 FORLIFE_ROOT_COLD ⇒ 没退回')
+    assert.equal(r.longTerm?.coldRoot, dir)
+
+    const row = opened.db.prepare('SELECT content, storage_tier, archive_path FROM long_memory_entries WHERE id = ?').get('L1')
+    assert.equal(row?.content, null, '**表内正文必须置空**')
+    assert.equal(row?.storage_tier, 'hdd')
+    const archivePath = String(row?.archive_path)
+    assert.ok(archivePath.startsWith(dir), `归档必须落在冷层根下：${archivePath}`)
+    assert.ok(existsSync(archivePath), '归档文件必须真的写出来了')
+    assert.equal(readFileSync(archivePath, 'utf8'), '很久以前的正文', '归档里必须**就是正文**')
+    assert.ok(
+      logs.some((m) => m.includes('长期记忆沉降')),
+      '**必须有一行日志** —— 否则"沉了"和"没沉"从日志上看一模一样',
+    )
+    loop.stop()
+  } finally {
+    opened.db.close()
+    await cleanup(dir)
+  }
+})
+
+test('★ 冷层退回时**说清"和热数据在同一块盘上"**（不假装有 HDD）', async () => {
+  const opened = setup()
+  const dir = tempDir()
+  try {
+    addOldLongEntry(opened.db, 'L1', '正文')
+    const logs: string[] = []
+    // **故意不配 FORLIFE_ROOT_COLD** ⇒ cold 退回 warm（单盘部署）。
+    // 根路径用临时目录：这几条会**真的写文件**，不能往开发机的盘上写。
+    const loop = startSettleLoop({
+      db: opened.db,
+      env: { FORLIFE_ROOT_HOT: join(dir, 'hot'), FORLIFE_ROOT_WARM: join(dir, 'warm'), FORLIFE_FRAGMENT_MIN_COUNT: '1' },
+      moveFile: async () => ({ ok: true, reason: 'ok' }),
+      log: (m) => logs.push(m),
+      setTimeoutImpl: () => ({ unref: () => {} }),
+    })
+    const r = await loop.tick()
+    assert.equal(r.longTerm?.settled, 1)
+    assert.equal(r.longTerm?.fellBack, true, '如实报"冷层退回了"')
+    assert.equal(r.longTerm?.coldRoot, join(dir, 'warm'), 'cold 没配时退到 warm（见 storage-tiers 的解析规则）')
+    assert.ok(
+      logs.some((m) => m.includes('冷层退回了')),
+      '**必须在日志里说清** —— 库里只有 ssd/hdd 两个值，表达不了"落在哪块盘"',
+    )
+    loop.stop()
+  } finally {
+    opened.db.close()
+    await cleanup(dir)
+  }
+})
+
+test('★ 长期沉降坏了**不影响 blob 沉降**（三件事互相独立）', async () => {
+  const opened = setup()
+  try {
+    // 把长期表删掉 ⇒ settleLongEntries 抛（listSettleCandidates 找不到表）
+    opened.db.exec('DROP TABLE long_memory_entries')
+    const logs: string[] = []
+    const loop = startSettleLoop({
+      db: opened.db,
+      env: ENV,
+      moveFile: async () => ({ ok: true, reason: 'ok' }),
+      log: (m) => logs.push(m),
+      setTimeoutImpl: () => ({ unref: () => {} }),
+    })
+    const r = await loop.tick()
+    assert.equal(r.moved, 1, '**blob 沉降必须照常完成**')
+    assert.equal(r.longTerm, undefined, '长期那项这次拿不到结果（如实为空，不编一个 0）')
+    assert.ok(
+      logs.some((m) => m.includes('长期记忆沉降异常')),
+      '异常要**报出来**（否则"没东西可沉"和"沉降坏了"看起来一样）',
+    )
+    loop.stop()
+  } finally {
+    opened.db.close()
+  }
+})
+
+test('★ 没配 FORLIFE_ROOT_HOT ⇒ 长期沉降也不跑（不知道往哪搬就不搬）', async () => {
+  const opened = setup()
+  try {
+    const loop = startSettleLoop({
+      db: opened.db,
+      env: {},
+      moveFile: async () => ({ ok: true, reason: 'ok' }),
+      log: () => {},
+      setTimeoutImpl: () => ({ unref: () => {} }),
+    })
+    const r = await loop.tick()
+    assert.equal(r.longTerm, undefined, '禁用状态下不该有任何长期沉降动作')
     loop.stop()
   } finally {
     opened.db.close()

@@ -14,6 +14,7 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 
 import type { MemoryRuntime } from './runtime.ts'
+import { withToolResultSpill } from './tool-spill.ts'
 
 /** defineTool 的运行时形态（宿主提供；这里给出结构化类型，避免硬依赖具体包版本）。 */
 export interface DefineToolLike {
@@ -35,6 +36,21 @@ function text(content: string): ContentBlock[] {
 }
 
 /**
+ * 冷层正文返回给模型时的字符上限。
+ *
+ * 沉降过的条目正文**没有上限**（压缩时推进去的可能是整段原文），
+ * 而一次 recall 最多 3~5 条 —— 不设上限的话，一条 100KB 的旧日志就能把上下文顶掉。
+ * 截断必须**说出来**（否则模型会以为那就是全文）。
+ */
+export const COLD_CONTENT_MAX_CHARS = 1500
+
+/** 截断冷层正文，并**如实标注**截断（不假装那是全文）。 */
+function clipColdContent(content: string): string {
+  if (content.length <= COLD_CONTENT_MAX_CHARS) return content
+  return `${content.slice(0, COLD_CONTENT_MAX_CHARS)}…（正文共 ${String(content.length)} 字，已截断到前 ${String(COLD_CONTENT_MAX_CHARS)} 字）`
+}
+
+/**
  * 构造四个记忆工具。
  *
  * @param defineTool - 宿主的 `defineTool`（来自 `@deepseek-ai/dsh-tools`）。
@@ -42,7 +58,12 @@ function text(content: string): ContentBlock[] {
  * @returns 可供 `ctx.tools.register()` 的定义数组。
  */
 export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRuntime): readonly unknown[] {
-  const remember = defineTool({
+  // ★ PLAN §3.2 分层降噪的**接缝**：大工具结果不在上下文里塞全文，只留 head + 溢出 id，
+  //   模型要完整内容时用 recall_full 取回（`./tool-spill.ts` 的模块头解释了为什么选
+  //   `finalizeContent` 而不是 `output.render`：render 必须是纯投影）。
+  //   阈值取自基线 `tool.spill.thresholdBytes`（不在这里硬编码数字）。
+  const defineSpillingTool = withToolResultSpill(defineTool, runtime)
+  const remember = defineSpillingTool({
     name: 'remember',
     description: [
       '把一件值得长期记住的事写进中期记忆。',
@@ -97,7 +118,7 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  const pushMidMemory = defineTool({
+  const pushMidMemory = defineSpillingTool({
     name: 'push_mid_memory',
     description: [
       '批量把若干条记忆推进中期记忆区（压缩流程的原语）。',
@@ -167,12 +188,13 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  const recallLongterm = defineTool({
+  const recallLongterm = defineSpillingTool({
     name: 'recall_longterm',
     description: [
       '检索长期记忆里过去的事。返回结果会附带本周期剩余额度。',
       '先想清楚要什么再查；无命中不代表不存在，可以换关键词，但不要为了确认而反复检索。',
-      '结果里的 storage_tier = hdd 表示该条已沉降到冷层，需要时可用 recover 提升回来。',
+      '结果里的 storage_tier = hdd 表示该条已沉降到冷层：它的正文会**按需从冷层取回**（可能稍慢），随结果一起返回。',
+      '若 note 里说某条"取不回来"，那是**冷层读取失败**，不代表这件事没记过 —— 不要据此当作"记忆里没有"。',
     ].join('\n'),
     parameters: {
       query: { type: 'string', required: true, description: '检索关键词或短语（中文按字匹配相邻短语）。' },
@@ -196,25 +218,40 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
                 entities: { type: 'array', items: { type: 'string' } },
                 tier: { type: 'string', description: 'ssd / hdd' },
                 createdAt: { type: 'string', description: 'UTC 时间戳' },
+                content: {
+                  type: 'string',
+                  description:
+                    '**冷层（hdd）条目的正文**：命中后按需从归档取回来的原文。取不回来时不会有这个字段，note 里会说明原因。',
+                },
               },
             },
           },
           usedThisTurn: { type: 'integer' },
           remainingThisTurn: { type: 'integer' },
           remainingThisCycle: { type: 'integer' },
-          note: { type: 'string', description: '无命中或触发额度限制时的说明。' },
+          note: { type: 'string', description: '无命中、触发额度限制、或冷层取不回来时的说明。' },
         },
       },
       render: (_args: never, value: never): ContentBlock[] => {
-        const v = value as { results: { id: string; summary?: string }[]; note?: string; remainingThisCycle?: number }
+        const v = value as { results: { id: string; summary?: string; content?: string }[]; note?: string; remainingThisCycle?: number }
         if (v.results.length === 0) return text(v.note ?? '长期记忆无命中。')
-        const lines = v.results.map((r, i) => `${String(i + 1)}. [${r.id}] ${r.summary ?? ''}`)
+        const lines = v.results.map((r, i) => {
+          const head = `${String(i + 1)}. [${r.id}] ${r.summary ?? ''}`
+          // 冷层正文是**按需取回来的**（取不回来时 runtime 会在 note 里说清）
+          return r.content === undefined ? head : `${head}\n   ↳ ${r.content}`
+        })
         return text(`${lines.join('\n')}${v.note === undefined ? '' : `\n（${v.note}）`}`)
       },
     },
     execute: async (args: never): Promise<unknown> => {
       const a = args as { query: string; limit?: number }
-      const result = runtime.recallLongterm(a.query, a.limit)
+      // ★ **必须走 `recallLongtermOnDemand`**（不是 `recallLongterm`）——
+      //
+      // 沉降过的条目在 FTS 索引里**仍然命中**（`markLongSettled` 只清表里的 content），
+      // 但表内正文是 NULL：只做检索的话，**命中 = 拿到一条空正文**，
+      // 对模型而言与"这条记忆被删了"没有区别 ⇒ **沉降变成静默的数据丢失**。
+      // 这一跳就是 §6.3 的"按需加载"。
+      const result = await runtime.recallLongtermOnDemand(a.query, a.limit)
       return {
         ok: true,
         results: result.entries.map((entry) => ({
@@ -223,6 +260,11 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
           entities: parseEntities(entry.entities),
           tier: entry.storage_tier ?? 'ssd',
           createdAt: entry.created_at ?? '',
+          // 正文只给**冷层取回来的那些**：热条目的 summary 已经在上面，
+          // 而冷层不一样 —— 不把它带回来，模型就永远看不到这条记忆的内容。
+          ...(entry.storage_tier === 'hdd' && entry.content !== null && entry.content !== undefined
+            ? { content: clipColdContent(entry.content) }
+            : {}),
         })),
         usedThisTurn: result.budget.usedThisTurn,
         remainingThisTurn: result.budget.remainingThisTurn,
@@ -232,7 +274,7 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  const recallFull = defineTool({
+  const recallFull = defineSpillingTool({
     name: 'recall_full',
     description: [
       '取回之前被截断的大结果全文（上下文里只留了它的前若干行）。',
@@ -275,7 +317,7 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  const requestCompaction = defineTool({
+  const requestCompaction = defineSpillingTool({
     name: 'request_compaction',
     description: [
       '请求压缩这一段对话（把短期轨迹提炼成中期记忆、把当前状态留成一行摘要）。',

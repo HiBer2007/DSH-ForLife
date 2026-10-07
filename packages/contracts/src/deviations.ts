@@ -11,6 +11,15 @@
  *   ② 未被登记的 `doc` 参数，生效值必须**严格等于**基线值；
  *   ③ `RULE_DEVIATIONS` 必须写清"文档怎么说 / 我们怎么做 / 为什么 / 谁批的"。
  *
+ * ⚠️ **上面这三条拦不住的一类问题**（2026-10-06 核对实测）：`fidelity.test.ts` 断的是
+ * `defaultFor(key) === baselineValue(key)`，也就是**JSON 对自己** —— 它证明不了"这个参数
+ * 真的被代码消费了"，也看不见"部署里真正生效的值"（例：`compaction.autoTriggerRatio`
+ * 基线 0.5，而代码从不设置 `thresholdRatio`、四个 profile 也不设，于是生效值是宿主
+ * `dsh-compaction-basic` 的常量 **0.8** —— fidelity 全绿，bug 照旧）。
+ * 守这两件事的是另外两条接线守卫：
+ *   - `packages/contracts/test/param-consumption.test.ts`（关键 `doc` 参数必须在**代码**里有消费点）；
+ *   - `packages/dsh-component/test/compaction-threshold.test.ts`（真机装配后断言**生效阈值**）。
+ *
  * @module @forlife/contracts/deviations
  */
 
@@ -77,6 +86,45 @@ export const RULE_DEVIATIONS: readonly RuleDeviation[] = [
       '"轮次内不换模型"的目的是避免语气与推理风格断裂；而 provider 不可用是硬约束，' +
       '不降级就等于整轮失败，对用户更糟。被动降级的断裂风险由"同一风格段 + 参数对齐"控制。',
     approvedBy: 'EXECUTION_PLAN §2.18.1（用户明确要求：provider 没额度/失败时按指定顺序自动切换）',
+  },
+  {
+    rule:
+      'PLAN.MD §4.2 Step 2 / §10.4：压缩请求是**独立调用** ——「不复用主对话缓存」「压缩独立调用，不污染主对话缓存」；' +
+      '请求块顺序为 [稳定 system + tools] → [当前中期记忆渲染全文] → [中期记忆条目化版本] → [完整短期记忆轨迹] → [压缩指令 + 输出格式]。',
+    behavior:
+      '**块顺序被改写 + 有意复用主对话前缀**（两件事同源，故合并登记）：' +
+      '`buildCompactionInstruction()`（`dsh-component/src/compaction-engine.ts:143`）把「L3 渲染全文 + 条目化清单 + 触发原因 + 指令」' +
+      '**合并成尾部一条 user 消息**：`INSTRUCTION_TAIL` 与 L3 渲染全文都在这一块里；' +
+      '`summarize()`（`:427-435`）则把 `SummarizationInput.messages`（宿主给的"派生 system 头 + 被遮蔽区域"，按表面顺序）**原样重放**当前缀。' +
+      '⇒ 压缩请求的前缀与主对话**逐字节对齐**、命中同一份暖前缀缓存；它**不是** PLAN 意义上的独立调用。' +
+      '（信息没丢：五段内容都在，只是排布从"五段"变成"前缀 + 尾部指令块"。）',
+    reason:
+      '摘代码注释里的理由 —— `compaction-engine.ts:11-16`：「`SummarizationInput.messages` 已经是"派生的 system 头 + 被遮蔽区域，按表面顺序"，' +
+      '所以**原样重放**它、把我们的压缩指令**追加为最后一条 user 消息**，前缀就与主对话逐字节对齐 ⇒ 供应商的暖前缀缓存能命中，只有尾部指令是新的输入。」' +
+      '又 `:132-137`：「这两块按 PLAN §4.2 属于压缩请求的输入；我们把它们并入尾部指令块而**不是**插到轨迹之前 —— 因为插到前面会在那一点打断前缀，让暖缓存失效。' +
+      '这是刻意的取舍：§4.2 的块顺序 vs 交付物 2 明确要求的"复用对话自身前缀以免多打掉 KV cache"，**后者优先**。」' +
+      '代价如实写明：① §10.4 的"不污染主对话缓存"做不到（压缩那次调用与主对话共享同一份缓存条目）；' +
+      '② 因为必须复用主对话前缀，压缩不能换一套 system/tools/块顺序。',
+    approvedBy:
+      '交付物 2（"复用对话自身前缀"是硬要求，由它压过 §4.2 的块顺序）；2026-10-06 1:1 保真度核对据代码注释补登（审计 docs/audit/PLAN_FIDELITY_AUDIT.md §7.4 指出该偏离此前未登记）。',
+  },
+  {
+    rule:
+      'PLAN.MD §9.2 场景映射（+ §4.2 Step 2 括注）：**压缩事件 → L3 + 高推理强度**（"可用强模型 + 高推理强度"）。',
+    behavior:
+      '压缩请求**不设置 reasoning effort**：`summarize()` 的 `streamOptions`（`dsh-component/src/compaction-engine.ts:439-447`）只有 ' +
+      '`provider / model / messages / toolHistory / maxTokens / sessionId / purpose / tools / signal`；' +
+      '`resolveProvider()` / `resolveModel()`（`:498-513`）缺省跟随 `agent.options.provider/model`，即**当前轮主对话的模型**（四个 profile 也都没设 `summarizationProvider/Model`，已核）。' +
+      '⇒ 实际是"当前轮模型 + 当前轮推理强度"：既不是 L3 档，也不是高推理强度。' +
+      '路由器里已有的 L3 规则也接不上：`router/src/guards.ts:98` 的 `isCompressionTask → L3` **没有任何生产调用方传这个标志**；' +
+      '`router/src/subagents.ts:39` 的 `ROLE_TIER.compaction = L3` 只被 `assignSubagent` 使用，而后者生产零调用。',
+    reason:
+      '**与上一条同源**：跟随当前轮 provider/model 正是"复用主对话前缀缓存"的前提 —— 一旦为压缩换模型/换供应商，那份前缀缓存必然失效，' +
+      '压缩会把主对话的 KV cache 打掉一次（恰是交付物 2 要避免的）。此外 `ctx.llm.stream()` 这条路径上**当前没有传 `reasoningEffort` 的接线**，' +
+      '要按 §9.2 实现必须同时改路由（选 L3 模型）与请求参数 —— 属于"会影响缓存性能"的改动，' +
+      '而本轮核对的口径是**登记而不改**（改了会动缓存行为，不是纯保真度修复）。',
+    approvedBy:
+      '2026-10-06 1:1 保真度核对：用户明确"**不要擅自改**（这是有意的设计取舍，改了会影响缓存性能）"，只登记。',
   },
 ]
 

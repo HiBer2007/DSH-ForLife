@@ -30,13 +30,14 @@ import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
 import { buildPortTools, portToolOptionsFromEnv } from './port-tools.ts'
-import { getWakeTrigger, markSystemTriggersDue, updateWakeTrigger } from '@forlife/store'
+import { getWakeTrigger, markSystemTriggersDue, recoverPendingCompactions, updateWakeTrigger } from '@forlife/store'
 import { onCompactionFailure } from './compaction-engine.ts'
 import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
 import { registerLoopGuard } from './loop-guard-register.ts'
+import { registerToolResultSpill } from './tool-spill.ts'
 import { createToolLoopGuard } from './tool-loop-guard.ts'
-import { MemoryRuntime, resolveDbPath } from './runtime.ts'
+import { MemoryRuntime, resolveDbPath, startSettleTimer } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
 import { emitForlifeEvent, type SessionLike } from './events.ts'
@@ -309,6 +310,170 @@ function mountWakeEndpoint(
   log(`✅ 唤醒桥端点已挂载：${process.env.FORLIFE_WAKE_BRIDGE_PATH ?? '/forlife/wake'}`)
 }
 
+/** 会话事件信封的最小形状：**载荷在 `data` 里**（宿主 `Session.append` 造的是 `{type, seq, time, data}`）。 */
+interface SessionEventEnvelope {
+  readonly type?: unknown
+  readonly data?: unknown
+}
+
+/**
+ * 从一次模型调用的 `usage` 里算"当时短期上下文有多少 token"。
+ *
+ * 口径与宿主 `dsh-token-meter` 的 `totalTokens`（"request-and-response pressure"）一致：
+ * **整通调用**的 token 数 —— 也就是下一次请求要背的上下文大小。
+ *
+ * `TokenUsage` 的四类计数是**互不重叠**的（已在 `@deepseek-ai/dsh-llm` 的类型注释里核实：
+ * `inputTokens` 只是**未命中缓存的**输入，计费输入 = input + cacheRead + cacheWrite），
+ * 所以直接相加即可；`totalTokens`（provider 报的整通总量）存在时优先用它。
+ *
+ * @param usage - 事件里的 `usage` 字段（形状不认识就返回 `undefined`）。
+ * @returns token 数；拿不到就返回 `undefined`（**绝不编一个数出来**）。
+ */
+export function shortTokensFromUsage(usage: unknown): number | undefined {
+  if (typeof usage !== 'object' || usage === null) return undefined
+  const record = usage as Record<string, unknown>
+  const num = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : undefined
+  const total = num(record['totalTokens'])
+  if (total !== undefined) return total
+  const parts = ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'].map((key) => num(record[key]))
+  if (parts.every((part) => part === undefined)) return undefined
+  const sum = parts.reduce<number>((acc, part) => acc + (part ?? 0), 0)
+  return sum > 0 ? sum : undefined
+}
+
+/** `registerTurnAccounting` 的选项（与 `registerLoopGuard` 同形）。 */
+export interface TurnAccountingOptions {
+  readonly log: (message: string) => void
+  /** `⚠️` 级别（拿不到钩子这类**必须让人看见**的事）。 */
+  readonly always: (message: string) => void
+  /** 反注册器收集处（`apply()` 里的那个数组）。 */
+  readonly disposers: (() => void)[]
+}
+
+/**
+ * 把**轮次记账**接到真实的会话生命周期上（本轮修的 A + B 两条都靠它）。
+ *
+ * ## 为什么必须有这一层
+ *
+ * `MemoryRuntime.beginTurn()` 与 `observeShortTokens()` 以前**只被测试调用**，
+ * 生产路径上零调用 ⇒
+ *  - `acct_short_tokens` 恒为 0、`acct_turns_since_compaction` 恒为 0
+ *    ⇒ `decideCompaction` 一律 `too_thin` ⇒ **PLAN §4.4 的"模型自主压缩"不可用**；
+ *  - `recallThisTurn` 永不归零 ⇒ 累计 2 次 `recall_longterm` 之后**永久失效**
+ *    （跑一会儿之后模型再也想不起长期记忆）。
+ *
+ * ## 接在哪两个点上（宿主 `agent-loop` 的权威事件）
+ *
+ * 宿主的 `agent-loop` 在每一轮开始时 `session.append('turn/start')`、
+ * 结束时 `session.append('turn/end')`，两者都会通过 `session/event` 发出来 ——
+ * 而这条订阅**本项目早就在用**（缓存采集）。所以**不新增钩子**：
+ *  - `turn/start` ⇒ `beginTurn()`（重置每轮额度 + 推进"自上次压缩以来的轮次"）；
+ *  - `turn/end` ⇒ `observeShortTokens(n)`，`n` 取**真实读数**：
+ *    ① 宿主 `tokenMeter.measure(session).totalTokens`（权威计量，拿不到就跳过）；
+ *    ② 退化到本轮最后一条 `assistant/message` 的 `usage`（provider 报的账）。
+ *
+ * **拿不到真实读数时宁可不写**：写 0 会让 `decideCompaction` 判 `too_thin`，
+ * 那正是我们要修的病（"没有数据"和"上下文是空的"是两回事）。
+ *
+ * 三条纪律：**绝不抛异常**（这个 handler 跑在每一次会话事件上）、
+ * **拿不到钩子要明说**（静默的话"在跑"和"没挂上"从日志上看一模一样）、
+ * **必须能反注册**（否则热重载会重复挂载 ⇒ 每轮被记两次）。
+ *
+ * @param ctx - 宿主上下文。
+ * @param runtime - 记忆运行时。
+ * @param options - 日志与反注册器收集处。
+ * @returns 是否挂上（测试要看）。
+ */
+export function registerTurnAccounting(
+  ctx: ContextLike,
+  runtime: MemoryRuntime,
+  options: TurnAccountingOptions,
+): boolean {
+  const contextOn = ctx as unknown as {
+    on?: (event: string, handler: (...args: unknown[]) => void) => (() => void) | undefined
+  }
+  if (typeof contextOn.on !== 'function') {
+    options.always(
+      '⚠️ 宿主没有 ctx.on ⇒ **轮次记账未挂载**：模型自主压缩会被判 too_thin、recall 每轮额度不会重置（记忆本体不受影响）',
+    )
+    return false
+  }
+
+  /** 最近一次 provider 报的真实用量（轮末读数的退化来源）。 */
+  let lastUsageTokens: number | undefined
+  /** 已写读数轮数（只在第一轮报一次日志，避免每轮刷屏）。 */
+  let observedTurns = 0
+
+  /** 用宿主 tokenMeter 量当前短期压力（拿不到就 `undefined` —— 绝不用估算值冒充真实读数）。 */
+  const measureShortTokens = (session: unknown): number | undefined => {
+    const meter = ctx.get('tokenMeter') as { measure?: (subject: unknown) => unknown } | undefined
+    if (meter === undefined || typeof meter.measure !== 'function') return undefined
+    try {
+      const measurement = meter.measure(session) as { readonly totalTokens?: unknown } | undefined
+      const total = measurement?.totalTokens
+      return typeof total === 'number' && Number.isFinite(total) && total > 0 ? Math.trunc(total) : undefined
+    } catch (error) {
+      options.log(`tokenMeter 测量失败（已忽略，改用 usage 退化）：${String(error).slice(0, 160)}`)
+      return undefined
+    }
+  }
+
+  try {
+    const dispose = contextOn.on('session/event', (...args: unknown[]) => {
+      // ★ **绝不抛异常** —— 这个 handler 跑在**每一次会话事件**上
+      try {
+        const session = args[0]
+        const envelope = args[1] as SessionEventEnvelope | undefined
+        const type = typeof envelope?.type === 'string' ? envelope.type : undefined
+        if (type === undefined) return
+        const data = (
+          typeof envelope?.data === 'object' && envelope.data !== null ? envelope.data : {}
+        ) as Record<string, unknown>
+
+        // ① 轮次开始 ⇒ 重置"每轮"额度 + 推进"自上次压缩以来的轮次"（PLAN §4.4 记账）
+        if (type === 'turn/start') {
+          runtime.beginTurn()
+          return
+        }
+
+        // ② 记下 provider 报的真实用量（轮末读数的退化来源）
+        if (type === 'assistant/message') {
+          const tokens = shortTokensFromUsage(data['usage'])
+          if (tokens !== undefined) lastUsageTokens = tokens
+          return
+        }
+
+        // ③ 轮次结束 ⇒ 写真实短期读数
+        if (type === 'turn/end') {
+          const tokens = measureShortTokens(session) ?? lastUsageTokens
+          if (tokens === undefined) {
+            options.log('轮次结束但拿不到短期 token 真实读数（tokenMeter 与 usage 都没有）—— 保留上次读数')
+            return
+          }
+          runtime.observeShortTokens(tokens)
+          observedTurns += 1
+          if (observedTurns === 1) {
+            // **用 `always`（不是 verbose 才打的 log）**：这是"记账真的活了"的唯一凭据 ——
+            // 而它以前是死的（模型自主压缩因此永久被拒）。一次进程只打一行，不吵。
+            options.always(
+              `✅ 轮次记账已生效：第 1 轮写入真实短期读数 ${String(tokens)} token（此后每轮结束时更新，压缩裁决不再恒判 too_thin）`,
+            )
+          }
+        }
+      } catch (error) {
+        options.log(`轮次记账单事件处理失败（已忽略）：${String(error).slice(0, 160)}`)
+      }
+    })
+    if (typeof dispose === 'function') options.disposers.push(dispose)
+    options.log('已订阅会话事件：轮次记账（turn/start ⇒ beginTurn；turn/end ⇒ observeShortTokens 真实读数）')
+    return true
+  } catch (error) {
+    options.always(`⚠️ 无法订阅会话事件（轮次记账不可用：模型自主压缩会被判 too_thin）：${String(error)}`)
+    return false
+  }
+}
+
 export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}): void {
   // volatile 字段在解析结果里是引用对象，必须先取快照再当纯数据用
   const config = resolveConfig(rawConfig)
@@ -335,6 +500,34 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   )
   if (runtime.appliedMigrations().length > 0) {
     always(`已应用迁移：${runtime.appliedMigrations().map((v) => `v${String(v)}`).join(', ')}`)
+  }
+
+  // ①b 启动回滚（PLAN §15）：**开库之后、注册任何工具之前**。
+  //
+  // 上一次进程如果在"压缩事务动手到一半"时死掉，库里会残留 `phase='started'` 的运行
+  // （可能已经推进过 epoch、写过中期条目）。不在启动时回滚到上一个完整 epoch 的话，
+  // 模型会在一个**半写**的库上做决策 —— 而面板一直在提示这件事
+  // （`admin/queries-memory.ts` 的"启动回滚还没跑成功"），只是**从来没有人真的调过它**。
+  //
+  // 它放在这里而不是 `openDatabase()` 里的理由：回滚是**带业务语义**的动作
+  // （要按 epoch 逐条撤销），存储层不该替调用方决定什么时候做。
+  try {
+    const recovered = recoverPendingCompactions(runtime.db)
+    if (recovered.length === 0) {
+      log('启动回滚：没有未完成的压缩事务（库是完整的）')
+    } else {
+      always(`⚠️ 启动回滚：${String(recovered.length)} 个未完成的压缩事务已回滚到上一个完整 epoch`)
+      for (const rolled of recovered) {
+        log(
+          `  · ${rolled.runId}：删中期 ${String(rolled.deletedMidEntries)} 条、恢复碎片 ${String(rolled.restoredFragments)} 个、` +
+            `删长期 ${String(rolled.deletedLongEntries)} 条、epoch 回到 ${String(rolled.epochRestoredTo)}`,
+        )
+      }
+    }
+  } catch (error) {
+    // 回滚失败意味着"库里可能还有半写的条目"——这是**系统性故障**，必须显式喊出来。
+    // 但**不阻止插件加载**：记忆的读写仍然有价值，静默降级比直接不加载好。
+    always(`❌ 启动回滚失败：${String(error)}（库里可能残留半写的压缩事务）`)
   }
 
   runtimeRegistry.set(dbPath, runtime)
@@ -480,6 +673,31 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   // **拿不到钩子不是致命错误**（监控是加固，不是记忆本体），
   // 但**必须让人看见** —— 静默的话，"在跑"和"没挂上"从日志上看一模一样。
   registerLoopGuard(ctx, { log, always, disposers })
+
+  // ③d 大工具结果截断层（PLAN §3.2）——
+  //
+  // **这是唯一能覆盖宿主自带工具的接缝**（`tools/post-execute` + `prepend: true`）——
+  // 也就是真正会产出"完整日志 / 完整列表 / 原始报错"的那些工具
+  // （`pwsh` / `read` / `web_fetch` / 子代理输出）。
+  //
+  // 不挂的话：宿主工具的大结果**整段进上下文**，而 `recall_full` 永远 `found:false`。
+  registerToolResultSpill(ctx, runtime, { log, always, disposers })
+
+  // ③d 轮次记账（本轮修复的 A + B 两条的**唯一接线点**）
+  //
+  // `beginTurn()` / `observeShortTokens()` 以前只被测试调用 ⇒ 生产里
+  // `acct_short_tokens`、`acct_turns_since_compaction`、`recallThisTurn` 全是死的
+  // ⇒ 模型自主压缩一律 `too_thin`、recall 额度永不重置。
+  // 这里把它们接到宿主的 `turn/start` / `turn/end` 上（见该函数的模块注释）。
+  registerTurnAccounting(ctx, runtime, { log, always, disposers })
+
+  // ③e 沉降定时循环（E 的"中期 → 长期自动沉降"那一半）
+  //
+  // `runtime.settle()` 以前只有验收测试在调 —— 也就是说"沉降"只存在于测试里。
+  // 这里起一个**插件侧**的低频维护循环（与 gateway 的 blob 沉降循环分工不同：
+  // 那边搬文件、这边搬库里的条目）。反注册器进 disposers ⇒ 卸载时真的停表。
+  const settleTimer = startSettleTimer(runtime, { log, always, env: process.env })
+  disposers.push(settleTimer.stop)
 
   // ④ 面板接口**不在这里注册** —— 它需要 `connection` 服务，而该服务只由 `dsh-web-app` 提供。
   //    见 `./panel-plugin.ts`：那是独立的一行插件，由 web profile 显式挂载。

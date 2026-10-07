@@ -40,6 +40,8 @@ import {
   resolveTierRoots,
   settleBlobs,
   settlePolicyFromEnv,
+  longSettlePolicyFromEnv,
+  settleLongEntries,
   type MoveFile,
 } from '@forlife/store'
 
@@ -92,6 +94,22 @@ export interface SettleTickResult {
   readonly failures: readonly string[]
   /** 碎片维护：合并了几次、淘汰了几条、拒删了几条。 */
   readonly fragments?: { readonly merged: boolean; readonly evicted: number; readonly refused: number; readonly orphans: number }
+  /**
+   * 长期记忆的 HDD 沉降（PLAN §6.3 的"定时任务扫描"）。
+   *
+   * **与 blob 沉降分开报**：两者的失败含义不同 ——
+   * blob 失败是"文件没搬成"，长期条目失败是"那条记忆还在 SSD 上"（可重试，不是丢数据），
+   * 混在一个数字里就分不出是哪一类出了事。
+   */
+  readonly longTerm?: {
+    readonly settled: number
+    readonly skipped: number
+    readonly failed: number
+    readonly failures: readonly string[]
+    /** 归档实际落在哪（冷层退回时它和热数据在同一块盘上，日志要能看出来）。 */
+    readonly coldRoot: string
+    readonly fellBack: boolean
+  }
 }
 
 /** 沉降循环。 */
@@ -189,7 +207,51 @@ export function startSettleLoop(options: {
       log(`碎片维护异常（沉降不受影响）：${String(error).slice(0, 160)}`)
     }
 
-    return { moved, skipped, failed, failures, ...(fragments === undefined ? {} : { fragments }) }
+    // ── 长期记忆的 HDD 沉降（PLAN §6.3 的"定时任务扫描"那一半）──────────
+    //
+    // 为什么**接在这个循环里**（而不是插件侧另起一个定时器）：
+    //  1. 这里已经在做"低频运维动作"的定时，并且已经有了三条纪律
+    //     （没配就不启动 / 自己接住异常 / 一轮跑完再排下一轮）；
+    //  2. **冷层根路径（`FORLIFE_ROOT_COLD`）是这个进程解析的** ——
+    //     插件进程（dsh 宿主）不保证拿得到那套环境变量，而"不知道往哪搬"时
+    //     唯一诚实的做法是不搬；
+    //  3. 插件侧 `MemoryRuntime.settle()` 是**中期→长期**的沉降（另一件事），
+    //     它跑在宿主进程里、可能被多个 profile 各起一份；HDD 沉降是全局运维，
+    //     只该有一个owner。**两件事共用一个循环**也让日志能对上时间线。
+    //
+    // 顺序放在最后：它最慢（要写文件），而前面两件事不该等它。
+    let longTerm: SettleTickResult['longTerm']
+    try {
+      const coldRoot = roots.roots.cold
+      const fellBack = roots.fellBack.some((f) => f.tier === 'cold')
+      const policy = longSettlePolicyFromEnv(options.env)
+      const settledOutcomes = await settleLongEntries({
+        db: options.db,
+        coldRoot,
+        policy,
+        log,
+        ...(options.now === undefined ? {} : { now: options.now }),
+      })
+      const settled = settledOutcomes.filter((o) => o.action === 'settled').length
+      const longSkipped = settledOutcomes.filter((o) => o.action === 'skipped').length
+      const longFailed = settledOutcomes.filter((o) => o.action === 'failed').length
+      const longFailures = settledOutcomes.filter((o) => o.action === 'failed').map((o) => `${o.id}：${o.reason}`)
+      longTerm = { settled, skipped: longSkipped, failed: longFailed, failures: longFailures, coldRoot, fellBack }
+      if (settled > 0 || longFailed > 0) {
+        log(`维护一轮（长期记忆沉降）：沉了 ${String(settled)} 条、跳过 ${String(longSkipped)} 条、失败 ${String(longFailed)} 条`)
+      }
+      if (settled > 0 && fellBack) {
+        // **不假装有 HDD**：库里只有 ssd/hdd 两个值，表达不了"落在哪块盘"，
+        // 所以退回时必须在日志里说清 —— 否则运维会以为冷数据真的在另一块盘上。
+        log(`⚠️ 冷层退回了（没配 FORLIFE_ROOT_COLD）：这 ${String(settled)} 条的归档实际落在 ${coldRoot}，与热数据同一块盘`)
+      }
+      for (const reason of longFailures) log(`长期沉降失败：${reason}`)
+    } catch (error) {
+      // **长期沉降失败不该让 blob 沉降/碎片维护的结果丢掉**（三件事互相独立）
+      log(`长期记忆沉降异常（其余维护不受影响）：${String(error).slice(0, 160)}`)
+    }
+
+    return { moved, skipped, failed, failures, ...(fragments === undefined ? {} : { fragments }), ...(longTerm === undefined ? {} : { longTerm }) }
   }
 
   /**
@@ -215,7 +277,7 @@ export function startSettleLoop(options: {
   }
 
   schedule()
-  log(`维护循环已启动：每 ${String(Math.round(config.intervalMs / 60_000))} 分钟一轮（沉降每次最多 ${String(config.limit)} 条 + 碎片合并/淘汰）`)
+  log(`维护循环已启动：每 ${String(Math.round(config.intervalMs / 60_000))} 分钟一轮（blob 沉降每次最多 ${String(config.limit)} 条 + 长期记忆 HDD 沉降每次最多 ${String(longSettlePolicyFromEnv(options.env).batchSize)} 条 + 碎片合并/淘汰）`)
 
   return {
     config,

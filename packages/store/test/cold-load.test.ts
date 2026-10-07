@@ -178,6 +178,30 @@ test('找不到的条目 ⇒ found:false 且说清', async () => {
   }
 })
 
+test('★★ content 是 NULL 且没有归档 ⇒ **报失败**（不是"成功但正文为空"）', async () => {
+  const opened = setup()
+  try {
+    // 沉降过（content 被置空）但归档路径也丢了 —— 这是**最危险的一种行**：
+    // 早先这里返回 `{found: true, content: null}`，调用方会把它当成功，
+    // 于是模型拿到一条空正文 ⇒ **看起来就是"这条记忆是空的"**（静默的数据丢失）。
+    opened.db
+      .prepare(
+        `INSERT INTO long_memory_entries (id, content, summary, entities, source_mid_ids, storage_tier, archive_path, status, created_at)
+         VALUES ('L-null', NULL, '摘要', '[]', '[]', 'hdd', NULL, 'active', ?)`,
+      )
+      .run(AT.toISOString())
+    const r = await loadLongEntry({ db: opened.db, id: 'L-null', now: fakeClock(4) })
+    assert.equal(r.found, false, '**必须报失败**')
+    assert.equal(r.content, undefined, '**绝不能返回 null 当正文**')
+    assert.equal(r.source, 'none', '没有正文来源就如实报 none')
+    assert.match(r.note, /正文不在了/)
+    // 失败也要记延迟（失败的那次往往最慢）
+    assert.equal(loadStats(opened.db).find((s) => s.tier === 'hdd')?.loads, 1)
+  } finally {
+    opened.db.close()
+  }
+})
+
 test('空库 ⇒ 统计为空，不是报错', () => {
   const opened = setup()
   try {
