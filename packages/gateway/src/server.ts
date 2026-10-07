@@ -24,6 +24,7 @@ import { openDatabase } from '@forlife/store'
 
 import { createAdminApi } from './admin/api.ts'
 import { LogBuffer } from './admin/log-buffer.ts'
+import { redact } from './redact.ts'
 import { serveStatic } from './admin/static.ts'
 import { startGatewayRuntime, type RunningGatewayRuntime } from './runtime.ts'
 
@@ -124,9 +125,19 @@ export function createAdminServer(options: AdminServerOptions): {
   // 面板的「实时日志」页读的是这个**内存缓冲**（不读日志文件：
   // 文件位置随部署形态变、还可能被轮转截断，而"最近发生了什么"才是排障要的）
   const logBuffer = new LogBuffer(500)
+  /**
+   * **唯一的日志汇聚点** —— 脱敏放在这里，两条出口就都被覆盖。
+   *
+   * 挂在某一个出口上是不够的：漏掉的那条照样把原文写进日志文件，
+   * 而**日志一旦写下去就收不回来了**（会被复制、打包、发给别人看）。
+   *
+   * 这也正是 `log-buffer.ts` 那条判断的落点：
+   * "脱敏属于**写入侧**的职责" —— 这里就是写入侧。
+   */
   const log = (message: string): void => {
-    logBuffer.push(message)
-    options.log?.(message)
+    const safe = redact(message)
+    logBuffer.push(safe)
+    options.log?.(safe)
   }
   const host = options.host ?? '127.0.0.1'
   const port = options.port ?? 8081

@@ -15,6 +15,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { readFileSync } from 'node:fs'
+
 import { findSensitive, redact, redactingLogger, redactValue } from '../src/redact.ts'
 
 test('★ 密钥**什么都不留**（留头留尾等于泄露了它的一部分）', () => {
@@ -125,4 +127,16 @@ test('★ 全局正则的 lastIndex 不会污染下一次调用（踩过的坑�
   const dirty = 'https://multimedia.qq.com/a.jpg'
   assert.ok(findSensitive(dirty).length > 0, '第一次要命中')
   assert.ok(findSensitive(dirty).length > 0, '**第二次也要命中**（lastIndex 必须重置）')
+})
+
+test('★★ 接线守卫：脱敏真的挂在**唯一汇聚点**上（源码级断言）', () => {
+  // 这条测的是"**接线有没有被摘掉**" —— 而它是本项目反复出问题的地方
+  // （whitelist 参数被丢、onConnectionState 被构造函数丢掉，两次都是单测全绿）。
+  //
+  // 纯函数测不出"有没有被调用"。所以这里直接读源码断言接线还在。
+  const src = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')
+  assert.match(src, /const safe = redact\(message\)/, '**脱敏必须挂在 log 汇聚点上**')
+  assert.match(src, /logBuffer\.push\(safe\)/, '内存缓冲那条出口也要脱敏')
+  assert.match(src, /options\.log\?\.\(safe\)/, '文件 sink 那条出口也要脱敏')
+  // **两条出口都要** —— 只挂一条的话，另一条照样把原文写进日志文件
 })
