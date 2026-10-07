@@ -13,6 +13,18 @@
 	admin unix//run/caddy/admin.sock
 	# autosave 默认开启，会把运行时 JSON 写进配置目录，--resume 时可能冒充真源
 	persist_config off
+	# ⚠️ **ACME_EMAIL 必须设置** —— 不设的话 `{$ACME_EMAIL}` 展开成空串，
+	# 这行变成 `email `（有指令没参数）⇒ **Caddy 直接解析失败、起不来**。
+	# 而报错是 `wrong argument count ... after 'email'` ——
+	# **它完全没提环境变量**，所以别去改这行，去设变量。
+	#
+	# 变量没设时 **`docker compose up` 会先警告**：
+	#   `The "ACME_EMAIL" variable is not set. Defaulting to a blank string.`
+	# **先看 compose 的警告**，再看 Caddy 的解析错误。
+	#
+	# （试过用 `${VAR:?...}` 让 compose 直接拒绝并带消息，但这个 compose 版本
+	#  **对 `:?` 一律报 `invalid interpolation format`** —— 报错本身又变成
+	#  另一条看不懂的错误。所以退回普通 `${VAR}` + 注释。）
 	email {$ACME_EMAIL}
 }
 
