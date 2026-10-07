@@ -38,6 +38,14 @@ import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { queryWakes } from './queries-wakes.ts'
 import {
+  activeLock,
+  finishMigration,
+  getMigrationRun,
+  listResumable,
+  migrateBatch,
+  rollbackMigration,
+  startMigration,
+  switchReferences,
   archiveDirFromEnv,
   archiveEntries,
   listArchives,
@@ -545,6 +553,132 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         json(res, 200, { ok: true })
         return true
       }
+
+        // ── 迁移（PLAN §2.4 + 阶段 9 交付物 2）──────────────────────────
+        //
+        // **四个动作分开**（不是一个 /migrate 带 action）：
+        // 分开的话权限与审计能逐个对待 —— start/resume/rollback 改数据（要守卫+审计），
+        // status 只读。合成一个的话审计日志里分不出谁做了什么。
+        if (route === '/migrate-status' && method === 'GET') {
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const resumable = listResumable(db)
+          const lock = activeLock(db)
+          json(res, 200, {
+            ok: true,
+            // **锁要报出来** —— 有锁时 core 侧会拒绝新的沉降/blob 写入，
+            // 面板上看不到它的话，用户会以为"沉降坏了"
+            lock: lock === undefined ? null : { runId: lock.runId, note: lock.note },
+            resumable: resumable.map((r) => ({
+              id: r.id,
+              fromTier: r.from_tier,
+              toTier: r.to_tier,
+              status: r.status,
+              totalItems: r.total_items,
+              copiedItems: r.copied_items,
+              estimatedBytes: r.estimated_bytes,
+              copiedBytes: r.copied_bytes,
+              startedAt: r.started_at,
+              note: r.note,
+            })),
+          })
+          return true
+        }
+
+        if (route === '/migrate-start' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          // **收窄成 StorageTier** —— roots 是 Record<StorageTier, string>，
+          // 用 string 索引会被 TS 拦（那是好事：它挡住了拼错的层名）
+          const rawFrom = typeof body?.fromTier === 'string' ? body.fromTier : 'hot'
+          const rawTo = typeof body?.toTier === 'string' ? body.toTier : 'cold'
+          const fromTier = rawFrom as 'hot' | 'warm' | 'cold'
+          const toTier = rawTo as 'hot' | 'warm' | 'cold'
+          if (!['hot', 'warm', 'cold'].includes(fromTier) || !['hot', 'warm', 'cold'].includes(toTier)) {
+            json(res, 400, { error: 'tier 只能是 hot / warm / cold' })
+            return true
+          }
+          if (fromTier === toTier) {
+            json(res, 400, { error: 'fromTier 与 toTier 不能相同' })
+            return true
+          }
+          // **根路径从环境变量来**（不接受请求里的任意路径 —— 那是提权）
+          let roots
+          try {
+            roots = resolveTierRoots(process.env)
+          } catch (error) {
+            json(res, 400, { error: `读不到分层根路径：${String(error).slice(0, 120)}` })
+            return true
+          }
+          const result = startMigration(db, {
+            fromTier,
+            toTier,
+            fromRoot: roots.roots[fromTier],
+            toRoot: roots.roots[toTier],
+            // 目标路径布局与沉降同一套（sha 前两位分片）
+            toPathFor: (sha256, fromPath) => {
+              const dot = fromPath.lastIndexOf('.')
+              const ext = dot === -1 ? '' : fromPath.slice(dot)
+              const root = roots.roots[toTier].replace(/[\\/]+$/, '')
+              const sep = root.includes('\\') ? '\\' : '/'
+              return `${root}${sep}${sha256.slice(0, 2)}${sep}${sha256}${ext}`
+            },
+          })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `迁移 ${fromTier}→${toTier}：${result.ok ? '已建' : '失败'}｜${result.reason.slice(0, 120)}`,
+          })
+          json(res, result.ok ? 200 : 400, result)
+          return true
+        }
+
+        // 续传：搬一批（**中断后再调它就是续传**）
+        if (route === '/migrate-resume' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+          if (runId === '') { json(res, 400, { error: '必须给 runId' }); return true }
+          const run = getMigrationRun(db, runId)
+          if (run === undefined) { json(res, 404, { error: `没有这个 run：${runId}` }); return true }
+          const batch = await migrateBatch(db, { runId, copyFile: moveFileWithVerify, limit: 200 })
+          // **搬完且没有剩余 ⇒ 自动切换并收尾**；否则留在可续传状态
+          let finished: { ok: boolean; reason: string } | undefined
+          let switched: { switched: number; skipped: number } | undefined
+          if (batch.remaining === 0) {
+            switched = switchReferences(db, runId)
+            finished = finishMigration(db, runId)
+          }
+          audit(db, {
+            action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path,
+            detail: `迁移续传 ${runId}：本批通过 ${String(batch.verified)}、失败 ${String(batch.failed)}、剩 ${String(batch.remaining)}`,
+          })
+          json(res, 200, { ok: true, batch, ...(switched === undefined ? {} : { switched }), ...(finished === undefined ? {} : { finished }) })
+          return true
+        }
+
+        // 回滚：**把引用切回旧根，不删新数据**
+        if (route === '/migrate-rollback' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+          if (runId === '') { json(res, 400, { error: '必须给 runId' }); return true }
+          const result = rollbackMigration(db, runId)
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `迁移回滚 ${runId}：${result.ok ? `已回滚 ${String(result.restored)} 条` : result.reason.slice(0, 100)}`,
+          })
+          json(res, result.ok ? 200 : 400, result)
+          return true
+        }
 
         // ── 归档与提升（PLAN 阶段 9 交付物 3）──────────────────────────
         //
