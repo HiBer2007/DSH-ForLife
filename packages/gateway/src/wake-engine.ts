@@ -197,22 +197,60 @@ export function createWakeEngine(options: WakeEngineOptions): WakeEngine {
     return { triggerId: trigger.id, title: trigger.title, decision: result.ok ? 'fired' : 'failed', reason: result.reason }
   }
 
+  /**
+   * **正在派发中的触发器**（防重入）。
+   *
+   * ## 为什么必须有它（真机烧了 141 次模型调用）
+   *
+   * `tick()` 每 `tickMs`（默认 1 秒）跑一次，而它要 **await 派发** ——
+   * 派发一次真模型可能要 **300 秒**（headless 子进程的超时就是 300s）。
+   * 而 `next_fire_at` 是在**派发完成后**才推进的（下面 `markFired` 那两行）。
+   *
+   * ⇒ 在那 300 秒里，**每一个 tick 都会重新读到同一个"已到点"的触发器，
+   * 再派发一次** ⇒ 300 个并发派发。
+   *
+   * **真机证据**（2026-10-06，触发器 `wt_e34bb82e…`）：
+   * ```
+   * 14:46:55 failed: 轮次超时（300000ms）
+   * 14:46:56 failed: 轮次超时（300000ms）
+   * 14:46:57 fired:  定时到点
+   * 14:46:58 failed: 轮次超时（300000ms）
+   * …
+   * fire_count = 141
+   * ```
+   * **每秒一条，正好等于 tick 间隔。** 141 次真实模型调用 —— **这是会烧额度的 bug**。
+   *
+   * ## 为什么用"在飞集合"而不是一把大锁
+   *
+   * 一把锁（`if (ticking) return`）也能止住重放，但它会让**一条慢触发器
+   * 阻塞所有其它触发器** 300 秒 —— 那等于把"重复唤醒"换成了"该醒的不醒"。
+   * 按 id 记在飞，则只挡住**正在派发的那一条**，其余照常。
+   */
+  const inFlight = new Set<string>()
+
   const tick = async (): Promise<readonly TickOutcome[]> => {
     const outcomes: TickOutcome[] = []
     const at = now()
 
     for (const trigger of listDueTriggers(db, at)) {
-      const spec = safeParse(trigger.spec)
-      // **错过触发的策略**：到这里说明它已经到点（可能迟到很久）。
-      // 只醒一次，并把"迟到了多久"写进 payload —— 用户能看出这不是准点提醒。
-      const scheduledAt = trigger.next_fire_at
-      const lateMs = scheduledAt === null ? 0 : at.getTime() - new Date(scheduledAt).getTime()
-      const payload: Record<string, unknown> = {
-        scheduledAt,
-        firedAt: at.toISOString(),
-        ...(lateMs > 60_000 ? { lateByMs: lateMs, lateNote: '原定时间已过（可能是停机顺延），只补一次' } : {}),
+      // ★ **防重入**：这一条已经在派发中就跳过 —— 否则每个 tick 都会重放它
+      if (inFlight.has(trigger.id)) continue
+      inFlight.add(trigger.id)
+      try {
+        const spec = safeParse(trigger.spec)
+        // **错过触发的策略**：到这里说明它已经到点（可能迟到很久）。
+        // 只醒一次，并把"迟到了多久"写进 payload —— 用户能看出这不是准点提醒。
+        const scheduledAt = trigger.next_fire_at
+        const lateMs = scheduledAt === null ? 0 : at.getTime() - new Date(scheduledAt).getTime()
+        const payload: Record<string, unknown> = {
+          scheduledAt,
+          firedAt: at.toISOString(),
+          ...(lateMs > 60_000 ? { lateByMs: lateMs, lateNote: '原定时间已过（可能是停机顺延），只补一次' } : {}),
+        }
+        outcomes.push(await evaluateAndFire(trigger, lateMs > 60_000 ? '错过的定时（已顺延）' : '定时到点', payload, true))
+      } finally {
+        inFlight.delete(trigger.id)
       }
-      outcomes.push(await evaluateAndFire(trigger, lateMs > 60_000 ? '错过的定时（已顺延）' : '定时到点', payload, true))
     }
 
     return outcomes
