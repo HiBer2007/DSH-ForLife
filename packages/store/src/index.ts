@@ -281,3 +281,9 @@ export {
   planFragmentMaintenance,
 } from './fragment-maintenance.ts'
 export type { EvictableFragment, FragmentPlan, FragmentPolicy } from './fragment-maintenance.ts'
+
+// ── 归档导出与冷数据提升（PLAN 阶段 9 交付物 3）──────────────────────
+// ⚠️ **偏离 PLAN**：归档格式是 NDJSON + manifest，**不是 Parquet** ——
+// 仓库里没有 Parquet 依赖，而手写写入器的正确性风险太高。理由见 archive.ts 模块头。
+export { archiveDirFromEnv, archiveEntries, listArchives, readArchive, recoverEntry } from './archive.ts'
+export type { ArchiveManifest, ArchiveResult } from './archive.ts'
