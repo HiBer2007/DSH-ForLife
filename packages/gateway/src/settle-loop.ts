@@ -32,6 +32,9 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import {
   evictFragments,
+  fragmentThresholdFromEnv,
+  markFragmentCleaned,
+  shouldRunFragmentMaintenance,
   mergeFragmentIndex,
   planFragmentMaintenance,
   resolveTierRoots,
@@ -156,18 +159,30 @@ export function startSettleLoop(options: {
     // 合并不动数据，先做它可以让后面的淘汰在一个更紧凑的索引上跑。
     let fragments: SettleTickResult['fragments']
     try {
-      const merged = mergeFragmentIndex(options.db)
-      // **先算计划再执行** —— 删除不可逆，计划是唯一能提前发现"算法写错了"的机会
-      const plan = planFragmentMaintenance(options.db, fragmentPolicyFromEnv(options.env))
-      const evicted = evictFragments(options.db, plan.evictable.map((f) => f.id))
-      fragments = {
-        merged: merged.ok,
-        evicted: evicted.evicted,
-        refused: evicted.refused.length,
-        orphans: plan.orphaned.length,
-      }
-      if (evicted.evicted > 0 || plan.orphaned.length > 0) {
-        log(`碎片维护：淘汰 ${String(evicted.evicted)} 条、拒删 ${String(evicted.refused.length)} 条、归宿已丢 ${String(plan.orphaned.length)} 条｜${plan.reason}`)
+      // ★ **超限才动手**（验收标准 #4）—— 不是"到点就扫"。
+      //
+      // 差别在**代价**："到点就扫"每 30 分钟全表扫一遍，**大部分时候什么也没做**；
+      // "超限才动手"平时不扫，攒到阈值才扫 —— 而那正是"超限"要表达的意思。
+      const decision = shouldRunFragmentMaintenance(options.db, fragmentThresholdFromEnv(options.env))
+      if (!decision.shouldRun) {
+        fragments = { merged: false, evicted: 0, refused: 0, orphans: 0 }
+        log(`碎片维护跳过：${decision.reason}`)
+      } else {
+        const merged = mergeFragmentIndex(options.db)
+        // **先算计划再执行** —— 删除不可逆，计划是唯一能提前发现"算法写错了"的机会
+        const plan = planFragmentMaintenance(options.db, fragmentPolicyFromEnv(options.env))
+        const evicted = evictFragments(options.db, plan.evictable.map((f) => f.id))
+        fragments = {
+          merged: merged.ok,
+          evicted: evicted.evicted,
+          refused: evicted.refused.length,
+          orphans: plan.orphaned.length,
+        }
+        if (evicted.evicted > 0 || plan.orphaned.length > 0) {
+          log(`碎片维护：淘汰 ${String(evicted.evicted)} 条、拒删 ${String(evicted.refused.length)} 条、归宿已丢 ${String(plan.orphaned.length)} 条｜${plan.reason}`)
+        }
+        // **记下"刚清理过"** —— 否则时间兜底会在每次重启后又触发一次
+        markFragmentCleaned(options.db)
       }
     } catch (error) {
       // **碎片维护失败不该让沉降也失败** —— 两件事互相独立

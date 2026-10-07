@@ -18,7 +18,14 @@ import { openDatabase } from '@forlife/store'
 
 import { settleLoopConfigFromEnv, startSettleLoop } from '../src/settle-loop.ts'
 
-const ENV = { FORLIFE_ROOT_HOT: 'D:\\hot', FORLIFE_ROOT_WARM: 'D:\\warm', FORLIFE_ROOT_COLD: 'D:\\cold' }
+const ENV = {
+  FORLIFE_ROOT_HOT: 'D:\\hot',
+  FORLIFE_ROOT_WARM: 'D:\\warm',
+  FORLIFE_ROOT_COLD: 'D:\\cold',
+  // **把阈值放宽**：测试只造 1 条碎片，而默认最小条数是 100（**防小库抖动**）——
+  // 不放宽的话维护会被正确地跳过，而测试想验的是"维护跑起来之后的行为"。
+  FORLIFE_FRAGMENT_MIN_COUNT: '1',
+}
 
 /** 造一个 db + 一条该沉降的 blob。 */
 function setup(): ReturnType<typeof openDatabase> {

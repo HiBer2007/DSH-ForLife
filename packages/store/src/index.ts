@@ -306,3 +306,13 @@ export {
   switchReferences,
 } from './migration.ts'
 export type { BatchResult, CopyFile, JournalEntry, MigrationRun, PreflightResult } from './migration.ts'
+
+// ── 碎片阈值触发（阶段 9 验收标准 #4）────────────────────────────────
+export {
+  DEFAULT_FRAGMENT_THRESHOLD,
+  fragmentThresholdFromEnv,
+  LAST_FRAGMENT_CLEAN_KEY,
+  markFragmentCleaned,
+  shouldRunFragmentMaintenance,
+} from './fragment-threshold.ts'
+export type { FragmentThresholdPolicy, ThresholdDecision } from './fragment-threshold.ts'
