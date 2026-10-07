@@ -45,6 +45,8 @@ export class LogBuffer {
   readonly #capacity: number
   readonly #lines: LogLine[] = []
   #seq = 0
+  /** 订阅者（SSE 客户端）。**用 Set** —— 退订是 O(1)，且不会重复。 */
+  readonly #subs = new Set<(line: LogLine) => void>()
 
   constructor(capacity = 500) {
     this.#capacity = Math.max(10, capacity)
@@ -55,6 +57,18 @@ export class LogBuffer {
     this.#seq += 1
     this.#lines.push({ seq: this.#seq, at: at.toISOString(), level: guessLevel(text), text })
     if (this.#lines.length > this.#capacity) this.#lines.splice(0, this.#lines.length - this.#capacity)
+    // ★ **通知订阅者**（SSE 靠它推送）——
+    // **绝不让它影响写日志**：订阅者抛错就吞掉（日志写不进去比丢一条推送严重得多）。
+    const line = this.#lines[this.#lines.length - 1]
+    if (line !== undefined) {
+      for (const sub of this.#subs) {
+        try {
+          sub(line)
+        } catch {
+          // 故意吞掉：见上
+        }
+      }
+    }
   }
 
   /** 取最近若干条（按时间正序返回，便于直接从上往下读）。 */
@@ -81,6 +95,27 @@ export class LogBuffer {
   /** 自某个序号之后的新行（前端增量拉取用）。 */
   since(seq: number, limit = 500): readonly LogLine[] {
     return this.#lines.filter((line) => line.seq > seq).slice(0, limit)
+  }
+
+  /**
+   * 订阅新行（SSE 用）。**返回退订函数**。
+   *
+   * ★ **必须退订** —— 不退的话 `push()` 每次都遍历一堆死订阅者
+   * （**内存与 CPU 双漏**）。
+   *
+   * **不做缓冲** —— 缓冲的责任在调用方（SSE 那边有有界队列），
+   * 因为"多大的缓冲合适"取决于那个连接，而不是日志缓冲该管的事。
+   */
+  subscribe(listener: (line: LogLine) => void): () => void {
+    this.#subs.add(listener)
+    return (): void => {
+      this.#subs.delete(listener)
+    }
+  }
+
+  /** 当前订阅者数（排障用：**连接漏了会在这里显形**）。 */
+  get subscriberCount(): number {
+    return this.#subs.size
   }
 
   /** 当前序号（前端记住它，下次只要新的）。 */

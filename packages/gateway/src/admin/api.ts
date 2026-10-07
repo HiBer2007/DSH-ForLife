@@ -66,6 +66,7 @@ import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
+import { openLogStream } from './sse.ts'
 import type { PortService } from '../port-service.ts'
 import { enqueueOutbound } from '../outbox.ts'
 import { queryCompaction, queryMemory } from './queries-memory.ts'
@@ -1472,9 +1473,32 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
       }
 
       // ── 实时日志（内存缓冲；since 用于增量拉取）────────────────────────
-      if (route === '/logs' && method === 'GET') {
+      // ── ★ SSE：实时日志推送（替代 2 秒轮询）─────────────────────────
+      //
+      // **鉴权与下面 /logs 完全一致** —— SSE 是个长连接，
+      // **忘了鉴权就等于开了一个持续泄露日志的口子**。
+      //
+      // **必须放在 /logs 之前**：TS 会在 /logs 那个分支里把 `route` 收窄成
+      // `'/logs'`，之后再比 `'/logs/stream'` 会被判成"不可能相等"（TS2367）。
+      if (route === '/logs/stream' && method === 'GET') {
         const session = requireSession(req, res, path)
         if (session === undefined) return true
+        const buffer = options.logBuffer
+        if (buffer === undefined) {
+          // **没有缓冲就说没有** —— 不能开一个永远不说话的流
+          // （前端会以为"连上了但没日志"，而真相是"这台根本没配缓冲"）
+          json(res, 200, { error: '本进程没有日志缓冲' })
+          return true
+        }
+        const since = Number(url.searchParams.get('since') ?? '0')
+        openLogStream(req, res, { logBuffer: buffer, since: Number.isFinite(since) ? since : 0 })
+        // **返回 true**：语义是"这个请求我处理了"。
+        // 流不会被掐断 —— 收尾在 SSE 自己的 close 事件里。
+        return true
+      }
+
+      if (route === '/logs' && method === 'GET') {
+        const session = requireSession(req, res, path)
         const buffer = options.logBuffer
         if (buffer === undefined) {
           json(res, 200, { lines: [], sequence: 0, size: 0, capacity: 0 })
