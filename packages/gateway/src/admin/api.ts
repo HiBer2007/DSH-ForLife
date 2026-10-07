@@ -37,7 +37,17 @@ import { buildOverview } from './overview.ts'
 import { queryMedia } from './queries-media.ts'
 import { queryConversation } from './queries-conversation.ts'
 import { queryWakes } from './queries-wakes.ts'
-import { runBackup, verifyBackup } from '@forlife/store'
+import {
+  archiveDirFromEnv,
+  archiveEntries,
+  listArchives,
+  moveFileWithVerify,
+  recoverEntry,
+  resolveTierRoots,
+  runBackup,
+  stampFor,
+  verifyBackup,
+} from '@forlife/store'
 import { createDshStatusProbe } from '../dsh-status.ts'
 import { probeAllEndpoints } from '../endpoint-health.ts'
 import { createExternalWakeSource } from '../wake-external-source.ts'
@@ -535,6 +545,78 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         json(res, 200, { ok: true })
         return true
       }
+
+        // ── 归档与提升（PLAN 阶段 9 交付物 3）──────────────────────────
+        //
+        // **归档目录只来自环境变量** —— 与备份同一套安全模型：
+        // 允许任意路径的话，拿到管理会话的人就能把文件写到系统任意位置（那是提权）。
+        if (route === '/archive' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+
+          const base = process.env['FORLIFE_ARCHIVE_DIR']
+          if (base === undefined || base.trim() === '') {
+            json(res, 400, { error: '没有配置 FORLIFE_ARCHIVE_DIR —— 归档目录必须由部署方指定' })
+            return true
+          }
+          const body = await readJsonBody(req)
+          const tier = typeof body?.tier === 'string' && body.tier.trim() !== '' ? body.tier.trim() : 'cold'
+          if (!['hot', 'warm', 'cold'].includes(tier)) {
+            json(res, 400, { error: 'tier 只能是 hot / warm / cold' })
+            return true
+          }
+          const at = new Date()
+          const dir = archiveDirFromEnv(process.env, stampFor(at))
+          if (dir === undefined) {
+            json(res, 400, { error: 'FORLIFE_ARCHIVE_DIR 无效' })
+            return true
+          }
+          const result = await archiveEntries({ db, targetDir: dir, tier })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `归档导出（${tier}）：${result.ok ? '成功' : '失败'}｜${result.reason.slice(0, 120)}`,
+          })
+          json(res, result.ok ? 200 : 500, { ...result, tier })
+          return true
+        }
+
+        // 列出已有归档 —— **否则归档就是"写了但没人知道"**
+        if (route === '/archives' && method === 'GET') {
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const base = process.env['FORLIFE_ARCHIVE_DIR']
+          if (base === undefined || base.trim() === '') {
+            json(res, 200, { ok: true, configured: false, archives: [], note: '没有配置 FORLIFE_ARCHIVE_DIR' })
+            return true
+          }
+          const archives = await listArchives(base)
+          json(res, 200, { ok: true, configured: true, dir: base, archives })
+          return true
+        }
+
+        // 把一条冷数据提回热层 —— **只接受单个 id**（见模块头的说明）
+        if (route === '/recover' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          const id = typeof body?.id === 'string' ? body.id.trim() : ''
+          if (id === '') {
+            json(res, 400, { error: '必须给一个 id —— 提升是逐个的（批量提升等于把沉降成果一次抹掉，而没人知道为什么）' })
+            return true
+          }
+          const roots = resolveTierRoots(process.env)
+          const result = await recoverEntry({ db, id, roots, moveFile: moveFileWithVerify })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `提升回热层 ${id}：${result.ok ? '成功' : '失败'}｜${result.reason.slice(0, 100)}`,
+          })
+          json(res, result.ok ? 200 : 400, result)
+          return true
+        }
 
         // ── 备份（PLAN 阶段 9 交付物 7）────────────────────────────────
         //

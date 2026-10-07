@@ -81,6 +81,14 @@ $env:FORLIFE_WORKSPACE_ROOT = if ($env:FORLIFE_WORKSPACE_ROOT) { $env:FORLIFE_WO
 # 备份和源数据在同一块盘上，盘坏了备份一起没。
 $env:FORLIFE_BACKUP_DIR = if ($env:FORLIFE_BACKUP_DIR) { $env:FORLIFE_BACKUP_DIR } else { "$root\.runtime\backups" }
 
+# 归档目录（PLAN 阶段 9 交付物 3）。
+#
+# **必须由部署方指定** —— 接口只接受 tier，不接受任意路径。
+#
+# 归档是"**很久以后才回来读**"的东西，所以它比备份更该放在**另一块盘**上。
+# 开发机默认放仓库内（没有别的盘），生产部署要指到 HDD。
+$env:FORLIFE_ARCHIVE_DIR = if ($env:FORLIFE_ARCHIVE_DIR) { $env:FORLIFE_ARCHIVE_DIR } else { "$root\.runtime\archives" }
+
 $env:FORLIFE_ROOT_HOT = if ($env:FORLIFE_ROOT_HOT) { $env:FORLIFE_ROOT_HOT } else { "$root\.runtime\dsh\forlife\blobs" }
 
 # 驱动：联调阶段用 fake（回复由脚本生成，日志会大声标注）；生产改 headless
