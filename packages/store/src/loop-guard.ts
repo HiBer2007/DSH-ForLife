@@ -158,12 +158,13 @@ export class LoopGuard {
 
     const signals = { samples, distinct, repeatRatio, period, headTailMatch }
 
-    // 样本太少 ⇒ **不下结论**（那是"还没看够"，不是"正常"）
-    if (samples < Math.min(6, this.policy.window)) {
-      return { action: 'ok', reason: `样本不足（${String(samples)} 条），不下结论`, signals }
-    }
-
     // ── ① 周期循环（**最典型的死循环**：短周期反复）──
+    //
+    // ★ **放在"样本数"检查之前** —— 测试抓到的真 bug：
+    // 流式输出是按 `flushAt` 累积成**一条很长的字符串**再喂进来的，
+    // 于是 `samples` 永远是 1。而**周期检测根本不需要多条样本** ——
+    // 一条 400 字的 `abcabcabc...` 就是最典型的死循环，
+    // 却被"样本不足"提前挡掉了。
     if (period > 0) {
       return {
         action: 'stop-and-restart',
@@ -171,6 +172,12 @@ export class LoopGuard {
         signals,
       }
     }
+
+    // 样本太少 ⇒ **不下结论**（那是"还没看够"，不是"正常"）
+    if (samples < Math.min(6, this.policy.window)) {
+      return { action: 'ok', reason: `样本不足（${String(samples)} 条），不下结论`, signals }
+    }
+
 
     // ── ② 高度重复 ──
     if (repeatRatio >= this.policy.repeatRatio && samples >= 8) {
