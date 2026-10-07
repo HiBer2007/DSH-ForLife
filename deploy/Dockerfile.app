@@ -27,6 +27,21 @@
 # ── 阶段 1：构建 ────────────────────────────────────────────────────────
 FROM node:24-alpine AS build
 
+# ★★ 2026-10-07 真机实测（`--no-cache` 冷构建）：**墙钟 33 分 8 秒**，超过「全新部署 ≤30 分钟」。
+#
+# 根因：**容器里没有镜像源** ⇒ 三次拉取全走 `registry.npmjs.org`：
+#   - `npm i -g @deepseek-ai/dsh@0.1.7-rc.2`  → **786 MB，≈15 分钟**
+#   - `pnpm install --frozen-lockfile --prod` → **579 秒**（缓存热时只要 55 秒）
+#   - `corepack` 下 `pnpm-12.3.4.tgz`
+#
+# 宿主 `~/.npmrc` 指向 npmmirror，**但容器读不到它**（干净的 node:24-alpine）。
+# ⇒ 在这里显式设一次，**对所有后续 RUN 生效**。
+#
+# 用 `--global`（落 `/usr/local/etc/npmrc`）而不是写 `~/.npmrc`：
+# 镜像里跑构建的用户可能不是 root，写文件容易写错位置。
+RUN npm config set --global registry https://registry.npmmirror.com \
+ && pnpm config set --global registry https://registry.npmmirror.com
+
 # pnpm 用 corepack（与根 package.json 的 packageManager 字段一致）
 RUN corepack enable
 
