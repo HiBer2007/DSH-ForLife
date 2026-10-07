@@ -35,6 +35,46 @@
 
 ## 二、首次开机
 
+### 0. ★ **先配镜像加速源**（不配的话后面必然失败）
+
+> **国内直连 `registry-1.docker.io` 会超时**：
+> `dialing registry-1.docker.io:443 ... i/o timeout`。
+> **本机就是这样** —— 所以我写的 Dockerfile **一次都没构建成功过**。
+> ⇒ **不配这一步，阶段 10/11 的构建必然失败。**
+
+用 **[毫秒镜像（1ms.run）](https://1ms.run/)** 的加速源：
+
+```bash
+sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak 2>/dev/null || true
+sudo cp /opt/forlife/deploy/docker-daemon.json /etc/docker/daemon.json
+sudo systemctl restart docker
+
+# 验证
+docker pull node:24-alpine
+```
+
+配置在 `deploy/docker-daemon.json`（列了**四个**源，**为了容灾** ——
+单一站点挂掉时还能拉）。
+
+### ⚠️ 它只管 **Docker Hub**
+
+`registry-mirrors` 只对 **Docker Hub 的镜像**生效。本项目里有一个
+**不在 Docker Hub 上**的镜像：
+
+```
+ghcr.io/ggml-org/llama.cpp:server   # 评分器（可选，profiles: [scorer]）
+```
+
+⇒ **那个不会被这个配置加速**，要另外想办法：
+- 用 `docker.1ms.run/ghcr.io/ggml-org/llama.cpp:server` 这种**前缀形式**试试
+  （很多国内加速源支持，**但我没验证过 1ms 是否支持**）；
+- 或者从别处导出镜像再 `docker load`。
+
+### ⚠️ 第三方加速源的固有风险（如实说）
+
+**它能看到你拉了哪些镜像。** 生产环境如果有合规要求，
+应当用**自建 registry 或云厂商的官方加速**，而不是第三方站点。
+
 ### 1. 装依赖
 
 ```bash
