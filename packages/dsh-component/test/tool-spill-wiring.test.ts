@@ -24,13 +24,17 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
+import { MEMORY_TOOL_NAMES } from '../src/tools.ts'
+
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), 'utf8')
 
 test('★★ 接线守卫：`buildMemoryTools` 的每个工具都经过 `withToolResultSpill`', () => {
   const src = read('../src/tools.ts')
   assert.match(src, /const defineSpillingTool = withToolResultSpill\(defineTool, runtime\)/, '**接缝必须真的建起来**')
   const through = (src.match(/= defineSpillingTool\(\{/g) ?? []).length
-  assert.equal(through, 5, `五个记忆工具都必须走接缝（实际 ${String(through)} 个）`)
+  // **不断言字面数字**（加工具就要改测试 ⇒ 改多了人就会闭眼改 ⇒ 断言失去意义）。
+  // 断言"走接缝的定义数 = 注册的工具数"：谁新加一个绕过接缝的工具，这里立刻变红。
+  assert.equal(through, MEMORY_TOOL_NAMES.length, `每个记忆工具都必须走接缝（实际 ${String(through)} 个）`)
   assert.ok(!/= defineTool\(\{/.test(src), '**不能有绕过接缝的工具定义**（那个工具的大结果会直接丢失）')
 })
 

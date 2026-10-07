@@ -1,5 +1,5 @@
 /**
- * 记忆工具（阶段 1 的四个）。
+ * 记忆工具。
  *
  * 全部用 `defineTool` 定义，遵守宿主的三条硬规矩：
  *  1. `output` **必填**，且 `output.render` 是**纯函数**（只做投影，不产生副作用）；
@@ -8,6 +8,19 @@
  *
  * 工具描述（`description`）是写给模型看的"说明书"，所以刻意写得像说明书：
  * 说清什么时候用、什么时候别用、边界在哪。这也是"提示词可编辑"之外唯一由代码控制的引导面。
+ *
+ * ## ⚠️ 兼容性：`recall_longterm` 为什么**同时**有平铺字段与 `budget` 对象
+ *
+ * PLAN §7.1 要的形状是 `{results, budget:{used,limit,remaining,reset_at,queries_this_turn,hint}}`。
+ * 本工具历史上返回的是**拍平**的 `{usedThisTurn, remainingThisTurn, remainingThisCycle}`，
+ * 而且这套平铺已经进了**旧会话的工具结果历史**（模型在上下文里读得到）。
+ *
+ * 处理方式：**以 PLAN 的形状为准，平铺字段作为兼容层保留**。
+ * 理由：① 多几个整数几乎不占 token，而"换掉形状"会让旧历史里的字段突然消失，
+ * 模型对新旧两轮结果的读法会冲突；② `budget` 是权威，平铺只是同源冗余
+ * （两个形状都由 `runtime.budgetDeclaration()` 一处产出，不可能互相矛盾）。
+ * 哪天要删平铺：先确认没有别的读者（2026-10-07 全仓检索 `usedThisTurn` 只命中本文件
+ * 与 runtime 的内部结构 —— 面板读的是数据库，不读工具返回值）。
  *
  * @module forlife-memory/tools
  */
@@ -50,8 +63,28 @@ function clipColdContent(content: string): string {
   return `${content.slice(0, COLD_CONTENT_MAX_CHARS)}…（正文共 ${String(content.length)} 字，已截断到前 ${String(COLD_CONTENT_MAX_CHARS)} 字）`
 }
 
+/** `render` 里读预算声明所需的最小子集（结构化类型，避免和 runtime 循环依赖）。 */
+interface RecallBudgetLines {
+  readonly hint?: string
+  readonly queries_this_turn?: readonly string[]
+}
+
 /**
- * 构造四个记忆工具。
+ * 把预算声明渲染成模型可见的一行（PLAN §7.1「每次工具返回附带」）。
+ *
+ * **为什么必须渲染**：模型看到的是 `output.render()` 的文本，不是 `execute` 的返回值。
+ * 只把 `budget` 放进返回值里，等于模型永远读不到 `hint` 与"本轮已查过什么"——
+ * 那正是 PLAN 要这两个字段的原因（避免重复检索）。
+ */
+function renderBudgetLine(budget: RecallBudgetLines | undefined): string {
+  if (budget === undefined) return ''
+  const asked = budget.queries_this_turn ?? []
+  const queries = asked.length === 0 ? '' : `｜本轮已查：${asked.map((q) => `「${q}」`).join('、')}`
+  return `【额度】${budget.hint ?? ''}${queries}`
+}
+
+/**
+ * 构造记忆工具。
  *
  * @param defineTool - 宿主的 `defineTool`（来自 `@deepseek-ai/dsh-tools`）。
  * @param runtime - 记忆运行时。
@@ -191,10 +224,12 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
   const recallLongterm = defineSpillingTool({
     name: 'recall_longterm',
     description: [
-      '检索长期记忆里过去的事。返回结果会附带本周期剩余额度。',
+      '检索长期记忆里过去的事。每次返回都附带**预算声明**（本周期还剩几次、重置策略、本轮已查过什么）。',
       '先想清楚要什么再查；无命中不代表不存在，可以换关键词，但不要为了确认而反复检索。',
       '结果里的 storage_tier = hdd 表示该条已沉降到冷层：它的正文会**按需从冷层取回**（可能稍慢），随结果一起返回。',
       '若 note 里说某条"取不回来"，那是**冷层读取失败**，不代表这件事没记过 —— 不要据此当作"记忆里没有"。',
+      '额度用尽时返回空结果并说明原因；确需再查可调用 request_recall_extension(reason) 申请追加额度。',
+      '要让某条已沉降的条目重新变热（正文回到库内）时，用 recover(id) —— 一次一条。',
     ].join('\n'),
     parameters: {
       query: { type: 'string', required: true, description: '检索关键词或短语（中文按字匹配相邻短语）。' },
@@ -226,6 +261,52 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
               },
             },
           },
+          // ★ PLAN §7.1 的预算声明（形状逐字段对齐，数字由 runtime 算好，工具层不自己拼）
+          budget: {
+            type: 'object',
+            required: true,
+            additionalProperties: false,
+            description: 'PLAN §7.1 的预算声明。used/limit/remaining 是**本周期**的口径（reset_at 说明它何时重置）。',
+            properties: {
+              used: { type: 'integer', required: true, description: '本周期已用次数。' },
+              limit: { type: 'integer', required: true, description: '本周期上限（recall.maxPerCycle）**含**已追加额度。' },
+              remaining: { type: 'integer', required: true, description: '本周期剩余次数。' },
+              reset_at: {
+                type: 'string',
+                required: true,
+                description: '重置策略（读自基线 recall.resetPolicy，当前为 on_compaction）。',
+              },
+              queries_this_turn: {
+                type: 'array',
+                required: true,
+                items: { type: 'string' },
+                description: '本轮已经查过的检索词（有界）—— 别重复查相近主题。',
+              },
+              hint: { type: 'string', required: true, description: '还剩多少 / 不够时该调什么工具。' },
+              per_turn: {
+                type: 'object',
+                required: true,
+                additionalProperties: false,
+                description: '**本轮**额度（闸门有两道：每轮 + 每周期，两个都要知道）。',
+                properties: {
+                  used: { type: 'integer', required: true },
+                  limit: { type: 'integer', required: true },
+                  remaining: { type: 'integer', required: true },
+                },
+              },
+              extension: {
+                type: 'object',
+                required: true,
+                additionalProperties: false,
+                description: '逃生通道现状（本周期追加了多少、一次最多追加多少、冷却几轮）。',
+                properties: {
+                  grantedThisCycle: { type: 'integer', required: true },
+                  maxPerRequest: { type: 'integer', required: true },
+                  cooldownTurns: { type: 'integer', required: true },
+                },
+              },
+            },
+          },
           usedThisTurn: { type: 'integer' },
           remainingThisTurn: { type: 'integer' },
           remainingThisCycle: { type: 'integer' },
@@ -233,14 +314,26 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
         },
       },
       render: (_args: never, value: never): ContentBlock[] => {
-        const v = value as { results: { id: string; summary?: string; content?: string }[]; note?: string; remainingThisCycle?: number }
-        if (v.results.length === 0) return text(v.note ?? '长期记忆无命中。')
-        const lines = v.results.map((r, i) => {
-          const head = `${String(i + 1)}. [${r.id}] ${r.summary ?? ''}`
-          // 冷层正文是**按需取回来的**（取不回来时 runtime 会在 note 里说清）
-          return r.content === undefined ? head : `${head}\n   ↳ ${r.content}`
-        })
-        return text(`${lines.join('\n')}${v.note === undefined ? '' : `\n（${v.note}）`}`)
+        const v = value as {
+          results: { id: string; summary?: string; content?: string }[]
+          budget?: RecallBudgetLines
+          note?: string
+        }
+        const body =
+          v.results.length === 0
+            ? (v.note ?? '长期记忆无命中。')
+            : v.results
+                .map((r, i) => {
+                  const head = `${String(i + 1)}. [${r.id}] ${r.summary ?? ''}`
+                  // 冷层正文是**按需取回来的**（取不回来时 runtime 会在 note 里说清）
+                  return r.content === undefined ? head : `${head}\n   ↳ ${r.content}`
+                })
+                .join('\n')
+        const note = v.results.length === 0 || v.note === undefined ? '' : `\n（${v.note}）`
+        // ★ 预算声明**也要渲染出来**：模型看到的是 render 的内容，
+        //   只把 budget 放进 execute 的返回值里，模型永远读不到 hint 与已查清单。
+        const budget = renderBudgetLine(v.budget)
+        return text(`${body}${note}${budget === '' ? '' : `\n${budget}`}`)
       },
     },
     execute: async (args: never): Promise<unknown> => {
@@ -266,6 +359,9 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
             ? { content: clipColdContent(entry.content) }
             : {}),
         })),
+        // PLAN §7.1 的声明：**原样透传**运行时算好的那一份（工具层不重算数字）
+        budget: result.budget, // ← 回退验证：故意传内部计数器（应为 result.declaration）
+        // 旧字段保留（兼容）：平铺是历史形状，见文件头的"兼容性说明"
         usedThisTurn: result.budget.usedThisTurn,
         remainingThisTurn: result.budget.remainingThisTurn,
         remainingThisCycle: result.budget.remainingThisCycle,
@@ -394,7 +490,144 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  return [remember, pushMidMemory, recallLongterm, recallFull, requestCompaction]
+  /**
+   * **逃生通道**（PLAN §7.5）：额度用尽时申请追加。
+   *
+   * 它是 §7.2 那句"若确需，可调用 request_recall_extension(reason)"的落点 ——
+   * 在这条工具存在之前，那句提示指的是一张**不存在的工具**，还把可用时间推给"阶段 4"
+   * （而那个阶段早已交付）。模型照着调只会拿到"未知工具"，然后自己编一个替代做法。
+   */
+  const requestRecallExtension = defineSpillingTool({
+    name: 'request_recall_extension',
+    description: [
+      '当 recall 额度确实不够用、而且这件事非查不可时，申请**临时**追加检索额度。',
+      '理由要具体（要查什么、为什么非查不可）——太短的需求会被拒；被拒时会告诉你还差几轮冷却。',
+      '受冷却限制（两次批准之间要隔若干轮），一次最多追加固定次数；追加后额度会在下一次 recall 返回里如实告知。',
+      '这不是"想多查几次"的常规通道：先判断信息是否真的存在，别用它来"确保无遗漏"。',
+    ].join('\n'),
+    parameters: {
+      reason: { type: 'string', required: true, description: '为什么必须追加（要具体：要查什么、为什么当前信息不够）。' },
+      additional: {
+        type: 'integer',
+        description: '本次请求追加几次；省略则按上限追加。超过单次上限会被明确拒绝（不静默夹取）。',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          granted: { type: 'boolean', required: true, description: '是否批准。' },
+          reason: {
+            type: 'string',
+            description: '被拒原因码：reason_too_short / bad_amount / beyond_max / too_frequent。',
+          },
+          hint: { type: 'string', required: true, description: '批准后的额度变化，或被拒的具体原因与还差几轮。' },
+          additional: { type: 'integer', required: true, description: '实际追加的次数（被拒为 0）。' },
+          perTurnLimit: { type: 'integer', required: true, description: '裁决后生效的每轮额度。' },
+          perCycleLimit: { type: 'integer', required: true, description: '裁决后生效的每周期额度。' },
+          cooldownTurns: { type: 'integer', required: true, description: '两次批准之间的冷却（轮）。' },
+          cooldownRemainingTurns: { type: 'integer', description: '还要等几轮才能再申请（只在因冷却被拒时出现）。' },
+          grantedThisCycle: { type: 'integer', required: true, description: '本周期累计已追加的额度。' },
+          maxPerRequest: { type: 'integer', required: true, description: '单次可追加的上限。' },
+        },
+      },
+      render: (_args: never, value: never): ContentBlock[] => {
+        const v = value as { granted: boolean; additional: number; reason?: string; hint: string; perCycleLimit: number }
+        if (v.granted) {
+          return text(`已追加 ${String(v.additional)} 次检索额度（本周期上限现为 ${String(v.perCycleLimit)}）。${v.hint}`)
+        }
+        return text(`追加额度被拒（${v.reason ?? '未知'}）：${v.hint}`)
+      },
+    },
+    execute: async (args: never): Promise<unknown> => {
+      const a = args as { reason: string; additional?: number }
+      runtime.recordToolCall()
+      const verdict = runtime.requestRecallExtension({
+        reason: a.reason,
+        ...(a.additional === undefined ? {} : { additional: a.additional }),
+      })
+      return {
+        ok: true,
+        granted: verdict.granted,
+        ...(verdict.reason === undefined ? {} : { reason: verdict.reason }),
+        hint: verdict.hint,
+        additional: verdict.additional,
+        perTurnLimit: verdict.perTurnLimit,
+        perCycleLimit: verdict.perCycleLimit,
+        cooldownTurns: verdict.cooldownTurns,
+        ...(verdict.cooldownRemainingTurns === undefined ? {} : { cooldownRemainingTurns: verdict.cooldownRemainingTurns }),
+        grantedThisCycle: verdict.grantedThisCycle,
+        maxPerRequest: verdict.maxPerRequest,
+      }
+    },
+  })
+
+  /**
+   * **`recover`**（PLAN §6.3 的"可逆"）：把已沉降到冷层（HDD）的长期条目提升回热层。
+   *
+   * 在它存在之前，L2 提示词（`config.ts` 的 `DEFAULT_L2_INDEX_TEXT`，**稳定前缀**）
+   * 与工具描述都让模型"用 recover 提升回热层"，而**这个名字根本不在工具表里** ——
+   * 模型照着调只能拿到"未知工具"，然后自己编一个替代做法。
+   */
+  const recover = defineSpillingTool({
+    name: 'recover',
+    description: [
+      '把一条**已沉降到冷层**（storage_tier=hdd）的长期记忆提升回热层（正文回到库内，之后不用再走归档）。',
+      '什么时候用：你确认某条旧记忆接下来会反复用到，而它每次都要从冷层取正文（慢）。',
+      '一次只提升一条（批量提升等于一次抹掉沉降的成果）。已经在热层的条目会说"不需要提升"，**不会假装成功**。',
+      '如果冷层归档读不出来，会明确报失败 —— 那不是"没有这条记忆"，别据此改答案。',
+    ].join('\n'),
+    parameters: {
+      id: { type: 'string', required: true, description: '长期记忆条目 id（recall_longterm 结果里的 id）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          id: { type: 'string', required: true },
+          status: {
+            type: 'string',
+            required: true,
+            description: 'recovered（提升成功）/ not_found / already_hot（本来就在热层）/ archive_unreadable（冷层读不出来）。',
+          },
+          note: { type: 'string', required: true, description: '发生了什么、为什么。' },
+          tier: { type: 'string', description: '提升后（或原本）的层。' },
+          source: { type: 'string', description: '正文从哪读回来的：archive（真的从冷层提升）/ db / none。' },
+          latencyMs: { type: 'integer', description: '读取耗时（冷层延迟要看得见）。' },
+          contentChars: { type: 'integer', description: '回填的正文长度（字符）。' },
+        },
+      },
+      render: (_args: never, value: never): ContentBlock[] => {
+        const v = value as { ok: boolean; id: string; status: string; note: string; contentChars?: number; latencyMs?: number }
+        if (!v.ok) return text(`没有提升 ${v.id}（${v.status}）：${v.note}`)
+        return text(
+          `已把 ${v.id} 提升回热层（正文 ${String(v.contentChars ?? 0)} 字，` +
+            `冷层读取 ${String(v.latencyMs ?? 0)}ms）。${v.note}`,
+        )
+      },
+    },
+    execute: async (args: never): Promise<unknown> => {
+      const a = args as { id: string }
+      runtime.recordToolCall()
+      const result = await runtime.recoverLongEntry(a.id)
+      return {
+        ok: result.ok,
+        id: result.id,
+        status: result.status,
+        note: result.note,
+        ...(result.tier === undefined ? {} : { tier: result.tier }),
+        ...(result.source === undefined ? {} : { source: result.source }),
+        ...(result.latencyMs === undefined ? {} : { latencyMs: result.latencyMs }),
+        ...(result.contentChars === undefined ? {} : { contentChars: result.contentChars }),
+      }
+    },
+  })
+
+  return [remember, pushMidMemory, recallLongterm, recallFull, requestCompaction, requestRecallExtension, recover]
 }
 
 /** 宽松解析 entities（长期表里存的是 JSON 文本）。 */
@@ -409,7 +642,15 @@ function parseEntities(raw: string | null): readonly string[] {
 }
 
 /** 工具名清单（测试与文档引用同一份，避免写错）。 */
-export const MEMORY_TOOL_NAMES = ['remember', 'push_mid_memory', 'recall_longterm', 'recall_full', 'request_compaction'] as const
+export const MEMORY_TOOL_NAMES = [
+  'remember',
+  'push_mid_memory',
+  'recall_longterm',
+  'recall_full',
+  'request_compaction',
+  'request_recall_extension',
+  'recover',
+] as const
 
 
 

@@ -42,12 +42,14 @@ import {
   currentEpoch,
   currentRevision,
   fragmentMidEntry,
+  getLongEntry,
   getSpill,
   insertLongEntry,
   insertSpill,
   listRenderableMidEntries,
   listSpills,
   loadLongEntry,
+  markLongRecovered,
   midStats,
   openDatabase,
   searchLongFts,
@@ -70,7 +72,7 @@ import { defaultFor } from '@forlife/contracts'
 
 import type { ForlifeConfig } from './config.ts'
 
-/** recall 预算状态（阶段 1 先做最小可用版；完整预算系统在阶段 4 落地）。 */
+/** recall 预算状态（内部计数器形态；对模型的那份声明见 `RecallBudgetDeclaration`）。 */
 export interface RecallBudget {
   readonly maxPerTurn: number
   readonly maxPerCycle: number
@@ -81,10 +83,102 @@ export interface RecallBudget {
   readonly remainingThisCycle: number
 }
 
+/** 本轮额度（PLAN §7.1 只给了一组数字，而闸门有两道 —— 第二个维度也要如实报）。 */
+export interface RecallPerTurnBudget {
+  readonly used: number
+  readonly limit: number
+  readonly remaining: number
+}
+
+/** 逃生通道的现状（`request_recall_extension` 的累积效果）。 */
+export interface RecallExtensionState {
+  /** 本周期已经追加到的额度（0 = 没申请过）。 */
+  readonly grantedThisCycle: number
+  /** 一次最多能追加多少（基线 `recall.extensionMax`）。 */
+  readonly maxPerRequest: number
+  /** 两次追加之间的冷却（轮次维度，基线 `recall.extensionCooldownTurns`）。 */
+  readonly cooldownTurns: number
+}
+
+/**
+ * **PLAN §7.1 的预算声明**（每次 `recall_longterm` 返回都附带）。
+ *
+ * 字段名刻意与 PLAN 逐字一致（`used` / `limit` / `remaining` / `reset_at` /
+ * `queries_this_turn` / `hint`）—— 它是**给模型看的契约**，不是我们的内部结构。
+ *
+ * ## `used` / `limit` / `remaining` 说的是哪个额度
+ *
+ * **本周期**（`recall.maxPerCycle`，`reset_at = on_compaction`）。理由：PLAN §7.1 的样例
+ * `used:2, limit:5, remaining:3` 只有按周期读才自洽（每轮上限是 2，与 `limit:5` 对不上）；
+ * §7.2 的耗尽样例 `used:5, limit:5, remaining:0` 同理。
+ *
+ * 但**闸门有两道**（每轮 2、每周期 5），只报周期数字会误导模型（它会以为这一轮还能查 4 次），
+ * 所以另附 `per_turn` 把第二轮额度也如实报出来 —— PLAN 没规定这一节，
+ * 属于"多说一句真话"，不改变 PLAN 要的六个字段。
+ *
+ * ## `reset_at` 是**读**出来的
+ *
+ * 它的值来自基线 `recall.resetPolicy`（当前 `on_compaction`），**不写死**：
+ * 谁把策略改成按轮重置，声明与文案都必须跟着变。
+ */
+export interface RecallBudgetDeclaration {
+  readonly used: number
+  readonly limit: number
+  readonly remaining: number
+  readonly reset_at: string
+  readonly queries_this_turn: readonly string[]
+  readonly hint: string
+  readonly per_turn: RecallPerTurnBudget
+  readonly extension: RecallExtensionState
+}
+
+/** 追加额度请求的裁决结果（`request_recall_extension` 工具原样透传 —— **含拒绝理由**）。 */
+export interface RecallExtensionVerdict {
+  readonly granted: boolean
+  /** 拒绝码：`reason_too_short` / `bad_amount` / `beyond_max` / `too_frequent`（批准时无此项）。 */
+  readonly reason?: string
+  readonly hint: string
+  /** 实际（或请求的）追加数；被拒时为 0。 */
+  readonly additional: number
+  /** 裁决后生效的每轮额度。 */
+  readonly perTurnLimit: number
+  /** 裁决后生效的每周期额度。 */
+  readonly perCycleLimit: number
+  readonly cooldownTurns: number
+  /** 还要等几轮才能再申请（只在因冷却被拒时出现）。 */
+  readonly cooldownRemainingTurns?: number
+  /** 本周期累计已追加的额度。 */
+  readonly grantedThisCycle: number
+  /** 单次可追加的上限（基线 `recall.extensionMax`）。 */
+  readonly maxPerRequest: number
+}
+
+/**
+ * `recover` 的结果（长期条目 **HDD → SSD**）。
+ *
+ * `status` 是给模型看的关键信息：**"已经热了"与"提升成功"必须能分开**
+ * （把前者说成成功，模型会以为它刚触发了一次搬运）。
+ */
+export interface LongRecoverOutcome {
+  readonly ok: boolean
+  readonly id: string
+  readonly status: 'recovered' | 'not_found' | 'already_hot' | 'archive_unreadable'
+  readonly note: string
+  /** 提升后（或原本）的层。 */
+  readonly tier?: string
+  /** 正文是从哪读回来的（`archive` 才是真的"从冷层提升"）。 */
+  readonly source?: 'archive' | 'db' | 'none'
+  readonly latencyMs?: number
+  /** 回填的正文长度（字符）。 */
+  readonly contentChars?: number
+}
+
 /** 一次 recall 的结果。 */
 export interface RecallResult {
   readonly entries: readonly LongEntryRow[]
   readonly budget: RecallBudget
+  /** PLAN §7.1 的声明（工具层原样透传，不再自己拼数字）。 */
+  readonly declaration: RecallBudgetDeclaration
   readonly note?: string
   /**
    * 冷层（HDD）按需加载的结果 —— 只含**命中且已沉降**的条目。
@@ -145,6 +239,20 @@ export class MemoryRuntime {
   private turnsThisCycle = 1
   private recallThisTurn = 0
   private recallThisCycle = 0
+  /**
+   * **本轮查过什么**（PLAN §7.1 的 `queries_this_turn`）。
+   *
+   * 它是给模型看"我刚查过什么、别再重复"的，所以**必须有界**：
+   * 无界列表会随轮次越长越大，而它每次 recall 都要原样回显进上下文。
+   * 上限由 `appendBoundedQuery()` 强制（见那里的说明）。
+   */
+  private queriesThisTurn: readonly string[] = []
+  /** 已批准的追加额度（每轮；`beginTurn()` 归零 —— 临时提额是"这一轮"的事）。 */
+  private turnExtensionBonus = 0
+  /** 已批准的追加额度（本周期；`resetCycle()` 归零 —— 压缩后重来）。 */
+  private cycleExtensionBonus = 0
+  /** 上一次批准追加是在第几个轮次（`turnsThisCycle` 口径，冷却判据）。 */
+  private lastExtensionTurn: number | undefined
 
   constructor(options: MemoryRuntimeOptions) {
     this.config = options.config
@@ -231,25 +339,40 @@ export class MemoryRuntime {
     return fragmentMidEntry(this.db, midId, longId, hint, hintTokens)
   }
 
-  /** 检索长期记忆（阶段 1 用 FTS5；向量检索在阶段 5 接入）。 */
+  /**
+   * 检索长期记忆（阶段 1 用 FTS5；向量检索在阶段 5 接入）。
+   *
+   * ## 两道硬闸门（PLAN §7.4「硬性次数上限，超过直接拒绝」）
+   *
+   * ① **每轮**上限（`recall.maxPerTurn`，可被已批准的追加额度临时抬高）；
+   * ② **每周期**上限（`recall.maxPerCycle`）—— 周期由 `resetCycle()` 在**压缩提交后**归零
+   *    （PLAN §7.6 的 `reset_policy = on_compaction`）。
+   *
+   * ⚠️ 第 ② 道以前**只用于显示**（`remainingThisCycle` 只算不判）⇒ 周期额度形同建议，
+   * 只有"每轮"那一道真的拦得住。被拒时返回空结果 + 完整预算声明 + 指向
+   * `request_recall_extension` 的提示（PLAN §7.2），**不静默失败**。
+   */
   recallLongterm(query: string, limit?: number): RecallResult {
     const maxResults = Math.min(
       limit ?? this.config.recallMaxResults,
       defaultFor<number>('recall.maxResultsHardCap'),
     )
-    const maxPerTurn = this.config.recallMaxPerTurn
-    const maxPerCycle = defaultFor<number>('recall.maxPerCycle')
+    const maxPerTurn = this.effectiveMaxPerTurn()
+    const maxPerCycle = this.effectiveMaxPerCycle()
 
+    // ① 周期上限（更硬的那道：PLAN §7.6 的 max_recall_per_cycle）
+    if (this.recallThisCycle >= maxPerCycle) {
+      return this.recallRefused('cycle_exhausted', maxPerTurn, maxPerCycle, maxResults)
+    }
+    // ② 每轮上限
     if (this.recallThisTurn >= maxPerTurn) {
-      return {
-        entries: [],
-        budget: this.budget(maxPerTurn, maxPerCycle, maxResults),
-        note: `本轮 recall 次数已达上限（${String(maxPerTurn)}）。如确有必要，可说明理由后申请追加额度（阶段 4 开放）。`,
-      }
+      return this.recallRefused('turn_exhausted', maxPerTurn, maxPerCycle, maxResults)
     }
 
     this.recallThisTurn += 1
     this.recallThisCycle += 1
+    // PLAN §7.1 的 queries_this_turn：记"本轮查过什么"，**有界**（见 appendBoundedQuery）
+    this.queriesThisTurn = appendBoundedQuery(this.queriesThisTurn, query, recallQueryLogLimit())
     const entries = searchLongFts(this.db, query, maxResults)
     for (const entry of entries) touchLongEntry(this.db, entry.id)
 
@@ -258,20 +381,129 @@ export class MemoryRuntime {
       const mid = searchMidFts(this.db, query, maxResults)
       for (const entry of mid) touchMidEntry(this.db, entry.id)
       if (mid.length > 0) {
-        return {
-          entries: [],
-          budget: this.budget(maxPerTurn, maxPerCycle, maxResults),
-          note: `长期记忆无命中；中期记忆里有 ${String(mid.length)} 条相关，但它们已在当前上下文中，无需检索。`,
-        }
+        return this.recallResult(
+          [],
+          maxPerTurn,
+          maxPerCycle,
+          maxResults,
+          `长期记忆无命中；中期记忆里有 ${String(mid.length)} 条相关，但它们已在当前上下文中，无需检索。`,
+        )
       }
+      return this.recallResult(
+        [],
+        maxPerTurn,
+        maxPerCycle,
+        maxResults,
+        '无命中。先判断这条信息是否真的可能存在，再决定是否换关键词；不要为确认而反复检索。',
+      )
+    }
+    return this.recallResult(entries, maxPerTurn, maxPerCycle, maxResults)
+  }
+
+  /**
+   * **逃生通道**：裁决一次"追加 recall 额度"的请求（PLAN §7.5 的
+   * `request_recall_extension(reason, additional=2)`）。
+   *
+   * ## 约束来自基线，不在这里写死
+   *
+   *  - `additional` 缺省 = `recall.extensionMax`（PLAN §7.5 的 `additional=2`）；
+   *  - 单次最多追加 `recall.extensionMax`（要更多就分次申请，别把一次请求当许愿池）；
+   *  - 两次批准之间至少隔 `recall.extensionCooldownTurns` **轮**（轮次维度：
+   *    `turnsThisCycle` 由 `beginTurn()` 推进）。
+   *
+   * ## 为什么**必须**明确拒绝
+   *
+   * 逃生通道最怕"静默失败"：模型以为额度涨了，接着查，然后拿到一句
+   * "已达上限"，它会以为系统坏了。所以拒绝时给出**码 + 还差几轮 + 现在是多少**。
+   *
+   * ## 批准后额度怎么涨
+   *
+   *  - **每轮**额度：+`additional`（下一轮 `beginTurn()` 时归零 —— "临时"提额）；
+   *  - **本周期**额度：+`additional`（压缩提交时随 `resetCycle()` 归零）；
+   * 两个都会**如实出现在下一次 recall 的预算声明里**（PLAN §7.5「并在下次返回中告知」）。
+   */
+  requestRecallExtension(input: { readonly reason: string; readonly additional?: number }): RecallExtensionVerdict {
+    const maxPerRequest = defaultFor<number>('recall.extensionMax')
+    const cooldownTurns = defaultFor<number>('recall.extensionCooldownTurns')
+    const requested = input.additional ?? maxPerRequest
+    const perTurnLimit = this.effectiveMaxPerTurn()
+    const perCycleLimit = this.effectiveMaxPerCycle()
+
+    const base = {
+      perTurnLimit,
+      perCycleLimit,
+      cooldownTurns,
+      grantedThisCycle: this.cycleExtensionBonus,
+      maxPerRequest,
+    }
+
+    // ① 理由必须具体（沿用 decideSwitch 的既有约定：少于 4 字看起来像随手要的）
+    const reason = input.reason.trim()
+    if (reason.length < EXTENSION_MIN_REASON_CHARS) {
       return {
-        entries: [],
-        budget: this.budget(maxPerTurn, maxPerCycle, maxResults),
-        note: '无命中。先判断这条信息是否真的可能存在，再决定是否换关键词；不要为确认而反复检索。',
+        ...base,
+        granted: false,
+        reason: 'reason_too_short',
+        hint: `申请追加额度必须说明理由（至少 ${String(EXTENSION_MIN_REASON_CHARS)} 个字）：要查什么、为什么非查不可。`,
+        additional: 0,
       }
     }
-    return { entries, budget: this.budget(maxPerTurn, maxPerCycle, maxResults) }
+    // ② 单次追加数必须是正整数、且不超过上限（**不静默夹取**：夹取会让模型以为要到了）
+    if (!Number.isInteger(requested) || requested <= 0) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'bad_amount',
+        hint: `additional 必须是正整数（收到 ${String(requested)}）；省略它则按上限 ${String(maxPerRequest)} 追加。`,
+        additional: 0,
+      }
+    }
+    if (requested > maxPerRequest) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'beyond_max',
+        hint: `单次最多追加 ${String(maxPerRequest)} 次（你请求了 ${String(requested)}）。要更多就下次冷却结束后再申请。`,
+        additional: 0,
+      }
+    }
+    // ③ 冷却（轮次维度）
+    const cooldownRemainingTurns = this.extensionCooldownRemaining(cooldownTurns)
+    if (cooldownRemainingTurns > 0) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'too_frequent',
+        hint:
+          `追加额度冷却中：距上次批准仅 ${String(Math.max(0, cooldownTurns - cooldownRemainingTurns))} 轮，` +
+          `还需等 ${String(cooldownRemainingTurns)} 轮（"轮"按轮次开始计，每轮一次）。`,
+        additional: 0,
+        cooldownRemainingTurns,
+      }
+    }
+
+    // 批准：两个维度的额度都抬高，并记下轮次供冷却判断
+    this.turnExtensionBonus += requested
+    this.cycleExtensionBonus += requested
+    this.lastExtensionTurn = this.turnsThisCycle
+    this.log(
+      `已批准 recall 追加额度 +${String(requested)}（每轮 ${String(this.effectiveMaxPerTurn())}、` +
+        `本周期 ${String(this.effectiveMaxPerCycle())}；理由：${reason}）`,
+    )
+    return {
+      granted: true,
+      hint:
+        `已追加 ${String(requested)} 次：本周期额度 ${String(this.effectiveMaxPerCycle())}，` +
+        `本轮额度 ${String(this.effectiveMaxPerTurn())}（本轮结束即回落，周期额度到下次压缩重置）。`,
+      additional: requested,
+      perTurnLimit: this.effectiveMaxPerTurn(),
+      perCycleLimit: this.effectiveMaxPerCycle(),
+      cooldownTurns,
+      grantedThisCycle: this.cycleExtensionBonus,
+      maxPerRequest,
+    }
   }
+
 
   /**
    * **检索 + 冷层按需加载**（PLAN §6.3 的"回读"那一半）。
@@ -345,6 +577,75 @@ export class MemoryRuntime {
                 failed.map((f) => `${f.id}（${f.note}）`).join('；'),
             ].join('\n'),
           }),
+    }
+  }
+
+  /**
+   * **把一条已沉降的长期记忆提升回热层**（PLAN §6.3 的"可逆"那一半 / §13-17 的 `recover`）。
+   *
+   * ## 为什么必须走归档读，而不是"库内那份"
+   *
+   * 沉降过的条目（`markLongSettled`）**库内 `content` 是 NULL**、正文在归档文件里。
+   * 所以提升的唯一合法来源是 `loadLongEntry()` 读回来的归档正文：
+   *  - **读到 ⇒ 回填库内 + `storage_tier='ssd'` + 清 `archive_path`**（`markLongRecovered`）；
+   *  - **读不到 ⇒ 明确拒绝**（`archive_unreadable`），**绝不**把 NULL 当成功、
+   *    也**不回落**到任何"可能存在的库内副本" —— 那会掩盖"归档坏了"，
+   *    而归档坏了正是最该被发现的事。
+   *
+   * ## 三条不许妥协的细节
+   *
+   * 1. **已经在热层 ⇒ 明确说"不需要提升"**（不报成功：报成功会让模型以为刚搬过一次）；
+   * 2. **不删归档文件** —— 提升只往库里回填正文，冷层那份留在原处（删文件是另一个决定，
+   *    半路删源正是本仓反复吃过亏的地方）；
+   * 3. **顺手 `touchLongEntry`** —— 提升的正当理由是"有人刚要读它"，
+   *    把访问时间刷新才对得上，也免得下一轮沉降立刻又把它沉下去。
+   *
+   * @param id - 长期记忆条目 id（**一次一个**：批量提升等于一次抹掉沉降成果）。
+   * @returns 结果（含 `status`：`recovered` / `not_found` / `already_hot` / `archive_unreadable`）。
+   */
+  async recoverLongEntry(id: string): Promise<LongRecoverOutcome> {
+    const row = getLongEntry(this.db, id)
+    if (row === undefined) {
+      return { ok: false, id, status: 'not_found', note: `没有这条长期记忆：${id}` }
+    }
+    const tier = row.storage_tier ?? 'ssd'
+    if (tier !== 'hdd') {
+      return {
+        ok: false,
+        id,
+        status: 'already_hot',
+        tier,
+        note: `它已经在热层（storage_tier=${tier}），不需要提升；正文不需要从冷层读。`,
+      }
+    }
+
+    const cold = await loadLongEntry({ db: this.db, id })
+    if (!cold.found || cold.content === undefined) {
+      return {
+        ok: false,
+        id,
+        status: 'archive_unreadable',
+        tier,
+        source: cold.source,
+        latencyMs: cold.latencyMs,
+        note: `冷层正文取不回来，**没有回落到库内副本**（库内 content 是空的）：${cold.note}`,
+      }
+    }
+
+    markLongRecovered(this.db, id, cold.content)
+    touchLongEntry(this.db, id)
+    this.log(`已提升长期条目 ${id}：hdd → ssd（正文 ${String(cold.content.length)} 字，来源 ${cold.source}）`)
+    return {
+      ok: true,
+      id,
+      status: 'recovered',
+      tier: 'ssd',
+      source: cold.source,
+      latencyMs: cold.latencyMs,
+      contentChars: cold.content.length,
+      note:
+        `已提升回热层：正文 ${String(cold.content.length)} 字已回填库内、storage_tier=ssd、archive_path 已清空。` +
+        '冷层归档文件**保留在原处**（提升不删源）。',
     }
   }
 
@@ -458,6 +759,10 @@ export class MemoryRuntime {
    */
   beginTurn(): void {
     this.recallThisTurn = 0
+    // 每轮额度上的"追加"是**临时**的：新的一轮回到基线（周期追加额度不回落，见 resetCycle）
+    this.turnExtensionBonus = 0
+    // PLAN §7.1 的 queries_this_turn 是"**本轮**查过什么" ⇒ 轮次边界清空
+    this.queriesThisTurn = []
     this.turnsThisCycle += 1
     // 基线值是 `on_compaction`（见 PLAN §7.6）：周期额度由压缩提交时的 `resetCycle()` 归零。
     // 若有人把策略改成按轮重置，这里也要跟着归零（否则改了个寂寞）。
@@ -1096,6 +1401,12 @@ export class MemoryRuntime {
     this.recallThisTurn = 0
     this.recallThisCycle = 0
     this.turnsThisCycle = 1
+    // 追加额度也随周期一起归零（PLAN §7.5「**临时**提升」）：
+    // 否则额度会跨压缩越攒越多，逃生通道就变成了永久扩额。
+    this.turnExtensionBonus = 0
+    this.cycleExtensionBonus = 0
+    this.lastExtensionTurn = undefined
+    this.queriesThisTurn = []
   }
 
   /** 关闭（checkpoint + 释放）。 */
@@ -1129,6 +1440,124 @@ export class MemoryRuntime {
       remainingThisTurn: Math.max(0, maxPerTurn - this.recallThisTurn),
       remainingThisCycle: Math.max(0, maxPerCycle - this.recallThisCycle),
     }
+  }
+
+  /**
+   * 生效的**每轮**上限 = 配置（基线 `recall.maxPerTurn`）+ 已批准的追加。
+   *
+   * 为什么不是直接读配置：逃生通道批准之后额度必须**真的**变宽，
+   * 否则"批准"只是一句话（模型拿到 `granted:true` 却还是被同一道闸门拦住 ——
+   * 那比不批还糟）。
+   */
+  private effectiveMaxPerTurn(): number {
+    return this.config.recallMaxPerTurn + this.turnExtensionBonus
+  }
+
+  /** 生效的**每周期**上限 = 基线 `recall.maxPerCycle` + 已批准的追加。 */
+  private effectiveMaxPerCycle(): number {
+    return defaultFor<number>('recall.maxPerCycle') + this.cycleExtensionBonus
+  }
+
+  /** 还要等几轮才能再申请追加（0 = 现在可以）。 */
+  private extensionCooldownRemaining(cooldownTurns: number): number {
+    const last = this.lastExtensionTurn
+    if (last === undefined) return 0 // 从没批过 ⇒ 不受冷却限制（与压缩裁决同一条纪律）
+    return Math.max(0, cooldownTurns - (this.turnsThisCycle - last))
+  }
+
+  /**
+   * 组装一次 recall 的返回。
+   *
+   * **`budget` 与 `declaration` 只在这里拼** —— 两个形状必须同源，
+   * 否则迟早出现"平铺字段说还剩 3 次、budget 里说还剩 0 次"那种自相矛盾。
+   */
+  private recallResult(
+    entries: readonly LongEntryRow[],
+    maxPerTurn: number,
+    maxPerCycle: number,
+    maxResults: number,
+    note?: string,
+  ): RecallResult {
+    const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    return {
+      entries,
+      budget,
+      declaration: this.budgetDeclaration(budget),
+      ...(note === undefined ? {} : { note }),
+    }
+  }
+
+  /**
+   * 额度用尽时的返回（PLAN §7.2）：`entries: []` + 完整预算声明 + 指向**真实存在**的
+   * 逃生通道工具。**绝不静默失败** —— 静默被拒时模型只会换个说法反复试。
+   */
+  private recallRefused(
+    kind: 'turn_exhausted' | 'cycle_exhausted',
+    maxPerTurn: number,
+    maxPerCycle: number,
+    maxResults: number,
+  ): RecallResult {
+    const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    const escape = '若确需，可调用 request_recall_extension(reason) 申请追加额度。'
+    const note =
+      kind === 'cycle_exhausted'
+        ? `本轮检索额度已用尽（本周期 ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}，` +
+          `${resetPhrase(this.recallResetPolicy())}）。请基于已有信息作答。${escape}`
+        : `本轮 recall 次数已达上限（${String(budget.maxPerTurn)}；本周期还剩 ${String(budget.remainingThisCycle)} 次，下一轮可继续）。${escape}`
+    return { entries: [], budget, declaration: this.budgetDeclaration(budget), note }
+  }
+
+  /** PLAN §7.1 的预算声明（字段名逐字对齐；数字与重置语义都取真实值）。 */
+  private budgetDeclaration(budget: RecallBudget): RecallBudgetDeclaration {
+    return {
+      used: budget.usedThisCycle,
+      limit: budget.maxPerCycle,
+      remaining: budget.remainingThisCycle,
+      reset_at: this.recallResetPolicy(),
+      queries_this_turn: [...this.queriesThisTurn],
+      hint: this.budgetHint(budget),
+      per_turn: {
+        used: budget.usedThisTurn,
+        limit: budget.maxPerTurn,
+        remaining: budget.remainingThisTurn,
+      },
+      extension: {
+        grantedThisCycle: this.cycleExtensionBonus,
+        maxPerRequest: defaultFor<number>('recall.extensionMax'),
+        cooldownTurns: defaultFor<number>('recall.extensionCooldownTurns'),
+      },
+    }
+  }
+
+  /**
+   * 预算提示文案（按 PLAN §7.1 / §7.2 的样例组织，**数字与重置语义都是真的**）。
+   *
+   * 三句真话缺一句就会误导：
+   *  ① 本周期还剩几次；② 本轮还剩几次（闸门有两道）；③ 不够时该调哪个工具（真名字）。
+   */
+  private budgetHint(budget: RecallBudget): string {
+    const reset = resetPhrase(this.recallResetPolicy())
+    const parts: string[] = []
+    if (budget.remainingThisCycle <= 0) {
+      parts.push(`本轮检索额度已用尽（本周期 ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}），${reset}。`)
+      parts.push('请基于已有信息作答；若确需，可调用 request_recall_extension(reason) 申请追加额度。')
+    } else {
+      parts.push(
+        `你还有 ${String(budget.remainingThisCycle)} 次检索额度（本周期 ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}），${reset}。`,
+      )
+      if (budget.remainingThisTurn <= 0) {
+        parts.push('本轮已用尽，下一轮可继续；若这一轮确需再查，可调用 request_recall_extension(reason)。')
+      } else if (budget.remainingThisTurn < budget.remainingThisCycle) {
+        parts.push(`注意：其中本轮只剩 ${String(budget.remainingThisTurn)} 次。`)
+      }
+      // PLAN §7.1 样例里的那句"避免重复检索相近主题"**始终保留** ——
+      // 它是这条声明的主要用途（`queries_this_turn` 就是为它服务的）。
+      parts.push('避免重复检索相近主题。')
+    }
+    if (this.cycleExtensionBonus > 0) {
+      parts.push(`（本周期已追加 ${String(this.cycleExtensionBonus)} 次额度）`)
+    }
+    return parts.join('')
   }
 }
 
@@ -1312,6 +1741,51 @@ function isPerTurnResetPolicy(policy: string): boolean {
 /** 认不认这个策略值（未知值按 `on_compaction` 处理，但要喊一声）。 */
 function isKnownResetPolicy(policy: string): boolean {
   return policy === 'on_compaction' || isPerTurnResetPolicy(policy)
+}
+
+/**
+ * `queries_this_turn` 里**单条** query 的字符上限。
+ *
+ * PLAN §7.1 只规定"记本轮查过什么"，没给上限。这里封顶纯属防御：
+ * 这个列表每次 recall 都要原样回显进上下文，而 query 是**模型给的字符串** ——
+ * 一条 100KB 的"关键词"足以把上下文顶掉。截断后仍足够认出"这是不是同一个查询"。
+ */
+export const RECALL_QUERY_MAX_CHARS = 200
+
+/**
+ * `queries_this_turn` 的**条数**上限。
+ *
+ * 由基线推导（本周期最多能查 `maxPerCycle + extensionMax` 次），不写死数字：
+ * 改了额度参数，这个上限跟着走。
+ */
+export function recallQueryLogLimit(): number {
+  return defaultFor<number>('recall.maxPerCycle') + defaultFor<number>('recall.extensionMax')
+}
+
+/**
+ * 追加一条"本轮查过的 query"，并**强制有界**（PLAN §7.1）。
+ *
+ * 两条边界都得管：
+ *  - **条数**：超过上限就丢最旧的 —— 去重最需要的是"刚查过什么"；
+ *  - **单条长度**：截断（见 `RECALL_QUERY_MAX_CHARS`）。
+ *
+ * 它被导出只有一个理由：**有界性要能被单独断言**（走真实工具路径时，
+ * 每轮额度只有个位数，永远碰不到上限 ⇒ 靠端到端测试证明不了"有界"）。
+ */
+export function appendBoundedQuery(list: readonly string[], query: string, max: number): readonly string[] {
+  const clipped = query.length <= RECALL_QUERY_MAX_CHARS ? query : `${query.slice(0, RECALL_QUERY_MAX_CHARS)}…`
+  const next = [...list, clipped]
+  if (next.length <= max) return next
+  return next.slice(next.length - Math.max(0, max))
+}
+
+/** 申请追加额度的理由长度下限（与 `decideSwitch` 同一条既有约定：太短像随手要的）。 */
+const EXTENSION_MIN_REASON_CHARS = 4
+
+/** `reset_at` 的人话（**由策略派生**，不写死"下次压缩后重置"）。 */
+function resetPhrase(policy: string): string {
+  if (isPerTurnResetPolicy(policy)) return '每轮开始时会重置'
+  return '将在下次压缩后重置'
 }
 
 

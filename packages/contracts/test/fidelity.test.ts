@@ -67,6 +67,30 @@ test('规则级偏离：四要素齐全', () => {
   }
 })
 
+/**
+ * ★ 登记质量守卫（2026-10-07 据 1:1 审计补登一批真实偏离时加）。
+ *
+ * 四要素的**长度**检查拦不住三种最常见的退化，所以这里各加一条：
+ *  1. **没引用到章节** —— "文档说什么"说不清，只写一句概括；
+ *  2. **同一处偏离登记两遍**（两条 `rule` 一模一样或互相矛盾）——
+ *     读者无法判断哪条有效；
+ *  3. **整表被删空** —— 登记表空了，所有测试**照样全绿**（这正是它最危险的失败模式：
+ *     "没登记"与"没有偏离"从测试上看一模一样）。
+ */
+test('规则级偏离：必须引用章节、不得重复、条数不低于防误删下限', () => {
+  const seen = new Set<string>()
+  for (const rd of RULE_DEVIATIONS) {
+    assert.match(rd.rule, /§/, `规则级偏离的 rule 必须引用到具体章节（含 §）：${rd.rule.slice(0, 40)}…`)
+    assert.ok(!seen.has(rd.rule), `规则级偏离的 rule 重复：${rd.rule.slice(0, 40)}…`)
+    seen.add(rd.rule)
+  }
+  assert.ok(
+    RULE_DEVIATIONS.length >= 14,
+    `规则级偏离只剩 ${String(RULE_DEVIATIONS.length)} 条 —— 登记表疑似被误删/清空。` +
+      '登记只应新增或改写（改写要保留条目数）；确要合并条目时，请同时下调这个下限并说明理由。',
+  )
+})
+
 test('基线：参数与时机数量符合预期（防误删）', () => {
   assert.ok(baselineKeys().length >= 90, `基线参数过少（${baselineKeys().length}），疑似被误删`)
   assert.ok(baselineTimings().length >= 20, `时机数量过少（${baselineTimings().length}）`)
