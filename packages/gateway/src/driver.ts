@@ -82,9 +82,23 @@ export class HeadlessTurnDriver implements TurnDriver {
    * @returns 轮次结果。
    */
   async run(request: TurnRequest): Promise<TurnOutcome> {
-    // `-` = 从 stdin 读任务。**不要把 request.prompt 放进 args**：
-    // 多行提示词过 shell（Windows 是 cmd.exe）会在第一个换行处被截断。
-    const args = ['--profile', this.options.profile, 'headless', '--json', '-']
+    // **不要把 request.prompt 放进 args**：多行提示词过 shell
+    // （Windows 是 cmd.exe）会在第一个换行处被截断。
+    //
+    // 从 stdin 读的**正确方式是不传任务参数**（不是传 `-`）。
+    // 命令自带的说明写着：
+    //   dsh --profile headless "run the tests"          answer one task and exit
+    //   echo "run the tests" | dsh --profile headless   read the task from stdin  ← ★
+    //   dsh --profile headless --json "run the tests"   emit machine-readable run events
+    // 而 dsh-headless 的实现是：
+    //   const task = program.args.length === 0 ? void 0 : joined
+    // 即 `args.length === 0` ⇒ task 为 undefined ⇒ 读 stdin。
+    //
+    // **踩过的坑**：我先写成了 `… '--json', '-'`，真机报
+    //   `` `-` must be the only task argument ``
+    // 因为 `--json` 也算进了位置参数（判断是 `args.length > 1 && args.includes('-')`）。
+    // **别传 `-`。**
+    const args = ['--profile', this.options.profile, 'headless', '--json']
     this.log(`启动 headless：${this.options.bin} ${args.join(' ')}（提示词 ${String(request.prompt.length)} 字符，经 stdin）`)
     const child = this.spawnImpl(this.options.bin, args, {
       env: { ...process.env, ...this.options.env },
