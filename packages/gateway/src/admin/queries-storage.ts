@@ -16,6 +16,8 @@ import { readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
+import { DEFAULT_FRAGMENT_POLICY, planFragmentMaintenance, resolveTierRoots } from '@forlife/store'
+
 import { LATEST_SCHEMA_VERSION } from '@forlife/store'
 
 /** 一张表的大小概览。 */
@@ -63,6 +65,35 @@ export interface StorageOverview {
     readonly rows: number
     readonly backupBytes: number
   }
+    /**
+     * **分层分布**（PLAN 阶段 9 交付物 1 的可见性）。
+     *
+     * **看不见的运维能力等于没有** —— 交付物 1 做完并接进运行了，
+     * 但用户不会去翻日志；"跑了但没人知道"与"根本没跑"在体验上一样。
+     */
+    readonly tiers: readonly {
+      readonly tier: string
+      readonly rows: number
+      readonly bytes: number
+    }[]
+    /**
+     * 三层根路径 + **哪几层是退回的**。
+     *
+     * "warm 退回了 hot" 这件事**必须显示** ——
+     * 否则用户以为真有三层在放，而实际全在一层。
+     */
+    readonly tierRoots: {
+      readonly roots: Readonly<Record<string, string>>
+      readonly fellBack: readonly { readonly tier: string; readonly from: string }[]
+    }
+    /** 碎片状态（交付物 4 的可见性）。 */
+    readonly fragments: {
+      readonly fragmented: number
+      /** **归宿已丢的** —— 它们是唯一副本，必须留着，但要让界面能看见。 */
+      readonly orphaned: number
+      readonly reclaimableTokens: number
+      readonly reason: string
+    }
 }
 
 /** 我们关心的表（按用途分组，便于一眼看出谁在涨）。 */
@@ -179,5 +210,68 @@ export function queryStorage(db: DatabaseSync, options: { readonly dbPath: strin
       rows: tables.reduce((sum, table) => sum + Math.max(0, table.rows), 0),
       backupBytes: backups.reduce((sum, file) => sum + file.sizeBytes, 0),
     },
+
+    // ── 分层分布（交付物 1 的可见性）──
+    //
+    // 只统计**带 storage_tier 的表**（现在只有两张）——
+    // 写死表名而不是扫所有表：扫出来的"没有该列的表"只会变成噪音。
+    tiers: (() => {
+      const withTier: readonly { table: string; bytesColumn: string | undefined }[] = [
+        { table: 'long_memory_entries', bytesColumn: undefined },
+        { table: 'media_assets', bytesColumn: 'size_bytes' },
+      ]
+      const acc = new Map<string, { rows: number; bytes: number }>()
+      for (const { table, bytesColumn } of withTier) {
+        try {
+          const sql =
+            bytesColumn === undefined
+              ? `SELECT storage_tier AS t, COUNT(*) AS n, 0 AS b FROM ${table} GROUP BY storage_tier`
+              : `SELECT storage_tier AS t, COUNT(*) AS n, COALESCE(SUM(${bytesColumn}), 0) AS b FROM ${table} GROUP BY storage_tier`
+          for (const row of db.prepare(sql).all() as unknown as readonly { t: string; n: number; b: number }[]) {
+            const cur = acc.get(row.t) ?? { rows: 0, bytes: 0 }
+            acc.set(row.t, { rows: cur.rows + Number(row.n), bytes: cur.bytes + Number(row.b) })
+          }
+        } catch {
+          // 表或列不存在（老库还没迁移）⇒ 跳过，不编造 0
+        }
+      }
+      // **三层都要出现**（哪怕某层是 0）—— 只列"有数据的层"的话，
+      // 用户看不出"warm 一层都没用上"这件事。
+      return ['hot', 'warm', 'cold'].map((tier) => ({
+        tier,
+        rows: acc.get(tier)?.rows ?? 0,
+        bytes: acc.get(tier)?.bytes ?? 0,
+      }))
+    })(),
+
+    // ── 三层根路径 + 退回情况 ──
+    tierRoots: (() => {
+      try {
+        const resolved = resolveTierRoots(process.env)
+        return { roots: resolved.roots, fellBack: resolved.fellBack }
+      } catch {
+        // 没配 FORLIFE_ROOT_HOT ⇒ 明确报"没配"，而不是给一个假路径
+        return { roots: {}, fellBack: [], note: '没有配置 FORLIFE_ROOT_HOT' }
+      }
+    })(),
+
+    // ── 碎片状态（交付物 4 的可见性）──
+    fragments: (() => {
+      try {
+        const plan = planFragmentMaintenance(db, DEFAULT_FRAGMENT_POLICY)
+        const total = db
+          .prepare("SELECT COUNT(*) AS n FROM mid_memory_entries WHERE status = 'fragmented'")
+          .get() as { n?: number } | undefined
+        return {
+          fragmented: Number(total?.n ?? 0),
+          orphaned: plan.orphaned.length,
+          reclaimableTokens: plan.reclaimableTokens,
+          reason: plan.reason,
+        }
+      } catch (error) {
+        // 查不了就说清"查不了"，**不编造 0** —— 0 会被读成"很健康"
+        return { fragmented: -1, orphaned: -1, reclaimableTokens: 0, reason: `查不到：${String(error).slice(0, 100)}` }
+      }
+    })(),
   }
 }
