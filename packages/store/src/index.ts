@@ -266,3 +266,9 @@ export {
   tierPathFor,
 } from './settle.ts'
 export type { BlobCandidate, MoveFile, MoveOutcome, SettleOptions, SettleOutcome } from './settle.ts'
+
+// ── 备份/恢复（PLAN 阶段 9 交付物 7）──────────────────────────────────
+// 注意：这里导出的是 **Verified** 那个；`db.ts` 的 `backupDatabase`（迁移前快照）
+// 已经在上面单独导出了。两个名字必须能分开 —— 失败语义不同。
+export { backupBlobs, backupDatabaseVerified, runBackup, stampFor, verifyBackup } from './backup.ts'
+export type { BackupOptions, BackupResult } from './backup.ts'
