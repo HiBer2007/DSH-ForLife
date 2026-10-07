@@ -40,6 +40,7 @@ import { createToolLoopGuard } from './tool-loop-guard.ts'
 import { MemoryRuntime, resolveDbPath, startSettleTimer } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
+import { buildQqTools } from './qq-tools.ts'
 import { emitForlifeEvent, type SessionLike } from './events.ts'
 export { adminMessage, createForlifeMessage, FORLIFE_SOURCES, qqMessage, systemMessage } from './sources.ts'
 
@@ -585,6 +586,23 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
       // "安排一个唤醒"在 gateway 侧引擎起来之前也是有效的，只是暂时不会响。
       // （对比端口工具：没有 Caddy 时注定失败，所以那种才"没配就不注册"。）
       for (const definition of buildWakeTools(defineToolImpl, runtime, wakeToolHost(runtime))) {
+        const dispose = tools.register(definition)
+        disposers.push(dispose)
+      }
+
+      // ★ QQ 工具（PLAN §8.1）。**总是注册** —— 与唤醒工具同理：
+      // 它们只写数据库（`qq_outbox` / `qq_sessions`），不需要外部配置就能成功；
+      // gateway 没起来时消息只是**排在队列里**（不会丢，也不会假装送达）。
+      //
+      // ⚠️ **这一行曾经漏了** —— `buildQqTools` 写好了、测试全绿，
+      // 而**生产路径上零调用** ⇒ `qq_reply` 等 9 个工具在生产里不存在 ⇒
+      // **模型无法回复任何 QQ 消息**。
+      //
+      // **为什么测试没抓到**：测试**直接调 `buildQqTools`**（绕过注册这一步）；
+      // 而验收① 验的是**唤醒**（`buildWakeTools` 注册了，所以那条链路真的通）。
+      // ⇒ 典型的「接线断了但测试全绿」。
+      // 守卫见 `test/qq-tools-wiring.test.ts`。
+      for (const definition of buildQqTools(defineToolImpl, runtime)) {
         const dispose = tools.register(definition)
         disposers.push(dispose)
       }
