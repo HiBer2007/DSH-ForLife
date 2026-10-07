@@ -67,8 +67,6 @@ const KNOWN_UNCONSUMED = new Set<string>([
   // §7.4 重复查询检测（>0.9 → duplicate_query）——未实现
   'recall.duplicateSimilarity',
   // §7.5/§7.6 逃生通道 request_recall_extension——工具未实现
-  'recall.extensionMax',
-  'recall.extensionCooldownTurns',
   // §7.4 联想深度提示（同轮 ≥3 次）——未实现
   'recall.associativeDepthWarn',
   // 路由二阶段（评分模型/预评分开关/批量/延迟预算/定时复核）——部分参数尚未接线
