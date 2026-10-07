@@ -35,6 +35,7 @@ import { onCompactionFailure } from './compaction-engine.ts'
 import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
 import { registerLoopGuard } from './loop-guard-register.ts'
+import { createToolLoopGuard } from './tool-loop-guard.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -427,6 +428,9 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   // 数据来源是宿主的 `assistant/message` 事件（带 `usage`）。
   // 用 ctx.on 订阅会话事件 —— 这是第一方插件普遍的做法（已核实 dsh-token-meter 等）。
   // 采集失败**不能让插件挂掉**：拿不到用量只是少了个指标，不该影响记忆本体。
+  // 工具调用侧的检测器（**独立于文字侧** —— 见 tool-loop-guard.ts 的模块头）
+  const toolLoopGuard = createToolLoopGuard()
+
   const contextOn = ctx as unknown as { on?: (event: string, handler: (...args: unknown[]) => void) => (() => void) | undefined }
   if (typeof contextOn.on === 'function') {
     try {
@@ -442,6 +446,21 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
           }
         } catch (error) {
           log(`用量采集失败（已忽略）：${String(error)}`)
+
+        // ── ★ 工具调用侧的死循环监控（补"不发言的循环"盲区）──────────
+        //
+        // `agent/assistant-stream` 只看得到**文字**；模型反复调同一个
+        // 只读工具时**一个字都不说**，那一层完全拦不到。
+        //
+        // `tool/call` 是 `SessionEvent` ⇒ **复用这条已经在跑的订阅**，
+        // 不新增钩子（新钩子要重新验调用约定，而这条已验证过）。
+        //
+        // **独立的检测器** —— 正常一轮里文字与工具是交替的，
+        // 共用一个会把那个**完全正常的模式**看成重复。
+        const toolVerdict = toolLoopGuard.feed(event)
+        if (toolVerdict !== null && toolVerdict.action === 'stop-and-restart') {
+          always(`⚠️ **检测到工具调用死循环**：${toolVerdict.reason}`)
+        }
         }
       })
       if (typeof dispose === 'function') disposers.push(dispose)
