@@ -61,6 +61,11 @@ function backupMenuItems(row: Record<string, unknown>): ContextMenuItem[] {
 const state = useAsyncData<StorageOverview>(() => api.get<StorageOverview>('/storage'))
 
 /** 只显示有数据的表？默认显示全部（空表也是信息：说明那条链路还没跑过）。 */
+/** 层的显示名（英文键给人看要翻译一下）。 */
+function tierLabel(tier: string): string {
+  return tier === 'hot' ? '热层（SSD）' : tier === 'warm' ? '温层' : tier === 'cold' ? '冷层（HDD）' : tier
+}
+
 const onlyNonEmpty = ref(false)
 
 const tableRows = computed(() => {
@@ -124,6 +129,71 @@ const backupColumns: TableColumn<Record<string, unknown>>[] = [
             :hint="`备份 ${formatNumber(state.data.value.backups.length)} 个，共 ${formatBytes(state.data.value.totals.backupBytes)}`"
           />
         </div>
+
+        <!-- ── 分层分布（阶段 9 交付物 1 的可见性）──────────────────────
+             三条显示原则：
+             1. **三层都列**（哪怕某层是 0）—— 只列"有数据的层"的话，
+                用户看不出"warm 一层都没用上"；
+             2. **退回要显眼** —— "cold 退回了 warm" 必须看得见，
+                否则用户以为真有三层在放，而实际文件全在一层；
+             3. 字节数用 formatBytes（面板上"1941504"没人读得出来）。 -->
+        <PanelCard
+          title="分层分布"
+          subtitle="blob 与长期记忆的冷热归属 —— 沉降任务每 30 分钟跑一轮"
+        >
+          <div v-if="state.data.value.tierRoots.fellBack.length > 0" class="fallback-warn">
+            <strong>有层被退回了</strong>：
+            <span v-for="f in state.data.value.tierRoots.fellBack" :key="f.tier">
+              {{ f.tier }} → 用 {{ f.from }} 的路径；
+            </span>
+            <span class="muted">没配的层会退回上一层，所以文件并没有真的分三层放。</span>
+          </div>
+          <div v-else-if="state.data.value.tierRoots.note" class="fallback-warn">
+            {{ state.data.value.tierRoots.note }}
+          </div>
+
+          <div class="grid grid-3">
+            <StatCard
+              v-for="t in state.data.value.tiers"
+              :key="t.tier"
+              :label="tierLabel(t.tier)"
+              :value="formatBytes(t.bytes)"
+              :hint="`${formatNumber(t.rows)} 行`"
+              :tone="t.rows === 0 ? 'warn' : 'neutral'"
+            />
+          </div>
+          <p class="muted tier-hint">
+            路径：{{ state.data.value.tierRoots.roots.hot ?? '（未配）' }}
+          </p>
+        </PanelCard>
+
+        <!-- ── 碎片状态（阶段 9 交付物 4 的可见性）──────────────────────
+             `fragmented: -1` 表示**查不到**，不是"零个" ——
+             0 是"很健康"，-1 是"我不知道"，两者不能显示成一样。 -->
+        <PanelCard
+          title="碎片索引"
+          subtitle="压缩沉淀后的原始记忆 —— 归宿还在的才允许淘汰"
+        >
+          <div class="grid grid-3">
+            <StatCard
+              label="碎片条数"
+              :value="state.data.value.fragments.fragmented < 0 ? '查不到' : formatNumber(state.data.value.fragments.fragmented)"
+              :hint="state.data.value.fragments.reason"
+              :tone="state.data.value.fragments.fragmented < 0 ? 'warn' : 'neutral'"
+            />
+            <StatCard
+              label="归宿已丢"
+              :value="state.data.value.fragments.orphaned < 0 ? '查不到' : formatNumber(state.data.value.fragments.orphaned)"
+              hint="它们是唯一副本，不会被清理 —— 但也占着地方"
+              :tone="state.data.value.fragments.orphaned > 0 ? 'warn' : 'ok'"
+            />
+            <StatCard
+              label="可回收 token"
+              :value="formatNumber(state.data.value.fragments.reclaimableTokens)"
+              hint="过了保留期且归宿还在的碎片合计"
+            />
+          </div>
+        </PanelCard>
 
         <PanelCard title="表行数" subtitle="按行数降序 —— 涨得最快的表就是下一个要治理的对象">
           <template #actions>
@@ -268,5 +338,18 @@ const backupColumns: TableColumn<Record<string, unknown>>[] = [
   color: var(--c-ok, #2a9d5c);
   font-size: var(--t-xs);
   overflow-wrap: anywhere;
+}
+.fallback-warn {
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--c-warn);
+  background: var(--c-warn-bg);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.tier-hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
 }
 </style>

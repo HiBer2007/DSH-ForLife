@@ -44,4 +44,38 @@ export interface StorageOverview {
     readonly rows: number
     readonly backupBytes: number
   }
+  /**
+   * **分层分布**（阶段 9 交付物 1 的可见性）。
+   *
+   * **三层都会出现**（哪怕某层是 0）—— 只列"有数据的层"的话，
+   * 用户看不出"warm 一层都没用上"这件事。
+   */
+  readonly tiers: readonly {
+    readonly tier: string
+    readonly rows: number
+    readonly bytes: number
+  }[]
+  /**
+   * 三层根路径 + **哪几层是退回的**。
+   *
+   * "warm 退回了 hot" 必须显示 —— 否则用户以为真有三层在放，而实际全在一层。
+   */
+  readonly tierRoots: {
+    readonly roots: Readonly<Record<string, string>>
+    readonly fellBack: readonly { readonly tier: string; readonly from: string }[]
+    /** 没配根路径时服务端会带上这句（而不是给一个假路径）。 */
+    readonly note?: string
+  }
+  /**
+   * 碎片状态（阶段 9 交付物 4 的可见性）。
+   *
+   * `fragmented: -1` 表示**查不到**（不是"零个"）—— 两者含义完全不同。
+   */
+  readonly fragments: {
+    readonly fragmented: number
+    /** **归宿已丢的** —— 它们是唯一副本，必须留着，但要让界面能看见。 */
+    readonly orphaned: number
+    readonly reclaimableTokens: number
+    readonly reason: string
+  }
 }
