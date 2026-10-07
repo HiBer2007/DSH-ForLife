@@ -46,8 +46,15 @@ function build(hostOver: Record<string, unknown> = {}): {
   return { tools, db: opened.db, fired, close: () => opened.db.close() }
 }
 
-/** 取工具返回的 value。 */
-const valueOf = (r: unknown): Record<string, unknown> => (r as { value: Record<string, unknown> }).value
+/**
+ * 取工具返回的 value。
+ *
+ * 宿主契约：`execute` **直接返回规范化 JSON 值**（展示文本由 `output.render` 投影出来）。
+ * 以前这里写的是 `(r as {value}).value`，等于把"多包一层 `{content, value}`"这个错误
+ * 约定固化进了测试 —— 单测全绿，真宿主却因 schema 不符把五个唤醒工具全部判失败。
+ * 现在统一按"返回值本身就是 value"取。
+ */
+const valueOf = (r: unknown): Record<string, unknown> => r as Record<string, unknown>
 
 test('工具名固定五个（测试与文档共用一份）', () => {
   assert.deepEqual([...WAKE_TOOL_NAMES], ['schedule_wake', 'register_watcher', 'list_wakes', 'cancel_wake', 'wake_now'])
@@ -223,6 +230,28 @@ test('wake_now：调 fireNow；失败时如实回报', async () => {
     const r = valueOf(await s.tools.get('wake_now')!.execute({ id: 'wt_1' }))
     assert.equal(r['ok'], true)
     assert.deepEqual(s.fired, ['wt_1'])
+  } finally {
+    s.close()
+  }
+})
+
+test('五个 execute 都直接返回规范化值：不自己包 {content, value}（真宿主会判 schema 错）', async () => {
+  const s = build()
+  try {
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ['list_wakes', {}],
+      ['schedule_wake', { title: 't', prompt: 'p', delaySeconds: 120 }],
+      ['register_watcher', { name: 'w', path: 'w.ps1', contract: 'probe', title: 't', prompt: 'p' }],
+      ['cancel_wake', { id: 'wt_没有' }],
+      ['wake_now', { id: 'wt_1' }],
+    ]
+    for (const [name, args] of cases) {
+      const r = (await s.tools.get(name)!.execute(args)) as Record<string, unknown>
+      // 宿主拿 execute 的返回**原样**按 output.schema 校验，包一层就是"缺 value.ok"那个故障
+      assert.ok(!('content' in r), `${name} 不该返回 content：包装是宿主的活`)
+      assert.ok(!('value' in r), `${name} 不该返回 value 包装：execute 直接返回 value`)
+      assert.equal(typeof r['ok'], 'boolean', `${name} 的返回值必须带 ok（schema 的必填项）`)
+    }
   } finally {
     s.close()
   }

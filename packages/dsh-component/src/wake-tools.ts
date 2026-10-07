@@ -167,7 +167,7 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       runtime.recordToolCall()
       const parsed = parseSchedule(input, now())
       if (!parsed.ok) {
-        return { content: text(`没能安排：${parsed.reason}`), value: { ok: false, id: '', message: parsed.reason } }
+        return { ok: false, id: '', message: parsed.reason }
       }
 
       const created = createWakeTrigger(db, {
@@ -183,10 +183,10 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         now: now(),
       })
       if (!created.ok || created.row === undefined) {
-        return { content: text(`没能安排：${created.reason}`), value: { ok: false, id: '', message: created.reason } }
+        return { ok: false, id: '', message: created.reason }
       }
       const message = `已安排「${created.row.title}」，下次 ${String(created.row.next_fire_at)}（id ${created.row.id}）`
-      return { content: text(message), value: { ok: true, id: created.row.id, message } }
+      return { ok: true, id: created.row.id, message }
     },
   })
 
@@ -229,12 +229,12 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       const contract = String(input['contract'] ?? '')
       if (!['probe', 'watcher', 'service'].includes(contract)) {
         const reason = `contract 必须是 probe / watcher / service 之一，收到「${contract}」`
-        return { content: text(reason), value: { ok: false, id: '', message: reason } }
+        return { ok: false, id: '', message: reason }
       }
       if (host.registerProgram === undefined) {
         // **未装配就明确拒绝** —— 静默成功的话模型会以为监视在跑，而实际没有
         const reason = '监视程序监督器未启用（需要 gateway 侧装配），本次登记未生效'
-        return { content: text(reason), value: { ok: false, id: '', message: reason } }
+        return { ok: false, id: '', message: reason }
       }
 
       const name = String(input['name'] ?? '')
@@ -244,7 +244,7 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         path: String(input['path'] ?? ''),
         spec: {},
       })
-      if (!program.ok) return { content: text(program.reason), value: { ok: false, id: '', message: program.reason } }
+      if (!program.ok) return { ok: false, id: '', message: program.reason }
 
       const created = createWakeTrigger(db, {
         kind: 'watcher',
@@ -257,10 +257,10 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         now: now(),
       })
       if (!created.ok || created.row === undefined) {
-        return { content: text(created.reason), value: { ok: false, id: '', message: created.reason } }
+        return { ok: false, id: '', message: created.reason }
       }
       const message = `已登记监视「${created.row.title}」（${contract}，id ${created.row.id}）`
-      return { content: text(message), value: { ok: true, id: created.row.id, message } }
+      return { ok: true, id: created.row.id, message }
     },
   })
 
@@ -286,14 +286,42 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
                 kind: { type: 'string', required: true },
                 enabled: { type: 'boolean', required: true },
                 nextFireAt: { type: 'string', required: true },
+                // ★ **必须回 prompt**（模型在真机上报出来的 bug）：
+                // 模型安排唤醒时会写"到点要做什么"，而这里原来**不返回它** ——
+                // 于是模型过一会儿醒来时完全不知道自己当初要做什么，
+                // 真机里它只能回"我查不到它对应哪件事"。
+                // 列唤醒列表的**主要用途**就是"看看我安排了什么、该做什么"，
+                // 不给 prompt 等于让这个工具失去意义。
+                prompt: { type: 'string', required: true },
               },
             },
           },
         },
       },
       render: (_args: never, value: never): ContentBlock[] => {
-        const v = value as { rows: readonly { title: string }[] }
-        return text(v.rows.length === 0 ? '你还没有安排任何唤醒。' : v.rows.map((r) => r.title).join('\n'))
+        const v = value as { rows: readonly { id: string }[] }
+        if (v.rows.length === 0) return text('你还没有安排任何唤醒。')
+        // 摘要里要带"下次什么时候 / 路径 / 停用没"这类只有触发器行才知道的信息，
+        // 所以在这里按 id 回查 —— execute 的返回值必须**只**是规范化 JSON（见 tools.ts 的约定）
+        //
+        // ★ **不能用 `!` 把可选性按下去**（模型在真机上报出来的 bug）：
+        // `getWakeTrigger` 返回 `WakeTriggerRow | undefined`，行取不到时
+        // `describeTrigger(undefined)` 会去读 `undefined.kind` ⇒ **抛异常** ⇒
+        // **整个工具失败**，而不是"少显示一条"。
+        // 这是"用 ! 按掉可选性"的典型代价：把一条数据的缺失放大成整个功能的失败。
+        return text(
+          v.rows
+            .map((r) => {
+              const full = getWakeTrigger(db, r.id)
+              if (full === undefined) return `（${r.id} 已取不到，可能刚被取消）`
+              // **带上 prompt** —— 模型要能看到自己当初写的任务
+              // ★ **必须带上 id**（真机 bug）：cancel_wake / wake_now 都要求传 id，
+              // 而它们的说明写的是"list_wakes 里有" —— 列表却不给 id 的话，
+              // 模型看得见那条唤醒、却拿它毫无办法（只有"取不到"的分支才漏出 id）。
+              return `${describeTrigger(full)}（id ${full.id}）\n  到点要做的事：${full.prompt}`
+            })
+            .join('\n'),
+        )
       },
     },
     execute: async (): Promise<unknown> => {
@@ -304,11 +332,12 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         kind: row.kind,
         enabled: row.enabled === 1,
         nextFireAt: row.next_fire_at ?? '',
+        // ★ 带上 prompt（模型要能看到自己当初写的任务，见 schema 里的说明）
+        prompt: row.prompt,
       }))
-      return {
-        content: text(rows.length === 0 ? '你还没有安排任何唤醒。' : rows.map((r) => describeTrigger(getWakeTrigger(db, r.id)!)).join('\n')),
-        value: { ok: true, rows },
-      }
+      // 只返回与 schema 一致的规范化值 —— 不要包 {content, value}：
+      // 宿主拿 execute 的返回**原样**跟 output.schema 校验，包一层会让 list_wakes 整个报校验错
+      return { ok: true, rows }
     },
   })
 
@@ -336,11 +365,11 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       const existing = getWakeTrigger(db, id)
       if (existing === undefined) {
         const reason = `没有这条唤醒：${id}（用 list_wakes 看看有哪些）`
-        return { content: text(reason), value: { ok: false, message: reason } }
+        return { ok: false, message: reason }
       }
       deleteWakeTrigger(db, id)
       const message = `已取消「${existing.title}」`
-      return { content: text(message), value: { ok: true, message } }
+      return { ok: true, message }
     },
   })
 
@@ -370,7 +399,7 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       const result = await host.fireNow(id, '模型主动立刻执行')
       const ok = result.decision === 'fired'
       const message = ok ? '已立刻执行' : `没能执行：${result.reason}`
-      return { content: text(message), value: { ok, message } }
+      return { ok, message }
     },
   })
 

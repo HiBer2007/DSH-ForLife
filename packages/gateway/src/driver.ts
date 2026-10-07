@@ -3,8 +3,18 @@
  *
  * ## headless 驱动
  *
- * 起 `dsh --profile <name> headless --json "<提示词>"`，逐行读 **NDJSON** 事件。
+ * 起 `dsh --profile <name> headless --json -`，**提示词经 stdin 送进去**，逐行读 **NDJSON** 事件。
  * 这一路的好处是**进程隔离**：一次轮次崩了不会带走网关。
+ *
+ * ## 提示词为什么必须走 stdin（踩过的坑）
+ *
+ * 早先的写法是把提示词当**命令行参数**传（`… --json "<提示词>"`）。在 Windows 上
+ * `shell: true` 意味着命令串交给 `cmd.exe`，而唤醒提示是**多行**的（见 `wake-prompt.ts`）——
+ * 命令串里的换行把命令截断，模型只收到第一行「这不是用户发来的消息，而是你自己之前设的触发器到点了。」，
+ * 触发标题/原因/「你当时要自己做的事」**全部丢失** ⇒ 表现为"空唤醒"。
+ *
+ * `dsh --profile headless` 支持任务参数为 `-` 时从 stdin 读（`dsh-headless/lib/index.js:300`），
+ * 所以这里固定传 `-`，提示词原样走 stdin。顺带绕开命令行长度的上限。
  *
  * ## 长连接驱动
  *
@@ -33,6 +43,15 @@ export interface HeadlessDriverOptions {
   readonly timeoutMs?: number
   /** 环境变量（例如 DSH_HOME）。 */
   readonly env?: Record<string, string | undefined>
+  /**
+   * 注入 `spawn`（测试用）。
+   *
+   * 存在的理由：这里有一条**只会在真机 Windows 上发作**的缺陷史 ——
+   * 把多行提示词当命令行参数传，会被 `cmd.exe` 在第一个换行处截断，
+   * 而单测里没有真进程就复现不了。注入之后，这条约定（"提示词走 stdin，不进 args"）
+   * 就能被一条普通单测钉住。
+   */
+  readonly spawnImpl?: typeof spawn
   readonly log?: (message: string) => void
 }
 
@@ -43,6 +62,7 @@ export class HeadlessTurnDriver implements TurnDriver {
   readonly kind = 'headless' as const
   private readonly options: Required<Pick<HeadlessDriverOptions, 'profile' | 'bin' | 'timeoutMs'>> & HeadlessDriverOptions
   private readonly log: (message: string) => void
+  private readonly spawnImpl: typeof spawn
 
   constructor(options: HeadlessDriverOptions = {}) {
     this.options = {
@@ -52,6 +72,7 @@ export class HeadlessTurnDriver implements TurnDriver {
       ...options,
     }
     this.log = options.log ?? ((): void => {})
+    this.spawnImpl = options.spawnImpl ?? spawn
   }
 
   /**
@@ -61,14 +82,21 @@ export class HeadlessTurnDriver implements TurnDriver {
    * @returns 轮次结果。
    */
   async run(request: TurnRequest): Promise<TurnOutcome> {
-    const args = ['--profile', this.options.profile, 'headless', '--json', request.prompt]
-    this.log(`启动 headless：${this.options.bin} ${args.slice(0, 4).join(' ')} …`)
-    const child = spawn(this.options.bin, args, {
+    // `-` = 从 stdin 读任务。**不要把 request.prompt 放进 args**：
+    // 多行提示词过 shell（Windows 是 cmd.exe）会在第一个换行处被截断。
+    const args = ['--profile', this.options.profile, 'headless', '--json', '-']
+    this.log(`启动 headless：${this.options.bin} ${args.join(' ')}（提示词 ${String(request.prompt.length)} 字符，经 stdin）`)
+    const child = this.spawnImpl(this.options.bin, args, {
       env: { ...process.env, ...this.options.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       // Windows 上 dsh 是 .cmd/.ps1 垫片，必须走 shell
       shell: true,
     })
+
+    // 子进程早退时写 stdin 会 EPIPE；这不是轮次失败（真正的失败由 close/error 分支给），
+    // 所以吞掉它，避免一个未处理的 'error' 事件把整个网关带走。
+    child.stdin.on('error', () => {})
+    child.stdin.end(request.prompt, 'utf8')
 
     const segments: string[] = []
     let toolCalls = 0

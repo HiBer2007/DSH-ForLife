@@ -127,14 +127,7 @@ export function buildPortTools(
         // 空串表示"不过期"（schema 里 string 比 null 好处理，也更容易被模型读懂）
         expiresAt: row.expires_at ?? '',
       }))
-      return {
-        content: text(
-          rows.length === 0
-            ? '当前没有任何已发布的端口。'
-            : rows.map((r) => `${r.name} → ${r.url}（目标 :${String(r.targetPort)}）`).join('\n'),
-        ),
-        value: { ok: true, rows },
-      }
+      return { ok: true, rows }
     },
   })
 
@@ -201,10 +194,10 @@ export function buildPortTools(
         approvedBy: 'model',
       })
       if (!result.ok) {
-        return { content: text(`发布失败：${result.reason}`), value: { ok: false, url: '', message: result.reason } }
+        return { ok: false, url: '', message: result.reason }
       }
       const url = service.urlFor(result.row!)
-      return { content: text(`已发布：${url}`), value: { ok: true, url, message: '已发布' } }
+      return { ok: true, url, message: '已发布' }
     },
   })
 
@@ -234,16 +227,10 @@ export function buildPortTools(
       const name = String(input['name'] ?? '')
       const row = service.list().find((r) => r.name === name)
       if (row === undefined) {
-        return {
-          content: text(`没有叫「${name}」的发布。用 list_ports 看看有哪些。`),
-          value: { ok: false, message: '没有这条发布' },
-        }
+        return { ok: false, message: '没有这条发布' }
       }
       const result = await service.unpublish(row.id)
-      return {
-        content: text(result.ok ? `已取消：${name}` : `取消失败：${result.reason}`),
-        value: { ok: result.ok, message: result.reason },
-      }
+      return { ok: result.ok, message: result.reason }
     },
   })
 
