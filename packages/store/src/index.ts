@@ -316,3 +316,7 @@ export {
   shouldRunFragmentMaintenance,
 } from './fragment-threshold.ts'
 export type { FragmentThresholdPolicy, ThresholdDecision } from './fragment-threshold.ts'
+
+// ── 冷数据按需加载 + 延迟记录（阶段 9 验收标准 #3）────────────────────
+export { loadLongEntry, loadStats, recordLoad, SLOW_LOAD_MS } from './cold-load.ts'
+export type { ColdLoadResult, ReadTextFile } from './cold-load.ts'

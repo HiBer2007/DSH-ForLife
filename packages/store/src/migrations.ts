@@ -1426,6 +1426,35 @@ CREATE TABLE IF NOT EXISTS migration_lock (
 
 const m0026Checksum = createHash('sha256').update(m0026.sql + m0026.name).digest('hex')
 
+const m0027 = {
+  version: 27,
+  name: '0027_cold_load_latency',
+  sql: `
+-- 冷数据加载的延迟记录（验收标准 #3）。
+--
+-- **存聚合量而不是逐次明细**：验收标准要回答的是"冷层到底慢多少"，
+-- 而那是分位数问题，不是"列出所有行"的问题。
+--
+-- **按 tier 分行**：只有把 hot 与 cold 放在一起比，
+-- "冷数据可接受"这句话才有依据。只记 cold 的话没人知道 3ms 算快还是慢。
+CREATE TABLE IF NOT EXISTS cold_load_stats (
+  tier        TEXT PRIMARY KEY,          -- hot / warm / cold
+  loads       INTEGER NOT NULL DEFAULT 0,
+  total_ms    INTEGER NOT NULL DEFAULT 0,
+  max_ms      INTEGER NOT NULL DEFAULT 0,
+  last_ms     INTEGER NOT NULL DEFAULT 0,
+  last_at     TEXT,
+  -- 慢到"不可接受"的次数（超过阈值）—— 让"可接受"这句话可查
+  slow_loads  INTEGER NOT NULL DEFAULT 0
+);
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0027.sql)
+  },
+} as const
+
+const m0027Checksum = createHash('sha256').update(m0027.sql + m0027.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1583,6 +1612,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0026.name,
     checksum: m0026Checksum,
     up: m0026.up,
+  },
+  {
+    version: m0027.version,
+    name: m0027.name,
+    checksum: m0027Checksum,
+    up: m0027.up,
   },
 ]
 
