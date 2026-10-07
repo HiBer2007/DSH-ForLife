@@ -272,3 +272,12 @@ export type { BlobCandidate, MoveFile, MoveOutcome, SettleOptions, SettleOutcome
 // 已经在上面单独导出了。两个名字必须能分开 —— 失败语义不同。
 export { backupBlobs, backupDatabaseVerified, runBackup, stampFor, verifyBackup } from './backup.ts'
 export type { BackupOptions, BackupResult } from './backup.ts'
+
+// ── 碎片索引合并与淘汰（PLAN 阶段 9 交付物 4）────────────────────────
+export {
+  DEFAULT_FRAGMENT_POLICY,
+  evictFragments,
+  mergeFragmentIndex,
+  planFragmentMaintenance,
+} from './fragment-maintenance.ts'
+export type { EvictableFragment, FragmentPlan, FragmentPolicy } from './fragment-maintenance.ts'
