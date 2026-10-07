@@ -34,6 +34,7 @@ import { getWakeTrigger, markSystemTriggersDue, updateWakeTrigger } from '@forli
 import { onCompactionFailure } from './compaction-engine.ts'
 import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
+import { registerLoopGuard } from './loop-guard-register.ts'
 import { MemoryRuntime, resolveDbPath } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
@@ -449,6 +450,15 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
       always(`⚠️ 无法订阅会话事件（缓存指标不可用）：${String(error)}`)
     }
   }
+  // ③c 死循环监控（用户要求：重复输出 ⇒ 停本轮 + 重启）
+  //
+  // 挂宿主的 `agent/assistant-stream` —— 那能看到**模型刚生成的原文**，
+  // 并用 `agent.cancel({kind:'hook'})` **真正中止本轮**。
+  //
+  // **拿不到钩子不是致命错误**（监控是加固，不是记忆本体），
+  // 但**必须让人看见** —— 静默的话，"在跑"和"没挂上"从日志上看一模一样。
+  registerLoopGuard(ctx, { log, always, disposers })
+
   // ④ 面板接口**不在这里注册** —— 它需要 `connection` 服务，而该服务只由 `dsh-web-app` 提供。
   //    见 `./panel-plugin.ts`：那是独立的一行插件，由 web profile 显式挂载。
   //    这样主插件在 base / headless 宿主里照样能 apply（记忆本体不受影响）。
