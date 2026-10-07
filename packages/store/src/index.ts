@@ -320,3 +320,7 @@ export type { FragmentThresholdPolicy, ThresholdDecision } from './fragment-thre
 // ── 冷数据按需加载 + 延迟记录（阶段 9 验收标准 #3）────────────────────
 export { loadLongEntry, loadStats, recordLoad, SLOW_LOAD_MS } from './cold-load.ts'
 export type { ColdLoadResult, ReadTextFile } from './cold-load.ts'
+
+// ── 模型死循环监控（用户要求：重复输出 ⇒ 停本轮 + 重启）──────────────
+export { DEFAULT_LOOP_POLICY, LoopGuard, normalizeForLoop, scanForLoop } from './loop-guard.ts'
+export type { LoopPolicy, LoopVerdict } from './loop-guard.ts'
