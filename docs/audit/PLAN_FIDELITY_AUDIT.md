@@ -437,7 +437,7 @@
 | §9.3 第二阶段：启发式复杂度评分（长度、关键词、是否含代码） | **部分一致** | 三要素齐（+工具链）：`heuristic.ts:86-112` `+0.25 规划关键词` / `+0.20 代码块` / `+0.15*min(len/2000,1)` / `+0.20 工具链>3`，阈值 `<0.35→L1`、`<0.70→L2`；权重/阈值全取基线（`plan-baseline.json:177-200`）。**但定位相反**：PLAN 放第二阶段，代码把它降为**第三层兜底**（`pipeline.ts:200-216`；`heuristic.ts:1-11` 注释"启发式不再作为主路径，只是**降级保护**"）。证据：`router/test/router.test.ts` › `test('启发式：公式逐项对应设计文档，且可解释')` |
 | §9.3 第三阶段（可选）：轻量本地分类器 Qwen2.5-0.5B | **部分一致** | 元素齐备（`scorer.ts:74-98` 提示词 + `:155-195` `HttpTierScorer`，`local-container`/`external-endpoint`，`temperature:0`，可选 `guided_json`；基线 `router.scorer.model="Qwen2.5-0.5B-Instruct"` / 4bit / 常驻 / 50ms / maxTokens 20）。**但定位相反**：代码做成**第二层主力**，PLAN 的"可选"**没有开关/基线参数**（`pipeline.ts:152-154` 未配置即降级）。证据：`router/test/router.test.ts` › `test('同步路径的超时必须严格是文档原值…')` |
 | §9.3 跨阶段：整条策略在运行期生效 | **找不到对应实现** | 轮次开始时无任何"守卫→评分→兜底"决策；`switch_model` 的 `tierOverride` 只被面板与 `router_status` 读取。搜过：① `new Router(` ② `from '@forlife/router'`（生产 5 处，全是常量/端点探测/视觉/回退链/切换裁决）③ `runGuards(\|selectRoute\|ROLE_TIER\|assignSubagent` ④ `lockTierForTurn\|TurnRouteState\|assertTierForTurn` ⑤ `buildFailoverRuntime\|FailoverRuntime` ⑥ `agent/request\|installModelSelection\|LlmCallConfig` ⑦ `listModelRoutes` |
-| §9.4 推理强度取值 **off / low / medium / high / max（五个值）** | **不一致** | 项目自有类型是 `contracts/src/opencode-go.ts:53` `'none'\|'low'\|'high'\|'max'`（四值；相邻注释明写"**没有 medium** —— 它在 DeepSeek 与 GLM 上都不合法"）；UI `RoutingView.vue:649-658` 同为 `(不指定)/none/low/high/max`；`migrations.ts:706` 注释却是 `-- low \| medium \| high`（**三处三方不一致**）；写入 API **不校验**（`dsh-component/src/api.ts:271`、`gateway/src/admin/api.ts:1240`）；唯一真校验在 `router/src/subagents.ts:141-150`（按宿主声明的合法集合，取不到就不传）。宿主真机值域旁证：`profiles/*/cordis.patch.yml:82-117`（`off/low/high/max`、`low/high/max`）、`WORK_STATUS.md:61-62`（真机报错 + "DSH 没有 `none`，项目的 none = DSH 的 off"） |
+| §9.4 推理强度取值 **off / low / medium / high / max（五个值）** | **不一致** | 项目自有类型是 `contracts/src/opencode-go.ts:53` `'none'\|'low'\|'high'\|'max'`（四值；相邻注释明写"**没有 medium** —— 它在 DeepSeek 与 GLM 上都不合法"）；UI `RoutingView.vue:649-658` 同为 `(不指定)/none/low/high/max`；`migrations.ts:706` 注释却是 `-- low \| medium \| high`（**三处三方不一致**）；写入 API **不校验**（`dsh-component/src/api.ts:271`、`gateway/src/admin/api.ts:1240`）；唯一真校验在 `router/src/subagents.ts:141-150`（按宿主声明的合法集合，取不到就不传）。宿主真机值域旁证：`profiles/*/cordis.patch.yml:82-117`（`off/low/high/max`、`low/high/max`）、`docs/status/WORK_STATUS.md:61-62`（真机报错 + "DSH 没有 `none`，项目的 none = DSH 的 off"） |
 | §9.4 语义："在选定模型上根据任务难度**动态**调整" | **部分一致** | 只有静态"档位→强度"表（`route-seed.ts:74-78`、`routes.ts:122-124`）；`escalate/deescalate`（`pipeline.ts:52-61`）变的是档位不是强度；**唯一把强度带进请求的是 `subagents.ts:159-165`（未接线）** ⇒ `model_routes.reasoning_effort` 只入库/展示，真机生效值来自宿主 profile 的 `reasoningEffort: high` |
 | §9.5 可参考的 DSH 插件（4 个 + `dsh-model-memory`） | **找不到（引用）** | 全仓搜 5 个插件名只命中 `PLAN.MD:463-470` 与 `EXECUTION_PLAN.md:745`；`research/` 零命中。PLAN 用词是"可参考"，不引用不算违约，但**也无评估结论留档**。自研对应物：`router/src/failover.ts`（≈dsh-llm-auto，未接线）、`router/src/subagents.ts`（≈subagent-default-model，未接线）、`router/src/routes.ts`+`decideSwitch`（≈router-core） |
 
@@ -639,7 +639,7 @@
 8. **`medium` 的真实命运**（§9.4）：写入 API 不校验、测试里 `'medium'` 能入库；真实 provider 是"报错"还是"静默忽略"本仓库无法判定。
 9. **§8.4 防抖是否被强制夹在 2–3 s**：代码无区间校验，只取决于配置（forlife-qq=3000，合规）。
 10. **§8.5 是否还需要"小模型"路径**：PLAN 写"规则**或**小模型"，二选一，已选规则。
-11. **测试是否真的通过**：审计者**未执行 `node --test`**（避免产生写入）；所有测试名只证明"用例存在"。`WORK_STATUS.md:32` 还记录过本机跑不了测试的历史。
+11. **测试是否真的通过**：审计者**未执行 `node --test`**（避免产生写入）；所有测试名只证明"用例存在"。`docs/status/WORK_STATUS.md:32` 还记录过本机跑不了测试的历史。
 
 ---
 

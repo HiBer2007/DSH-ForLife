@@ -223,7 +223,7 @@ auth:      Authorization: Bearer <access_token>（或 ?access_token=）
 
 ### 1.3 后台设计来源：AstrBot 调研结论
 
-完整报告见 `astrbot-admin-panel-research.md`（基于逐文件读源码，320 行）。
+完整报告见 `docs/research/astrbot-admin-panel-research.md`（基于逐文件读源码，320 行）。
 
 **它的形态**：Vue 3.3 + Vuetify 3.7 + Pinia + vue-router(hash) + Vite 6；后端 FastAPI + Hypercorn；**单进程内嵌、单端口 6185**，前端产物从 `data/dist` 提供；Docker 镜像 `soulter/astrbot:latest`。
 
@@ -3418,8 +3418,8 @@ memory.example.com {
 | `PLAN.MD` | 原始设计报告（三层记忆 / 压缩协议 / 碎片索引 / 预算 / 路由 / 缓存 / 实施路径） |
 | `模型路由.MD` | **补充设计**：复杂度评分修订为「守卫 → L1 小模型评分 → 启发式兜底」，含提示词、参数、性能手段与实施路径 |
 | `EXECUTION_PLAN.md` | 本文档 |
-| `astrbot-admin-panel-research.md` | AstrBot 后台：技术栈、信息架构、插件/配置 UX、SSE 日志、鉴权、抄 11 条避 5 条（320 行） |
-| `dsh-web-plugin-report.md` | DSH Web 扩展面：webserver / 客户端模块 / slot 全清单 / `/api` 路由与鉴权 / 最小配方（287 行） |
+| `docs/research/astrbot-admin-panel-research.md` | AstrBot 后台：技术栈、信息架构、插件/配置 UX、SSE 日志、鉴权、抄 11 条避 5 条（320 行） |
+| `docs/research/dsh-web-plugin-report.md` | DSH Web 扩展面：webserver / 客户端模块 / slot 全清单 / `/api` 路由与鉴权 / 最小配方（287 行） |
 | `research/dsh-plugin-authoring-reference.md` | DSH 插件编写权威参考：插件形态、`defineTool`、提示词段、生命周期事件、存储、LLM、设置、Web、验证工具（874 行） |
 | `research/vision-modality-report.md` | **视觉/多模态**：`inputModalities` 三态、`ctx.attachments` 附件管线、`agent/pre-step` 改写路线、桥接配方（274 行） |
 | `research/qq-client-report.md` | QQ 客户端完整对比：机制、容器化、登录与稳定性、集成契约、迁移预案（含逐条来源链接） |
@@ -3432,7 +3432,7 @@ memory.example.com {
 | `research/napcat_readme.md`、`research/snowluma_readme.md`、`research/ncdocs/`、`research/sl/`、`research/sl2/`、`research/slsrc*/` | QQ 客户端选型原始素材（README / 官方文档 / 关键源码片段） |
 | `research/dsh-std/`（已装 16 个 `@dsh-std/*` 包） | 兼容层 API 的**可查证据本体**：`.d.ts` 类型定义；`research/sqlite-probe.mjs` 是 SQLite 能力探针 |
 
-> 清理提示：`astr-src/AstrBot-master/` 是调研期的完整源码克隆，体积大且可重新获取，交付前删除（保留 `astrbot-admin-panel-research.md` 即可）。
+> 清理提示：`astr-src/AstrBot-master/` 是调研期的完整源码克隆，体积大且可重新获取，交付前删除（保留 `docs/research/astrbot-admin-panel-research.md` 即可）。
 
 
 

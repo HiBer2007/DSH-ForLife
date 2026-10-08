@@ -22,3 +22,16 @@ test_photo/
 .env.local
 *.local.md
 .DS_Store
+
+# ── 根目录的临时笔记（用户要求：临时 md 不要上传）────────────────────
+#
+# 历史上一批当天的排障笔记被扔在根目录，现已归到 `docs/incidents/`。
+# 新写的**不要放根目录** —— 放 `docs/` 下对应目录，并在 `docs/README.md` 加一行。
+# 下面挡掉常见命名（`/` 前缀表示只匹配根目录）。
+/wake-*.md
+/wake-*.MD
+/*-note.md
+/*-status-*.md
+/escalation-note-*.md
+/*-diag.mjs
+/test_photo
