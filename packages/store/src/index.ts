@@ -245,6 +245,8 @@ export {
   settlePolicyFromEnv,
   STORAGE_TIERS,
 } from './storage-tiers.ts'
+export { checkTierWritability, describeTierWritability } from './tier-health.ts'
+export type { TierWritability } from './tier-health.ts'
 export type { SettleCandidate, SettleDecision, SettlePolicy, StorageTier, TierRoots } from './storage-tiers.ts'
 
 // ── 唤醒请求队列（PLAN 阶段 8 方向性调整）────────────────────────────

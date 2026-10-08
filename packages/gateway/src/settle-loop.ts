@@ -38,6 +38,8 @@ import {
   mergeFragmentIndex,
   planFragmentMaintenance,
   resolveTierRoots,
+  checkTierWritability,
+  describeTierWritability,
   settleBlobs,
   settlePolicyFromEnv,
   longSettlePolicyFromEnv,
@@ -151,6 +153,22 @@ export function startSettleLoop(options: {
 
   const tick = async (): Promise<SettleTickResult> => {
     const roots = resolveTierRoots(options.env)
+
+    // ★★ 2026-10-08 真机实测后加的：**分层根的可写自检**。
+    //
+    //   冷层子目录不存在时，写入会**静默失败**（touch 报 No such file or directory，
+    //   而应用日志里一句话都没有）⇒ 沉降/归档/备份全部写不进去，
+    //   而运维以为"跑得好好的"。**这比崩了更难发现。**
+    //
+    //   ⇒ 启动时自检一次，不可写就**明确喊出来**（并说清后果）。
+    //   自检**不抛异常** —— 冷层不可用不该阻止维护循环启动（热层还能干活）。
+    const tierChecks = checkTierWritability(roots)
+    const tierWarning = describeTierWritability(tierChecks, roots.fellBack)
+    if (tierWarning !== undefined) {
+      log('⚠️ 存储分层有问题：' + tierWarning)
+    } else {
+      log('存储分层就绪：hot/warm/cold 三层根都可写')
+    }
     const outcomes = await settleBlobs({
       db: options.db,
       roots,

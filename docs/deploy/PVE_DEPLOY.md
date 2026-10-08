@@ -12,6 +12,10 @@
 
 ---
 
+> ⚠️ **2026-10-07 真机实测：这台 VM 没有 `curl`**（只有 `wget` 1.21.4）。
+> 下面凡是 `curl ...` 的地方都改成了 `wget`。
+> 如果你的机器有 `curl`，两者都行。
+
 ## ★★ 2026-10-07：**真机部署实测结果**（这一段是后加的，优先读）
 
 在一台 **Ubuntu 26.04.1 / 4 核 / 7.9 GiB / 63G 单盘 / 无独立 HDD** 的 KVM 虚拟机上，
@@ -190,7 +194,7 @@ ghcr.io/ggml-org/llama.cpp:server   # 评分器（可选，profiles: [scorer]）
 
 ```bash
 # Docker + compose 插件
-curl -fsSL https://get.docker.com | sh
+wget -qO- https://get.docker.com | sh
 docker compose version    # 要 v2（本仓库用的是 `docker compose`，不是 `docker-compose`）
 ```
 
@@ -330,7 +334,7 @@ export FORLIFE_ARCHIVE_DIR=/mnt/forlife-cold/archives
 
 ```cron
 # 每天 03:00 备份
-0 3 * * * curl -fsS -X POST -b /root/.forlife-cookie https://$FORLIFE_HOST/api/admin/backup
+0 3 * * * wget -qO- --post-data='' -b /root/.forlife-cookie https://$FORLIFE_HOST/api/admin/backup
 ```
 
 **没验过**：cron 与 cookie 的具体取法（本机是用管理会话调的接口）。
@@ -432,3 +436,13 @@ dsh web: http://127.0.0.1:3080/?token=<43 字符>
 - ✅ 备份对真实库跑通并独立验证通过
 - ✅ gateway 的日志脱敏已接线（有接线守卫测试）
 - ✅ 各启动脚本在本机跑通（Windows）
+
+## 附：IPv6-only 的源必然失败（真机实测）
+
+`security.ubuntu.com`、`mirrors.tuna.tsinghua.edu.cn` 等**解析出 IPv6-only**，
+而这台机器 `ip -6 route` 只有 `fe80::/64`（**没有 IPv6 默认路由**）。
+
+⇒ **这类源必然超时失败**，而报错信息看起来像“网络时好时坏”。
+
+**解法**：换成有 IPv4 的镜像（如 `mirrors.aliyun.com`），
+或者给机器配上 IPv6 默认路由。
