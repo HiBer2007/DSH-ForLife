@@ -155,3 +155,4 @@ export type {
   RequestFailure,
   StepFailoverState,
 } from './failover.ts'
+export * from './catalog.ts'
