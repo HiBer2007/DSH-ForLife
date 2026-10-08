@@ -129,7 +129,32 @@ COPY --from=build /build/packages ./packages
 #      不拷的话 bundle 解析不到，dsh 起不来。
 COPY --from=build /build/profiles ./profiles
 
-RUN pnpm install --frozen-lockfile --prod && pnpm store prune
+# ★★ 2026-10-08 修：**把 build 阶段的 pnpm store 复制过来**，然后用 `--prefer-offline` 装。
+#
+# ## 原来的样子（两个问题一起犯）
+#
+#     RUN pnpm install --frozen-lockfile --prod && pnpm store prune
+#
+#   ① **慢**：这一步重新解析+下载全部依赖。实测一个 9.66 MB 的包只跑
+#     **17 KiB/s** ⇒ 单这一步就要 ~10 分钟。
+#   ② **会直接失败**：报 `failed to lookup address information: Try again`
+#     —— 那是 **DNS 解析失败**，不是超时。
+#     ⇒ 构建时而好时坏，看起来像“磁盘/网络抽风”，实则每次都在赌 DNS。
+#
+# ## 为什么复制 store 就能一箭双雕
+#
+#   build 阶段已经 `pnpm install --frozen-lockfile`（**全量依赖**），
+#   store 里已经有所有 tarball。而 `--prod` 要装的是全量的**子集**
+#   ⇒ **store 里一定都有**，不需要网络。
+#
+#   用 `--prefer-offline` 而不是 `--offline`：万一真有一个包 store 里没有，
+#   它会**回退到联网**而不是直接报错。宁可慢一点，不要因为一个包就建不出来。
+#
+#   ★ **不用 `COPY --from=build /build/node_modules`**（那是另一种写法）：
+#   那样会把 **devDependencies 也带进运行镜像**，镜像变大得多。
+#   复制 store 只多几十 MB，而且 store 在后面 `pnpm store prune` 时会被清掉。
+COPY --from=build /root/.local/share/pnpm/store /root/.local/share/pnpm/store
+RUN pnpm install --frozen-lockfile --prod --prefer-offline && pnpm store prune
 
 # ★ **让 /app 下的包能解析到宿主 DSH 的包树**（2026-10-07 真机部署实测踩到）。
 #
