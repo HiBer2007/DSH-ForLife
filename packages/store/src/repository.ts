@@ -27,6 +27,18 @@ export function nowIso(): string {
 
 const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]/g
 
+/**
+ * 有没有 CJK —— 与 `CJK` 同一批字符，但**不带 `g`**。
+ *
+ * 为什么不复用上面那个：带 `g` 的正则用 `test()` 是**有状态**的（`lastIndex` 会跨调用累积），
+ * 于是"偶数次调用走进另一个分支"这种鬼故事就有了。当前调用顺序恰好被 `segmentForFts` 的
+ * `replace` 重置了 `lastIndex`，但那是**巧合式正确** —— 谁把两行调换一下，判据就静默变了。
+ */
+const HAS_CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]/
+
+/** FTS5 裸词之外的字符（标点/符号/空白）：它们会被当操作符，必须清掉。 */
+const FTS_BAREWORD_UNSAFE = /[^\p{L}\p{N}_]+/gu
+
 /** 把文本切成"FTS 友好"形式（CJK 按字分隔，拉丁词保持完整）。 */
 export function segmentForFts(text: string): string {
   return text.replace(CJK, (ch) => ` ${ch} `).replace(/\s+/g, ' ').trim()
@@ -37,7 +49,15 @@ export function ftsQuery(raw: string): string {
   const segmented = segmentForFts(raw)
   if (segmented === '') return '""'
   // 含 CJK 时用短语查询（相邻匹配），否则原样（拉丁词/前缀）
-  return CJK.test(raw) ? `"${segmented.replace(/"/g, '""')}"` : segmented
+  if (HAS_CJK.test(raw)) return `"${segmented.replace(/"/g, '""')}"`
+  // ★ 拉丁一侧**必须**把标点清掉：FTS5 的裸词只允许字母/数字/下划线，
+  //   其余字符（`.` `-` `` ` `` `"` `(` `:` `*` …）会被当成操作符，
+  //   于是 `MATCH 'feed-memory.md'` 直接抛 `fts5: syntax error near "."`。
+  //   这不是"少检一点"，而是**整条检索挂掉**：模型拿一个文件名/代码片段当查询就会炸
+  //   （喂食的查重探针会拿正文片段来查，更容易撞上）。
+  //   清成空格之后与 unicode61 的分词口径一致（它本来就在标点处切词）⇒ 语义不变、只是不炸。
+  const bare = segmented.replace(FTS_BAREWORD_UNSAFE, ' ').replace(/\s+/g, ' ').trim()
+  return bare === '' ? '""' : bare
 }
 
 /** 取一行在基表里的 rowid（FTS 外部内容表要与基表 rowid 对齐）。 */
@@ -397,6 +417,28 @@ export function searchLongFts(db: DatabaseSync, query: string, limit: number): r
         WHERE long_memory_fts MATCH ? ORDER BY bm25(long_memory_fts) LIMIT ?`,
     )
     .all(ftsQuery(query), limit) as unknown as LongEntryRow[]
+}
+
+/**
+ * 取某个来源范围（`source_scope`）下的**全部**长期条目。
+ *
+ * 用途：`source_scope` 是"这条记忆是从哪来的"的唯一载体（PLAN 原表里就有这一列，
+ * 见 `migrations.ts` 的 design 列说明）。手动喂食记忆资料时用它回答两个问题：
+ *  1. **同源重导要更新哪几条**（不是插新的）；
+ *  2. **这次喂的内容比上次短** ⇒ 多出来的那几条是"上一版留下的"，
+ *     交给既有的长期记忆管理（`archiveLongMemory`）归档，而不是新写一个删除接口。
+ *
+ * 排序固定为 `created_at, id` 升序：重导要按"上一次喂进去的顺序"逐条对应，
+ * 没有确定顺序时同样两次请求可能配错条目（那是静默的数据错位）。
+ *
+ * 注意（已知取舍）：`source_scope` 只在 `mid_memory_entries` 上有索引
+ * （`idx_mid_scope`），这里是全表扫描 —— long 表是"经历条数"量级（几千行），
+ * 而喂食是**人工/低频**动作。真要索引化得加一版迁移，眼下不值得。
+ */
+export function listLongEntriesByScope(db: DatabaseSync, scope: string): readonly LongEntryRow[] {
+  return db
+    .prepare('SELECT * FROM long_memory_entries WHERE source_scope = ? ORDER BY created_at ASC, id ASC')
+    .all(scope) as unknown as LongEntryRow[]
 }
 
 // ── 压缩日志 ────────────────────────────────────────────────────────────────

@@ -70,6 +70,26 @@
       "v": 0.85,
       "src": "PLAN.MD §5.3（active 80–85%）"
     },
+    "feed.dedupeSimilarity": {
+      "v": 0.9,
+      "src": "EXECUTION_PLAN §2.19（新增，实现细节：喂食查重的「几乎同一条」判据，与 recall.duplicateSimilarity 同一量级、同一算法）"
+    },
+    "feed.dedupeCandidates": {
+      "v": 5,
+      "src": "EXECUTION_PLAN §2.19（新增，实现细节：查重时取前 N 条既有 FTS 命中做相似度精判）"
+    },
+    "feed.probeChars": {
+      "v": 24,
+      "src": "EXECUTION_PLAN §2.19（新增，实现细节：拿正文**前 N 个码元**去既有 FTS 检索查重 —— 用前缀而不是整段：FTS 短语是相邻 token 序列的精确匹配，多一个词/少一个词就取不到候选，前缀更短 ⇒ 段落被改过后仍能取到候选）"
+    },
+    "feed.summaryMaxChars": {
+      "v": 120,
+      "src": "EXECUTION_PLAN §2.19（新增，实现细节：调用方没给摘要时，按首段自动截断到 N 个码元）"
+    },
+    "feed.maxItemsPerCall": {
+      "v": 200,
+      "src": "EXECUTION_PLAN §2.19（新增，实现细节：单次喂食的段落数上限，CLI/HTTP/模型工具共用 —— 上限的意义是「一次调用不许无限大」，不是分块策略）"
+    },
     "tiering.settleAfterDays": {
       "v": 90,
       "src": "PLAN.MD §6.3 / §12.2"

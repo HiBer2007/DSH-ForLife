@@ -60,6 +60,9 @@ import { createDshStatusProbe } from '../dsh-status.ts'
 import { probeAllEndpoints } from '../endpoint-health.ts'
 import { createExternalWakeSource } from '../wake-external-source.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
+// 手动喂食记忆资料：**四条入口共用的唯一核心**（CLI / 面板接口 / 模型工具 / 这里）
+import { feedMemory, isFeedKind, type FeedItem } from '../feed.ts'
+import { recordAdminAction } from '../reports.ts'
 import { backupNow } from './storage-write.ts'
 import { setState } from '@forlife/store'
 import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts'
@@ -1174,6 +1177,74 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         if (!result.ok) { json(res, 400, { error: result.reason }); return true }
         audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `记忆 ${id} ${body['restore'] === true ? '恢复' : '归档'}` })
         json(res, 200, { ok: true, message: result.reason })
+        return true
+      }
+
+      // ── 手动喂食记忆资料（后台「喂食记忆」页）──────────────────────
+      //
+      // ★ 与 CLI / 面板接口 / 模型工具**共用** `feedMemory`：这里只做
+      // "鉴权 → 解析请求体 → 调用 → 记审计"，一行记忆逻辑都不重复。
+      // 校验失败一律 400（带原因），不是 500 —— 抛异常会变成"服务器内部错误"，
+      // 用户看不出是自己传错了还是系统坏了。
+      if (route === '/feed' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const as = body['as']
+        if (!isFeedKind(as)) { json(res, 400, { error: 'as 必须是 knowledge 或 experience' }); return true }
+        const rawItems = body['items']
+        if (!Array.isArray(rawItems)) { json(res, 400, { error: 'items 必须是数组' }); return true }
+        const items = rawItems.map((entry): FeedItem => {
+          const record = (entry ?? {}) as Record<string, unknown>
+          const content = typeof record['content'] === 'string' ? record['content'] : ''
+          const summary = typeof record['summary'] === 'string' ? record['summary'] : undefined
+          const entities = Array.isArray(record['entities'])
+            ? record['entities'].filter((entity): entity is string => typeof entity === 'string' && entity.trim() !== '')
+            : undefined
+          return {
+            content,
+            ...(summary === undefined || summary === '' ? {} : { summary }),
+            ...(entities === undefined ? {} : { entities }),
+          }
+        })
+        const source = typeof body['source'] === 'string' && body['source'].trim() !== '' ? body['source'].trim() : undefined
+
+        const result = feedMemory(db, {
+          items,
+          as,
+          ...(source === undefined ? {} : { source }),
+          ...(body['dryRun'] === true ? { dryRun: true } : {}),
+        })
+        if (!result.ok) { json(res, 400, { error: result.error ?? '喂食失败' }); return true }
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `喂食 ${as} ← ${result.source}：新增 ${String(result.inserted)} / 更新 ${String(result.updated)} / 判重 ${String(result.duplicates)} / 归档 ${String(result.archived)}${result.dryRun ? '（dry-run）' : ''}`,
+        })
+        // 铁律 1：喂食**直接改了模型记得什么** ⇒ 除了安全审计（上面那笔，带 ip/路径），
+        // 还要记一笔"影响模型的变更"，由既有的报告管线告知模型（`affectsModel('memory.')` 为真）。
+        // 预演不记：它没有改动任何东西，报告一条"我动过你的记忆"会让模型凭空怀疑自己的记忆。
+        if (!result.dryRun) {
+          recordAdminAction(db, {
+            action: 'memory.feed',
+            actor: 'admin',
+            subject: result.source,
+            detail: {
+              as: result.as,
+              inserted: result.inserted,
+              updated: result.updated,
+              duplicates: result.duplicates,
+              archived: result.archived,
+            },
+          })
+        }
+        json(res, 200, { ok: true, result })
         return true
       }
 

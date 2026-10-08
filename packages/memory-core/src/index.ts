@@ -89,3 +89,7 @@ export type { QuestionScore, RegressionScore, TimeQuestion } from './time-regres
 export { describeDrift, extractTimeClaims, findDrift } from './time-drift.ts'
 export type { DriftFinding, TimeClaim } from './time-drift.ts'
 
+// ── 词面近似相似度（recall 的重复查询 / 喂食的查重**共用同一份实现**）──────────
+// 它在这里而不是在 dsh-component 里：gateway 也要用，而依赖方向不能让 gateway 反向依赖插件。
+export { normalizeForSimilarity, similarityTokens, textSimilarity } from './similarity.ts'
+

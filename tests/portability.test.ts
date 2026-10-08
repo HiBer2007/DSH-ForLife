@@ -26,7 +26,7 @@ test('可移植性：profile 配置里没有宿主绝对路径', () => {
   for (const rel of files) {
     if (!existsSync(join(REPO_ROOT, rel))) continue
     for (const line of codeLines(read(rel))) {
-      if (/[A-Za-z]:[\\/]/.test(line) || /AppData[\\/]Roaming/.test(line)) offenders.push(`${rel}: ${line.trim()}`)
+      if (/[A-Za-z]:[\\/](?![\\/])/.test(line) || /AppData[\\/]Roaming/.test(line)) offenders.push(`${rel}: ${line.trim()}`)
     }
   }
   assert.deepEqual(offenders, [], `profile 配置中出现宿主绝对路径：\n${offenders.join('\n')}`)
@@ -89,7 +89,20 @@ test('协议：便携清单是一份合法的 Community v0.15 manifest', () => {
 test('部署：compose 与 Caddyfile 不含被禁配置', () => {
   const compose = codeLines(read('deploy/docker-compose.yml')).join('\n')
   assert.ok(compose.includes('DSH_HOME'), 'compose 必须显式设置 DSH_HOME')
-  assert.ok(!/^\s*profiles:/m.test(compose), 'compose 不得使用 profiles 特性（开发机 Compose v2.13 解析不了）')
+  // ★ 2026-10-08 修正：这条原来**一律禁止** `profiles:`，理由是"开发机 Compose v2.13 解析不了"。
+  //   但项目现在要求 **Compose 2.40.3**（它支持 profiles），而 `profiles: [scorer]` 正是
+  //   "让评分器默认不启动"的手段 —— 真机上 `docker compose config` 也通过了。
+  //   ⇒ 改成**更准确的约束**：profiles 只允许在"可选、默认不启动"的服务上，
+  //     而**核心服务绝不能带**（带了它们默认起不来，部署直接坏）。
+  const coreServices = ['dsh', 'gateway', 'caddy']
+  for (const svc of coreServices) {
+    const block = compose.split(new RegExp('^  ' + svc + ':\\s*$', 'm'))[1] ?? ''
+    const body = block.split(/^  [a-z]/m)[0] ?? block
+    assert.ok(
+      !/^\s+profiles:/m.test(body),
+      `核心服务 ${svc} 不得使用 profiles（否则默认起不来）`,
+    )
+  }
 
   const caddy = codeLines(read('deploy/Caddyfile')).join('\n')
   assert.ok(caddy.includes('admin unix/'), 'Admin API 必须走 unix socket（它无内置鉴权）')

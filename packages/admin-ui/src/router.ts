@@ -42,6 +42,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: '记忆',
     items: [
       { path: '/memory', title: '记忆条目', icon: 'memory' },
+      { path: '/feed', title: '喂食记忆', icon: 'memory' },
       { path: '/compaction', title: '压缩日志', icon: 'compaction' },
     ],
   },
@@ -76,6 +77,7 @@ const routes: readonly RouteRecordRaw[] = [
   { path: '/wake', name: 'wake', component: () => import('./views/WakeView.vue'), meta: { title: '唤醒与自唤醒' } },
   { path: '/wakes', name: 'wakes', component: () => import('./views/WakesView.vue'), meta: { title: '触发器' } },
   { path: '/memory', name: 'memory', component: () => import('./views/MemoryView.vue'), meta: { title: '记忆条目' } },
+  { path: '/feed', name: 'feed', component: () => import('./views/FeedView.vue'), meta: { title: '喂食记忆' } },
   { path: '/routing', name: 'routing', component: () => import('./views/RoutingView.vue'), meta: { title: '路由与端点' } },
   { path: '/compaction', name: 'compaction', component: () => import('./views/CompactionView.vue'), meta: { title: '压缩日志' } },
   { path: '/prompts', name: 'prompts', component: () => import('./views/PromptsView.vue'), meta: { title: '提示词' } },

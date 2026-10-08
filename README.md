@@ -124,7 +124,7 @@ FORLIFE_HOST=your.domain ACME_EMAIL=you@example.com \
 | :--- | :--- |
 | [`PLAN.MD`](PLAN.MD) | **设计规格**：记忆模型、压缩协议、碎片索引、Recall 预算、QQ 集成、模型分级、缓存策略 |
 | [`模型路由.MD`](模型路由.MD) | **设计规格**：复杂度评分与档位判定 |
-| [`EXECUTION_PLAN.md`](EXECUTION_PLAN.md) | 执行记录与验收标准 |
+| [`EXECUTION_PLAN.md`](EXECUTION_PLAN.md) | **执行计划**：选型结论 / 目标架构 / 分阶段计划 / 验收标准 / 风险登记册 |
 | [`docs/`](docs/README.md) | 文档索引（审计、部署、调研、事故记录） |
 
 ---

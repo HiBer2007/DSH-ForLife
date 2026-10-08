@@ -41,6 +41,8 @@ import { MemoryRuntime, resolveDbPath, startSettleTimer } from './runtime.ts'
 export type { MemoryRuntime } from './runtime.ts'
 import { buildMemoryTools, type DefineToolLike } from './tools.ts'
 import { buildQqTools } from './qq-tools.ts'
+// 手动喂食记忆资料（模型可调的工具面）：与 CLI/HTTP 共用 gateway 的 `feedMemory`
+import { buildFeedTools } from './feed-tools.ts'
 import { emitForlifeEvent, type SessionLike } from './events.ts'
 export { adminMessage, createForlifeMessage, FORLIFE_SOURCES, qqMessage, systemMessage } from './sources.ts'
 
@@ -611,6 +613,17 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
       // ⇒ 典型的「接线断了但测试全绿」。
       // 守卫见 `test/qq-tools-wiring.test.ts`。
       for (const definition of buildQqTools(defineToolImpl, runtime)) {
+        registerOne(definition)
+      }
+
+      // 手动喂食记忆资料（用户 2026-10-07 要求）。**总是注册** —— 与唤醒/QQ 工具同理：
+      // 它只写数据库，不需要任何外部配置就能成功；"由模型自己决定记成知识还是经历"
+      // 正是这个工具存在的理由（没有它，模型只能等人来喂）。
+      //
+      // ⚠️ 必须走 `registerOne`（不是直接 `tools.register`）：`registeredNames` 是
+      // 生产日志里"到底注册了哪些工具"的**唯一**证据源 —— 绕过它，日志里的工具数就会说谎
+      // （本仓为此栽过一次：日志自称 11 个，实际 13 个）。
+      for (const definition of buildFeedTools(defineToolImpl, runtime)) {
         registerOne(definition)
       }
 

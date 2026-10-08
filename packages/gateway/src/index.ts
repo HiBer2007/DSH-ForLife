@@ -132,6 +132,25 @@ export type { PortService } from './port-service.ts'
 export { buildTcpRoute, caddyTcpRouteId, tcpServerName, TCP_SERVER_NAME } from './caddy-tcp.ts'
 export type { TcpRouteInput } from './caddy-tcp.ts'
 
+// ── 手动喂食记忆资料（四条入口共用的唯一核心）────────────────────────
+// CLI（scripts/feed-memory.ts）、DSH 面板接口（/api/forlife/feed）、
+// 后台接口（/api/admin/feed）与模型工具（feed_memory）都只调 `feedMemory`。
+// 它**不自己实现**分块/去重/删除：分块只做朴素段落切，去重复用既有 FTS 检索 + 同一份
+// 近似判据，删除指向既有的长期记忆管理（见 feed.ts 模块头与 §2.19）。
+export {
+  FEED_DELETE_HINT,
+  FEED_KINDS,
+  FEED_SCOPE_PREFIX,
+  deriveFeedSummary,
+  feedIdFor,
+  feedMemory,
+  feedScopeOf,
+  isFeedKind,
+  resolveFeedDbPath,
+  splitIntoFeedChunks,
+} from './feed.ts'
+export type { FeedAction, FeedChunkResult, FeedItem, FeedKind, FeedOptions, FeedResult } from './feed.ts'
+
 // ── 工作区沙箱（PLAN 阶段 7）──────────────────────────────────────────
 // 插件侧登记监视程序时也要用：路径校验必须在**两边都做**（两边都能被绕过）。
 export { isInside, resolveInWorkspace } from './workspace.ts'

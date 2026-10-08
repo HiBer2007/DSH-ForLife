@@ -58,6 +58,7 @@ export {
   insertSpill,
   lastSuccessfulCompaction,
   listCompactionLog,
+  listLongEntriesByScope,
   listRenderableMidEntries,
   listSettleCandidates,
   listSpills,

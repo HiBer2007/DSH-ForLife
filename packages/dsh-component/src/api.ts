@@ -12,6 +12,8 @@
  * @module forlife-memory/api
  */
 import {
+  feedMemory,
+  isFeedKind,
   listAdminChat,
   listOutbound,
   listWakeRules,
@@ -23,6 +25,7 @@ import {
   setWakeRule,
   WAKE_CONDITION_GROUPS,
   WAKE_CONDITIONS,
+  type FeedItem,
 } from '@forlife/gateway'
 import {
   diffPromptLines,
@@ -1016,6 +1019,75 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
               '已按会话覆盖回答风格。注意：多会话共用一个窗口时，覆盖值走**尾部注入**而不是写进稳定前缀 —— ' +
               '写进前缀会让每轮都换前缀，缓存全废。',
           })
+        } catch (error) {
+          return json({ ok: false, error: String(error) }, 400)
+        }
+      },
+    },
+
+    // ── 手动喂食记忆资料（PLAN 之外，用户 2026-10-07 要求）──────────────
+    //
+    // ★ 与 CLI / 后台接口 / 模型工具**共用** `feedMemory`（@forlife/gateway）：
+    // 这里只做"解析请求体 → 调用 → 回结果"。分块/去重/删除的机制**不在这里**，
+    // 它们属于记忆系统本身（见 `packages/gateway/src/feed.ts` 模块头）。
+    //
+    // 与后台那条（`POST /api/admin/feed`）**不是两条管道**：两个入口分别挂在
+    // 两个进程上（DSH Web UI 的面板接口 / gateway 的管理后台），各有各的鉴权
+    // （宿主面板的 Host/Origin 栅栏 vs 管理口令会话），所以只能各注册一次；
+    // 两者调的是同一个函数，写进同一张表。
+    {
+      path: '/api/forlife/feed',
+      methods: ['POST'],
+      fetch: async (request: Request): Promise<Response> => {
+        try {
+          const body = (await request.json()) as {
+            items?: unknown
+            as?: unknown
+            source?: unknown
+            dryRun?: unknown
+          }
+          if (!isFeedKind(body.as)) return json({ ok: false, error: 'as 必须是 knowledge 或 experience' }, 400)
+          if (!Array.isArray(body.items)) return json({ ok: false, error: 'items 必须是数组' }, 400)
+
+          const items: FeedItem[] = body.items.map((entry) => {
+            const record = (entry ?? {}) as Record<string, unknown>
+            const content = typeof record.content === 'string' ? record.content : ''
+            const summary = typeof record.summary === 'string' && record.summary.trim() !== '' ? record.summary : undefined
+            const entities = Array.isArray(record.entities)
+              ? record.entities.filter((entity): entity is string => typeof entity === 'string' && entity.trim() !== '')
+              : undefined
+            return {
+              content,
+              ...(summary === undefined ? {} : { summary }),
+              ...(entities === undefined ? {} : { entities }),
+            }
+          })
+          const source = typeof body.source === 'string' && body.source.trim() !== '' ? body.source.trim() : undefined
+
+          const result = feedMemory(runtime.db, {
+            items,
+            as: body.as,
+            ...(source === undefined ? {} : { source }),
+            ...(body.dryRun === true ? { dryRun: true } : {}),
+          })
+          if (!result.ok) return json({ ok: false, error: result.error ?? '喂食失败' }, 400)
+
+          // 铁律 1：喂食**直接改模型记得什么** ⇒ 记一笔后台动作，等合并报告告知模型
+          //（与改提示词、改唤醒规则同一条既有管线）。
+          recordAdminAction(runtime.db, {
+            action: 'memory.feed',
+            actor: 'admin',
+            subject: result.source,
+            detail: {
+              as: result.as,
+              inserted: result.inserted,
+              updated: result.updated,
+              duplicates: result.duplicates,
+              archived: result.archived,
+              dryRun: result.dryRun,
+            },
+          })
+          return json({ ok: true, result })
         } catch (error) {
           return json({ ok: false, error: String(error) }, 400)
         }
