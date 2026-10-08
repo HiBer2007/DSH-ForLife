@@ -30,6 +30,32 @@
 
 # 公网唯一入口：我们自己的后台（自有鉴权）
 {$FORLIFE_HOST} {
+
+	# ★★ 2026-10-08 真机实测（**第 12 处缺陷**）：**`/api/admin/*` 原来没被代理**。
+	#
+	#   现象：打开 /admin/ 后前端报
+	#     JSON.parse: unexpected end of data at line 1 column 1，
+	#     而且**不进首次设置流程**（因为没有 needsSetup 可读）。
+	#
+	#   根因：原始站点块**只 handle /admin* 与 /svc/***，
+	#   而前端要调 /api/admin/*（30 处）与 /api/client/*（20 处）。
+	#   **没匹配到任何 handle ⇒ Caddy 返回 200 + 空 body。**
+	#   前端拿空串去 JSON.parse ⇒ 直接抛。
+	#
+	#   ⚠️ **这曾被当成“已知行为”记在文档里**
+	#   （“非 /admin 路径返回空 200”）——**其实那是路由漏了，不是设计。**
+	#   **空 200 比 404 更难查**：404 一眼就是“没有这个路径”，
+	#   而空 200 看起来像“**通了，但没数据**”，
+	#   会让人去查后端、查数据库、查鉴权，
+	#   而真正的问题在**最前面那道门**。
+	#
+	#   验证：容器里直连 gateway 是好的
+	#   （/api/admin/session ⇒ {"authenticated":false,"needsSetup":true}），
+	#   **只有经过 Caddy 才变空** ⇒ 问题一定在路由。
+	handle /api/* {
+		reverse_proxy gateway:8081
+	}
+
 	handle /admin* {
 		reverse_proxy gateway:8081
 	}
