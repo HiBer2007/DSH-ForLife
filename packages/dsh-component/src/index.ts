@@ -25,7 +25,7 @@ import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
 import { seedDefaultPrompts } from './prompt-store.ts'
-import { seedDefaultRoutes } from './route-seed.ts'
+import { seedDefaultRoutes, seedOpenCodeGoRoutes } from './route-seed.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
@@ -547,6 +547,32 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     const seededRoutes = seedDefaultRoutes(runtime.db, { provider: defaultRoute.provider, model: defaultRoute.model })
     if (seededRoutes.seeded) log(`已播种档位映射：${seededRoutes.reason}`)
     else log(`档位映射未改动：${seededRoutes.reason}`)
+
+    // ★★ 2026-10-08 真机实测（**第 15 处缺陷**）：**面板里的路由表永远是旧的**。
+    //
+    //   现象：在面板「路由」页看到的 L1/L2/L3/scorer **全是 `deepseek-official`**，
+    //   而我们实际用的是 `opencode-go`。
+    //
+    //   根因：路由表的**唯一真源是库里的 `model_routes` 表**（不是 profile）。
+    //   而两个播种函数的接线状态完全不同：
+    //     - `seedDefaultRoutes()`      ⇐ **这里真的调了** ⇒ 库里落下内置默认
+    //     - `seedOpenCodeGoRoutes()`   ⇐ **生产路径零调用**（只有测试调）
+    //   ⇒ 于是库里**永远停在内置种子**，`opencode-go` 那个接入点从来没被播种过。
+    //
+    //   ★ 这是本项目**第 8 次**踩到同一个模式：
+    //     **库代码写好了、单元测试过了、生产路径上零调用。**
+    //
+    //   修法：**有 key 就以 opencode-go 为准**（用 `replace: true`）。
+    //   它只删 `updated_by = 'system'` 的行 —— **手工在面板配的一律保留**，
+    //   那才是人的意图（与该函数自己的文档一致）。
+    const goKeyRef = 'FORLIFE_OPENCODE_GO_KEY'
+    if ((process.env[goKeyRef] ?? '') !== '') {
+      const goSeeded = seedOpenCodeGoRoutes(runtime.db, { replace: true, apiKeyRef: goKeyRef })
+      if (goSeeded.seeded) log(`已切换档位映射到 opencode-go：${goSeeded.reason}`)
+      else log(`档位映射未切到 opencode-go：${goSeeded.reason}`)
+    } else {
+      log('档位映射保持内置默认：没有设 ' + goKeyRef + '（设了才会切到 opencode-go）')
+    }
     if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
     disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
     disposers.push(registerMemorySections(systemPrompt, runtime))
