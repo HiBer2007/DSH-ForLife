@@ -1,6 +1,7 @@
 {
   "name": "dsh-forlife",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "packageManager": "pnpm@12.3.4",
   "engines": {
