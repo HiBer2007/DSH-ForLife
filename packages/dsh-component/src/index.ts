@@ -27,6 +27,7 @@ import { registerMemorySections, registerPromptSections, type SystemPromptLike }
 import { seedDefaultPrompts } from './prompt-store.ts'
 import { seedDefaultRoutes, seedDeepSeekFallback, seedOpenCodeGoRoutes } from './route-seed.ts'
 import { probeLlm } from './llm-probe.ts'
+import { fetchHostCatalog } from './llm-host.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
@@ -601,7 +602,30 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         if (report.currentSelectionError !== undefined) always('[forlife] 探针：' + report.currentSelectionError)
       }).catch((error: unknown) => {
         always('[forlife] LLM 探针异常（不影响插件）: ' + String(error).slice(0, 160))
+
       })
+
+        // ★★ 2026-10-08 中介层的**取数层**：从宿主 llm 拿 provider/model ⇒ 整理成决策表。
+        //   这一步**只读**（不改模型）—— 先把“看得见什么”落到日志里，
+        //   下一步的初始路由才有东西可选。
+        //   失败**不影响插件加载**（取数层内部全部 try/catch）。
+        void fetchHostCatalog(ctx as never).then((result) => {
+          if (result.unavailableReason !== undefined) {
+            always('[forlife] 模型目录取不到：' + result.unavailableReason)
+            return
+          }
+          always('[forlife] 模型目录：' + result.catalog.summary)
+          for (const p of result.providers) {
+            const tail = p.error === undefined ? '' : '  ⚠️ ' + p.error
+            log('  ' + p.id + '：' + String(p.models.length) + ' 个模型' + tail)
+          }
+          for (const e of result.catalog.entries) {
+            const marks = e.marks.length === 0 ? '' : ' [' + e.marks.join('/') + ']'
+            log('    ' + (e.reachable ? '✅' : '❌') + ' ' + e.provider + '/' + e.model + marks + ' ' + e.name + (e.description === undefined ? '' : ' — ' + e.description))
+          }
+        }).catch((error: unknown) => {
+          always('[forlife] 模型目录取数异常（不影响插件）: ' + String(error).slice(0, 160))
+        })
     if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
     disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
     disposers.push(registerMemorySections(systemPrompt, runtime))
