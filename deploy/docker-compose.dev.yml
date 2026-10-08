@@ -2,42 +2,63 @@
 #
 #     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml up -d qq
 #
-# ## 为什么必须额外接一条 `edge` 网络（踩过的坑）
+# ── 为什么必须额外接一条 `edge` 网络 ────────────────────────────────────────
 #
 # 主 compose 里 qq 只挂 `internal`，而那个网络是 `internal: true`：
-# **这种网络没有任何对外路由，发布端口对它完全无效**。
-# 表现极具迷惑性：容器内 `curl 127.0.0.1:6099/webui` 返回 301（服务明明活着），
-# 但宿主机 `docker port` 是空的、浏览器 ERR_CONNECTION_REFUSED，
-# 而 `docker inspect HostConfig.PortBindings` 里**映射又确实写着**。
+# **这种网络没有任何对外路由，发布端口对它完全无效。**
+#
+# 表现**极具迷惑性**：
+#   - 容器内 `wget 127.0.0.1:6099/webui` 返回 301（服务明明活着）
+#   - 但宿主机 `docker port` 是空的、浏览器 `ERR_CONNECTION_REFUSED`
+#   - 而 `docker inspect HostConfig.PortBindings` 里**映射又确实写着**
 #
 # 接上 `edge`（普通 bridge）之后两件事同时成立：
-#   ① 6099 能发布到宿主机（只在 127.0.0.1，同网段仍够不到）；
+#   ① 6099 能发布到宿主机；
 #   ② NapCat 有路由出网，才能反向连到宿主机上的 gateway（`host.docker.internal`）。
 #
-  # ## ⚠️ **不要单独校验这个文件**（我自己踩过）
-  #
-  # `docker compose -f deploy/docker-compose.dev.yml config` **必然失败**：
-  #     service "qq" has neither an image nor a build context specified
-  #
-  # 因为这是**覆盖文件** —— 它只写"要改的那几项"，本来就没有 `image`。
-  # 看到那个报错时**不要急着"修"它**（我差点给 qq 补一个 image，
-  # 而那会让覆盖变成"重新定义一个服务"，与主文件冲突）。
-  #
-  # **正确的校验方式**（组合起来）：
-  #     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml config --quiet
-  #
-  # **教训**：校验一个东西之前，先确认**它是怎么被使用的**。
-  # 拿单文件的规则去量一个覆盖文件，得到的报错是**假的**。
+# ── ⚠️ 不要单独校验这个文件 ────────────────────────────────────────────────
+#
+#     docker compose -f deploy/docker-compose.dev.yml config     # ← 必然失败
+#     # service "qq" has neither an image nor a build context specified
+#
+# 因为这是**覆盖文件** —— 它只写「要改的那几项」，本来就没有 `image`。
+# **看到那个报错时不要急着"修"它**（给 qq 补一个 image 会让覆盖变成"重新定义一个服务"，
+# 与主文件冲突）。
+#
+# **正确的校验方式**（组合起来）：
+#
+#     docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml config --quiet
+#
+# **教训**：校验一个东西之前，先确认**它是怎么被使用的**。
+# 拿单文件的规则去量一个覆盖文件，得到的报错是**假的**。
+#
+# ── ★ 扫完码要撤回（这才是真正的安全措施）────────────────────────────────
+#
+# 这个覆盖文件是**临时的**：它把 QQ 从隔离网络里拉出来、并把 WebUI 开到局域网。
+# 扫完码（或看完登录态）之后**退回主编排**：
+#
+#     docker compose -f deploy/docker-compose.yml up -d qq
+#
+# 退回后：qq 只挂 `internal`，6099 不再发布，NapCat 也没有出网路由 ——
+# 这与主 compose 的设计意图一致（QQ 侧就该待在隔离网络里）。
+#
+# ⚠️ 撤回后**面板里的 NapCat 页会打不开**（它的 iframe 指向 `:6099`）—— 那是预期的，
+#    要看登录态时再叠加一次覆盖文件即可。
+#
+# 生产环境**不要**用这个文件。
 
-# 生产环境**不要**用这个文件：QQ 侧就该待在 internal 里不出来。
 services:
   qq:
     networks:
       - internal
       - edge
     ports:
-      # NapCat WebUI（扫码登录、看登录态）。只绑回环：同网段设备依然够不到。
+      # NapCat WebUI（扫码登录、看登录态）。
+      #
+      # ★ 这里绑的是 `0.0.0.0`（**同网段可达**），不是回环 ——
+      #   因为扫码的人通常**在另一台机器上**（手机/笔记本），
+      #   绑回环等于**必须再开 SSH 隧道**才能扫，那是多余的障碍。
+      #   **安全靠上面那条「用完撤回」，不靠「绑回环」。**
       - '0.0.0.0:6099:6099'
       # 刻意**不发布** 3001：我们用 OneBot **反向 WS**（NapCat 主动连我们的 gateway），
       # 不需要它的正向 WS 端口；而且本机 gateway 的传输层要用这个端口号，发布了会撞车。
-

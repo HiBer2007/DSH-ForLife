@@ -297,7 +297,17 @@ docker compose exec dsh sh -c 'stat -f -c %i /cold; stat -f -c %i /data; touch /
 > ⚠️ **已知行为：`/admin/` 以外的路径返回 `200` 且 body 为空**（不是 404）。
 > `deploy/Caddyfile` 刻意**不放兜底 handle**（兜底会把后续动态插入的路由永久遮蔽）。
 > 内容确实拿不到（响应头里没有 `Via: 1.1 Caddy`、没有 CSP，说明根本没被反代到 gateway），
-> 但**状态码是 200** ⇒ 做健康检查/监控时**按"空 200"判**，别按 404 判。
+>
+
+> ⚠️ **2026-10-08 更正**：这里原来写着
+> 「状态码是 200 ⇒ 做健康检查/监控时**按空 200 判**，别按 404 判」。
+>
+> **那个判断是错的。** 「非 `/admin` 路径返回空 200」**不是设计，是缺陷** ——
+> 站点块当时**只 `handle /admin*` 与 `/svc/*`**，没代理 `/api/*`（见下面「站点块必须代理 /api/*」）。
+> 现在修好了：未匹配的路径返回**正常的 404**。
+>
+> **⇒ 把异常当成"已知行为"记进文档，是最坏的一种记录方式** ——
+> 它会让人**照着错的行为去做监控**。
 
 **重启后的数据检查**（升级或重启后各做一次）：
 
@@ -310,6 +320,48 @@ docker logs dsh 2>&1 | grep -E '已应用迁移|记忆库就绪'
 （迁移不重跑、不重新播种）。
 
 ---
+
+## ★ 站点块必须代理 `/api/*`（**否则整个管理面板不能用**）
+
+`deploy/Caddyfile` 的站点块里，**除了 `/admin*`，还必须有一条 `/api/*`**：
+
+```caddyfile
+{$FORLIFE_HOST} {
+	handle /admin* {
+		reverse_proxy gateway:8081
+	}
+	handle /api/* {          # ★ 少这一条，面板直接打不开
+		reverse_proxy gateway:8081
+	}
+	handle /svc/* {
+		reverse_proxy gateway:8081
+	}
+}
+```
+
+**漏掉它会怎样**：前端要调 `/api/admin/*` 与 `/api/client/*`，
+没匹配到任何 `handle` ⇒ Caddy 返回 **200 + 空 body** ⇒ 浏览器报
+
+```
+JSON.parse: unexpected end of data at line 1 column 1 of the JSON data
+```
+
+**而且不进首次设置流程**（因为没有 `needsSetup` 可读），停在登录页 ——
+看起来像"口令配错了"，其实**请求根本没到后端**。
+
+**怎么快速定位**：在容器里**绕过 Caddy** 直连 gateway ——
+如果直连是好的、经 Caddy 才变空，**问题一定在路由层**：
+
+```bash
+docker exec <gateway容器> node -e '
+  require("node:http").get({host:"127.0.0.1",port:8081,path:"/api/admin/session"},
+    (r)=>{let b="";r.on("data",d=>b+=d);r.on("end",()=>console.log(r.statusCode,b));})'
+# 期望：200 {"authenticated":false,"needsSetup":true}
+```
+
+> **空 200 比 404 更难查**：404 一眼就是"没有这个路径"，
+> 而空 200 看起来像"通了，但没数据"，会让人去查后端、查数据库、查鉴权、查 CORS，
+> **而真正的问题在最前面那道门。**
 
 ## 四、编排与镜像里的硬约束（改动前先看这张表）
 

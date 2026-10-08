@@ -162,6 +162,20 @@ services:
       #   ⇒ 显式指向**与 dsh 同一个库**（两个进程本来就该共用一份，契约必须一致）。
       FORLIFE_DB: /data/dsh/forlife/db/forlife.sqlite
       FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
+
+      # ★★ 2026-10-08 真机实测（**第 14 处缺陷**）：**面板里的 NapCat 页白屏**。
+      #
+      #   根因：CSP 的 `frame-src` 是 **`'self'`** —— 只允许同源。
+      #   而面板要把 `http://<当前主机名>:6099/webui` 放进 iframe ⇒ **被 CSP 拦掉**。
+      #
+      #   `buildCsp(hostname, options.napcat?.webuiPort)` **只在 `napcat` 有值时才放行**，
+      #   所以**不设这个变量 ⇒ 不放行 ⇒ 页面白屏**（而且没有任何报错，只在浏览器控制台）。
+      #
+      #   ⇒ 端口给默认值也有用（它同时决定 iframe 拼出来的地址）。
+      FORLIFE_NAPCAT_WEBUI_PORT: "6099"
+      # NapCat WebUI 的 token —— 它是**密钥**，所以这里只放**引用名**，
+      # 真值写在 `deploy/.env`（不进仓库）。不设时 NapCat 页仍能打开，只是要手动填 token。
+      FORLIFE_NAPCAT_TOKEN: ${FORLIFE_NAPCAT_TOKEN:-}
     volumes:
       - forlife-data:/data
       # ★★ 2026-10-07 真机部署发现（**缺陷 7 的后半截**）：
