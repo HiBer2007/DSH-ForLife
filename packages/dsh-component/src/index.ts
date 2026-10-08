@@ -25,7 +25,8 @@ import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
 import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
 import { seedDefaultPrompts } from './prompt-store.ts'
-import { seedDefaultRoutes, seedOpenCodeGoRoutes } from './route-seed.ts'
+import { seedDefaultRoutes, seedDeepSeekFallback, seedOpenCodeGoRoutes } from './route-seed.ts'
+import { probeLlm } from './llm-probe.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
@@ -573,6 +574,34 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     } else {
       log('档位映射保持内置默认：没有设 ' + goKeyRef + '（设了才会切到 opencode-go）')
     }
+
+      // ★ 用户 2026-10-08 要求：**给 L2/L3/scorer 补上 DS 官方的兜底**（跨 provider）。
+      //   单独一个函数而不是塞进 planOpenCodeGoRoutes —— 那个是 opencode-go 的计划，
+      //   往里塞别的 provider 会让名字与内容不符。
+      //   没有 DEEPSEEK_API_KEY 时它**不播种**（播了也是死候选）。
+      const dsFallback = seedDeepSeekFallback(runtime.db)
+      if (dsFallback.seeded) log(`已追加 DS 官方兜底：${dsFallback.reason}`)
+      else log(`DS 官方兜底未追加：${dsFallback.reason}`)
+
+      // ★★ 2026-10-08 中介层的**探针**（只读）：宿主 LLM 服务能枚举出什么、当前默认模型是什么。
+      //   **为什么先探**：`listProviders()` / `saveSelection()` 是从宿主 `.d.ts` 读出来的签名，
+      //   **签名对不等于运行期拿得到**（服务名可能不同、可能没加载）。
+      //   ⇒ 拿得到才写正式的中介层，否则又是「照文档写完发现接口对不上」。
+      //   它**只读**（不调 saveSelection）—— 改模型是正式代码的事。
+      //   失败**不影响插件加载**：探针内部全部 try/catch。
+      void probeLlm(ctx as never).then((report) => {
+        always('[forlife] LLM 探针：' + report.summary)
+        if (report.providers !== undefined) {
+          for (const p of report.providers) {
+            const n = p.models?.length ?? 0
+            log('  provider ' + p.id + (p.label === undefined ? '' : '（' + p.label + '）') + '：' + String(n) + ' 个模型' + (p.modelsError === undefined ? '' : '  ⚠️ ' + p.modelsError))
+          }
+        }
+        if (report.providersError !== undefined) always('[forlife] 探针：provider 枚举失败 —— ' + report.providersError)
+        if (report.currentSelectionError !== undefined) always('[forlife] 探针：' + report.currentSelectionError)
+      }).catch((error: unknown) => {
+        always('[forlife] LLM 探针异常（不影响插件）: ' + String(error).slice(0, 160))
+      })
     if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
     disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
     disposers.push(registerMemorySections(systemPrompt, runtime))

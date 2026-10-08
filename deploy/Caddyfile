@@ -76,3 +76,28 @@
 
 # TCP 穿透（layer4）不在 Caddyfile 里写站点块 —— 它在全局选项块的 `layer4 { … }`，
 # 且需要自建镜像（官方 caddy:2 不含 layer4）。阶段 7 落地时改为由 gateway 合成整份 JSON 下发。
+
+# ── NapCat WebUI（**独立域名站点块**，用户 2026-10-08 确认）──────
+#
+# ## 为什么是独立域名而不是子路径
+#
+#   NapCat 的 WebUI 是个完整的 React 应用，它**用绝对路径**请求自己的资源与接口
+#   （`/webui/assets/…`、`/api/…`）。反代到子路径（如 `/admin/napcat/…`）会让它打到 Caddy 根 ⇒ **404**。
+#
+#   而独立域名的站点块**代理在根路径上** ⇒ NapCat 的绝对路径天然对得上，
+#   **NapCat 一行不用改**。
+#
+# ## 为什么要反代（而不是直接暴露 6099）
+#
+#   面板走 HTTPS，而 iframe 直接指 `http://<host>:6099` 会被浏览器
+#   **当成混合内容拦掉**（错误原文：`已阻止加载混合活动内容`）。
+#   反代到同一个 Caddy 上（同 HTTPS、同内部 CA）⇒ **没有混合内容问题**，
+#   而且不用对外暴露 6099。
+#
+# ⚠️ **前提**：Caddy 在 `edge` 网络上，而 qq 默认**只在 `internal`**（隔离）。
+#   ⇒ 要用这个反代，必须叠加 `deploy/docker-compose.dev.yml`
+#     （它把 qq 接到 `edge`）。否则 Caddy 解析不了 `qq` ⇒ 502。
+napcat.{$FORLIFE_HOST} {
+	reverse_proxy qq:6099
+	encode gzip
+}

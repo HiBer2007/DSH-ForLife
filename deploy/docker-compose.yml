@@ -109,6 +109,13 @@ services:
       FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
       # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
       FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
+
+      # ── DSH 内置 provider 的凭据 ──────────────────────────────────────────
+      # ★ 变量名必须是 **DEEPSEEK_API_KEY** —— 那是 DSH 内置 provider（provider id =
+      #   `deepseek-official`）认的名字（在 dsh 包里 grep 出来的，不是我们起的）。
+      #   值仍只放 deploy/.env（引用名在此）。
+      #   它给 L2/L3/scorer 当**跨 provider 的兜底**（见 seedDeepSeekFallback）。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     volumes:
       - forlife-data:/data # db / vectors / attachments / workspace / models
       - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs

@@ -51,7 +51,10 @@
 # `apiKeyEnv` 是**凭据引用名**（值仍在环境变量里）—— 与"密钥只存引用名"一致。
 # `baseURL` 与 gateway 侧的 `OPENCODE_GO_BASE_URL` 必须一致，
 # 否则面板上的额度统计与实际调用会对不上。
-- id: '@deepseek-ai/dsh-llm-pi-ai'
+# ★ 2026-10-08 修：这里**必须是 base bundle 里的短 id**，不是包名。
+#   base 的结构是 `id: <短名>` + `name: <包名>`；
+#   拿包名当 id 去定位会**静默丢弃整段 patch**（只在 `--dump-config` 时打一行警告）。
+- id: llm-pi-ai
   config:
     providers:
       opencode-go:
@@ -113,7 +116,10 @@
 # 默认模型：**必须一起改** —— 只加 provider 的话，新 agent 仍用内置的
 # `deepseek-official`（要 DEEPSEEK_API_KEY），真机表现就是那条 MISSING_CREDENTIAL。
 # 推理强度按项目规定：deepseek-v4.1-flash 支持 none|low|high|max（**没有 medium**）。
-- id: '@deepseek-ai/dsh-agent-default-model'
+# ★ 2026-10-08 修：这里**必须是 base bundle 里的短 id**，不是包名。
+#   base 的结构是 `id: <短名>` + `name: <包名>`；
+#   拿包名当 id 去定位会**静默丢弃整段 patch**（只在 `--dump-config` 时打一行警告）。
+- id: agent-default-model
   config:
     provider: opencode-go
     model: deepseek-v4.1-flash

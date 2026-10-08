@@ -224,3 +224,83 @@ export function roleGapSeverity(role: string): { readonly level: 'required' | 'o
       return { level: 'optional', hint: '需要时再配' }
   }
 }
+
+/**
+ * 把 **DeepSeek 官方**追加到 L2/L3/scorer 的降级链**末尾**（用户 2026-10-08 要求）。
+ *
+ * ## 为什么单独一个函数，而不是塞进 `planOpenCodeGoRoutes`
+ *
+ * 那个计划回答的是「**OpenCode Go 那个接入点**提供哪些模型」——
+ * 往里塞 `deepseek-official` 会让**名字与内容不符**。
+ *
+ * 而且两个 provider 的**信任模型不同**：
+ *   - `opencode-go`：自带的外部入口，**要先有 key**
+ *   - `deepseek-official`：**DSH 内置**（`config.ts` 里就是默认值），有 `DEEPSEEK_API_KEY` 就能用
+ *
+ * ## 为什么是「追加」不是「替换」
+ *
+ * 用户原话：「L2、3、4 **没有加入**对于 DS 官方的 API 路由。**补充**」——
+ * 要的是**多一个候选**。⇒ `rank` 接着该档位现有最大值往上排，**一定排在最后**。
+ *
+ * ## 幂等
+ *
+ * 已有 `deepseek-official` 行时直接返回，不重复插。
+ *
+ * @param db - 数据库。
+ * @param input.apiKeyRef - 凭据**引用名**（默认 `DEEPSEEK_API_KEY`）。
+ *   环境里没有它 ⇒ **不播种**（播了也是死候选，只会在路由时白撞一次）。
+ */
+export function seedDeepSeekFallback(
+  db: DatabaseSync,
+  input: { readonly apiKeyRef?: string } = {},
+): { readonly seeded: boolean; readonly count: number; readonly reason: string } {
+  const apiKeyRef = input.apiKeyRef ?? 'DEEPSEEK_API_KEY'
+  if ((process.env[apiKeyRef] ?? '') === '') {
+    return { seeded: false, count: 0, reason: `没有设 ${apiKeyRef} ⇒ 不播种死候选` }
+  }
+
+  const existing = listModelRoutes(db)
+  if (existing.some((row) => row.provider === DEEPSEEK_OFFICIAL_PROVIDER)) {
+    return { seeded: false, count: 0, reason: `已有 ${DEEPSEEK_OFFICIAL_PROVIDER} 的行，不重复追加（幂等）` }
+  }
+
+  let count = 0
+  for (const spec of DEEPSEEK_FALLBACK_ROLES) {
+    const sameRole = existing.filter((row) => row.role === spec.role)
+    const nextRank = sameRole.reduce((max, row) => Math.max(max, row.rank), -1) + 1
+    upsertModelRoute(db, {
+      role: spec.role,
+      rank: nextRank,
+      provider: DEEPSEEK_OFFICIAL_PROVIDER,
+      model: DEEPSEEK_OFFICIAL_MODEL,
+      reasoningEffort: spec.effort,
+      note: spec.note,
+      updatedBy: 'system',
+    })
+    count += 1
+  }
+
+  return {
+    seeded: true,
+    count,
+    reason: `追加 ${String(count)} 行 ${DEEPSEEK_OFFICIAL_PROVIDER}/${DEEPSEEK_OFFICIAL_MODEL} 到 L2/L3/scorer 末尾`,
+  }
+}
+
+/** DSH 内置 provider 的 id（与 `config.ts` 的默认值一致）。 */
+const DEEPSEEK_OFFICIAL_PROVIDER = 'deepseek-official'
+
+/** 它默认用的模型（与内置播种落库的值一致）。 */
+const DEEPSEEK_OFFICIAL_MODEL = 'deepseek-flash'
+
+/**
+ * 要补的档位 —— **用户点名 L2/L3/scorer**。
+ *
+ * **L1 刻意不加**：L1 的场景是「闲聊与简单问答：**快且强**」，
+ * 而跨 provider 的兜底在延迟上更差 ⇒ 加了反而拖慢最常见的那条路径。
+ */
+const DEEPSEEK_FALLBACK_ROLES: readonly { readonly role: string; readonly effort: string; readonly note: string }[] = [
+  { role: 'L2', effort: 'high', note: '兜底：DS 官方（跨 provider，opencode-go 抖动时顶上）' },
+  { role: 'L3', effort: 'max', note: '兜底：DS 官方（跨 provider，长链推理的第二个来源）' },
+  { role: 'scorer', effort: 'low', note: '兜底：DS 官方（评分器的高频小请求）' },
+]

@@ -67,7 +67,20 @@ const webuiUrl = computed(() => {
   if (info === undefined) return ''
   const host = window.location.hostname
   const query = info.token === undefined ? '' : `?token=${encodeURIComponent(info.token)}`
-  return `http://${host}:${String(info.webuiPort)}/webui${query}`
+  // ★★ 2026-10-08 修混合内容（**第 16 处缺陷**）：原来硬编码 `http://` ——
+    //   面板走 HTTPS 时，浏览器把 iframe 当**混合活动内容直接拦掉**
+    //   （错误原文：`已阻止加载混合活动内容`）⇒ iframe 永远空白。
+    //
+    //   ⇒ 改成走**独立域名的反代**（`napcat.<本域名>`），它与面板**同一个 Caddy**：
+    //     同 HTTPS、同内部 CA ⇒ 没有混合内容问题，也不用对外暴露 6099。
+    //     ★ 为什么是独立域名而不是子路径：NapCat 用**绝对路径**请求自己的资源
+    //     （`/webui/assets/…`、`/api/…`），子路径反代会让它们 404。
+    //
+    //   ⚠️ 前提：Caddyfile 里有 `napcat.{$FORLIFE_HOST}` 站点块，
+    //     且 qq 接在 `edge` 网络上（靠 `docker-compose.dev.yml` 覆盖）。
+    const proto = window.location.protocol
+    const napcatHost = `napcat.${host}`
+    return `${proto}//${napcatHost}/webui${query}`
 })
 
 const connectionTone = computed<'ok' | 'err' | 'muted'>(() => {
