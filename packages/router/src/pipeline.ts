@@ -68,7 +68,7 @@ export interface RoutingDecision {
   readonly source: 'guard' | 'minimum' | 'heuristic'
   /** 守卫规则名（source=guard 时）。 */
   readonly rule?: string
-  /** 评分后端（source=scorer/heuristic 时）。 */
+  /** 评分后端（source=minimum/heuristic 时）。 */
   readonly backend?: string
   /** 原始档位（升档前；没升档则与 tier 相同）。 */
   readonly rawTier?: Tier

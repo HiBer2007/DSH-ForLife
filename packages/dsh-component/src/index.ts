@@ -552,7 +552,7 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
 
     // ★★ 2026-10-08 真机实测（**第 15 处缺陷**）：**面板里的路由表永远是旧的**。
     //
-    //   现象：在面板「路由」页看到的 L1/L2/L3/scorer **全是 `deepseek-official`**，
+    //   现象：在面板「路由」页看到的 L1/L2/L3/minimum **全是 `deepseek-official`**，
     //   而我们实际用的是 `opencode-go`。
     //
     //   根因：路由表的**唯一真源是库里的 `model_routes` 表**（不是 profile）。

@@ -699,7 +699,7 @@ const m0013 = {
   sql: `
 CREATE TABLE IF NOT EXISTS model_routes (
   id               TEXT PRIMARY KEY,
-  role             TEXT NOT NULL,        -- L1 | L2 | L3 | vision | embedding | scorer | subagent
+  role             TEXT NOT NULL,        -- L1 | L2 | L3 | vision | embedding | minimum | subagent
   rank             INTEGER NOT NULL,     -- 同一 role 内越小越优先
   provider         TEXT NOT NULL,
   model            TEXT NOT NULL,
@@ -718,7 +718,7 @@ CREATE TABLE IF NOT EXISTS routing_log (
   session_id      TEXT,
   turn_id         TEXT,
   tier            TEXT NOT NULL,
-  source          TEXT NOT NULL,         -- guard | scorer | heuristic
+  source          TEXT NOT NULL,         -- guard | minimum | heuristic
   rule            TEXT,                  -- 守卫规则名
   backend         TEXT,                  -- 评分后端
   confidence      REAL NOT NULL DEFAULT 1,

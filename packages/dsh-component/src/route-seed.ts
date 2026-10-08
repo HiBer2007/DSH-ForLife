@@ -101,7 +101,7 @@ export function seedDefaultRoutes(db: DatabaseSync, input: SeedRoutesInput): See
   return {
     seeded: true,
     count: tiers.length + 1,
-    reason: `空表 ⇒ 播种 ${String(tiers.length + 1)} 行（L1/L2/L3/scorer → ${input.provider}/${input.model}）；视觉与嵌入需要你指定带 image 能力/给出维度的模型，所以刻意不猜`,
+    reason: `空表 ⇒ 播种 ${String(tiers.length + 1)} 行（L1/L2/L3/minimum → ${input.provider}/${input.model}）；视觉与嵌入需要你指定带 image 能力/给出维度的模型，所以刻意不猜`,
   }
 }
 
@@ -191,7 +191,7 @@ export function seedOpenCodeGoRoutes(
     endpointId,
     replaced,
     reason:
-      `播种 ${String(plan.length)} 行（L1/L2/L3/scorer 的降级链）+ 登记端点 ${endpointId}` +
+      `播种 ${String(plan.length)} 行（L1/L2/L3/minimum 的降级链）+ 登记端点 ${endpointId}` +
       (replaced > 0 ? `；替换掉 ${String(replaced)} 行旧的系统播种` : '') +
       (freeSkipped > 0 ? `；${String(freeSkipped)} 个免费模型因超出复核期被排除` : ''),
   }

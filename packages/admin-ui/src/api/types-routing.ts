@@ -62,7 +62,7 @@ export interface RoutingEndpoint {
 export interface RoutingLogEntry {
   readonly at: string
   readonly tier: string
-  /** 判定来源：guard（守卫规则）/ scorer（评分器）/ heuristic（启发式）。 */
+  /** 判定来源：guard（守卫规则）/ minimum（超小模型层）/ heuristic（启发式）。 */
   readonly source: string
   /** 命中的守卫规则名；没命中时键缺席。 */
   readonly rule?: string

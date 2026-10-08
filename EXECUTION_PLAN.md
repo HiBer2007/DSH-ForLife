@@ -3,7 +3,7 @@
 > 目标：把 `PLAN.MD`（DSH 长期记忆系统设计报告）与 `模型路由.MD`（模型分级路由设计）落成一套**可移植、可容器化、可运维**的工程实现。
 >
 > 本文档 = **选型结论 + 目标架构 + 分阶段执行计划 + 验收标准 + 风险登记册**。它写的是**决定**与**验收标准**，不写执行过程。
-> 阅读顺序建议：§0 → §1 → §2.3（映射表）→ §4（阶段表）→ §7 / §8。
+> 阅读顺序建议：§0 → §1 → §2.3（映射表）→ §2.20（中介层）→ §4（阶段表）→ §7 / §8。
 
 ### 文档约定
 
@@ -40,6 +40,7 @@
 | 部署与存储 | VM → Compose → Caddy; `node:sqlite` (Node 24, FTS5 / `loadExtension` / WAL) + LanceDB （§2.4） |
 | 保真度 | 参数与时机一比一（§12.1/§12.2/§7.6 + §4.2/§6.3/§8.2）, CI 强制（§2.6） |
 | 模型与推理 | 分级路由 + 子代理模型 + 回退 `agent/request` （§2.7、§2.18）; 四来源 × 四模式（§2.13）; 无 GPU (R7 430) |
+| 路由中介层 | 插在「接入提供方」与「实际调用位置」之间：模型目录 + 初始路由 + 取数层；超小模型层级统一称 `minimum`（§2.20） |
 | 记忆与用户面 | 媒体库入长期记忆 (`recall_longterm`/`recall_media`, §2.9); `message_sent` 3 s （§2.17.9）; 沙箱（§2.10）; 定时器（§2.14） |
 | 运行时与会话 | 时区 `systemTimezone`/`conversationTimezone`/`displayTimezone`、单窗口多会话、唤醒矩阵、`source_scope`、`model`/`system`、两条铁律（§2.16–§2.18） |
 | 落点与缓存 | `ctx.compaction` / `ctx.systemPrompt.section()` / `ctx.tools.register()`; `TokenUsage.cacheReadTokens / cacheWriteTokens` （§2.3） |
@@ -133,7 +134,13 @@ endpoint:  ws://gateway:8082/onebot   # compose 内网; auth: Bearer <access_tok
 - 传输层: `QqTransport` + `onebot11-ws` （默认） → `onebot11-http` → `snowluma-sdk` → OneBot 12; 协议端 NapCat ⇄ SnowLuma, 终极 Lagrange.Core。
 - 架构：只依赖 `QqTransport` (`connect / on(event) / sendMessage / sendReaction / setTyping / recall / getLoginInfo`); 默认反向 WS (`/onebot`), 备用 `forward-ws`, access token, compose 内网。
 
-> **待验证 (U7)**: Linux 容器最小运行条件、镜像体积与内存量级、登录态持久化路径。
+#### 容器内已自带能力（实测）
+
+- **FFmpeg**：官方镜像**自带**（实测 `ffmpeg 4.4.2`）⇒ **无需安装**，不进镜像构建步骤。
+- **PacketBackend（「DLC」）**：**已内置**（`native/packet/MoeHoo.linux.x64.node`），日志实测 `[PacketHandler] 加载成功` / `[FFmpeg] ✓ 使用 Native Addon 适配器` ⇒ **无需额外配置**。它就是配置文件里 `packetBackend` 字段控制的**原生 hook 模块**，NapCat **v3.6.0 起内置**（Linux/macOS amd64·arm64、Windows amd64）。
+- **WebUI 反代到同源**：采用**独立域名站点块**（`napcat.{$FORLIFE_HOST}` → `reverse_proxy qq:6099`），**代理在根路径** ⇒ NapCat 的绝对路径（`/webui/assets/…`、`/api/…`）天然对得上，**NapCat 侧一行不改**；面板 iframe 指 `https://napcat.<host>/webui?token=…`（§2.12、§6.3）。
+
+> **待验证 (U7)**: Linux 容器最小运行条件（FFmpeg 与 PacketBackend 两项已由实测关闭，见上）、镜像体积与内存量级、登录态持久化路径。
 
 ### 1.3 后台设计来源：AstrBot 调研结论
 
@@ -150,7 +157,7 @@ endpoint:  ws://gateway:8082/onebot   # compose 内网; auth: Bearer <access_tok
 ### 2.1 组件与进程边界
 
 - **Caddy**（VM 容器）: `:443` TLS 入口; `/admin/*`→gateway; `/svc/<name>/*`→工作区服务 (POST /load); `tcp://*:<port>`→layer4 穿透; Admin API 走 unix socket; 其余不上公网。
-- **gateway 容器 forlife-gateway**（Node/TS）: OneBot 反向 WS 服务端 ← QQ 客户端；防抖/队列/会话映射/预评分 (T14)/评分器 (T8 超时降级)/轮次驱动 (spawn `dsh` headless)/`/admin` (SSE)/端口发布→Caddy Admin API/job runner; 与 dsh 共享 SQLite+目录。
+- **gateway 容器 forlife-gateway**（Node/TS）: OneBot 反向 WS 服务端 ← QQ 客户端；防抖/队列/会话映射/预评分 (T14)/`minimum` 超小模型 (T8 超时降级)/轮次驱动 (spawn `dsh` headless)/`/admin` (SSE)/端口发布→Caddy Admin API/job runner; 与 dsh 共享 SQLite+目录。
 - **dsh 容器 profile=forlife**: `dsh-web-app` 与 forlife-memory 同进程；组件内 `ctx.compaction`/`ctx.systemPrompt` (P1/P2/L2/L3)/`ctx.tools` （记忆/QQ/表情）/`agent/pre-step` （视觉桥接）/`ctx.attachments`/`/api/forlife/*`; `dsh-std adapter` 仅宿主未内置时挂载。
 - **QQ 客户端容器**（官方镜像）：登录态/协议/OneBot; 与 gateway 走 compose 内网 OneBot v11。
 - **推理端点**（可外挂）: `local` (llama-server)/`remote-selfhost`/`cloud-api`/`host-native` × `resident`/`on-demand`/`remote-api`; 上层用 `InferenceEndpoint` （§2.13）。
@@ -162,7 +169,7 @@ endpoint:  ws://gateway:8082/onebot   # compose 内网; auth: Bearer <access_tok
 ```
 1 QQ 客户端 --(OneBot WS event)--> gateway: 会话键 (platform, chat_id, thread_id?), 噪音过滤 (规则 -> 可选小模型)
 2 防抖 2-3s (同会话新消息重置) + T14 预评分 (守卫 -> L1) → 入队 qq_inbox → per-key mutex 串行、跨会话并行 → 图/文件降采样
-3 轮次驱动器: 预评分定档 L1/L2/L3 → provider/model/reasoningEffort (T10, 轮次内不变) → session (chat_key <-> dsh session_id) → spawn dsh --profile forlife headless --json --session-id <id> (env FORLIFE_TURN_TOKEN / FORLIFE_GATEWAY_URL / 附件清单)
+3 轮次驱动器: 预评分定档 L1/L2/L3 → provider/model/reasoningEffort（**从模型目录里挑一个可达的**，§2.20） (T10, 轮次内不变) → session (chat_key <-> dsh session_id) → spawn dsh --profile forlife headless --json --session-id <id> (env FORLIFE_TURN_TOKEN / FORLIFE_GATEWAY_URL / 附件清单)
 4 dsh: ctx.attachments.saveImage -> ImageAttachmentRef; agent/pre-step 视觉桥接 (替换 image 块, 保留 MessageId); 组装 L0 → L1 tools → P1 → P2 → L2 → L3 → [缓存断点] → L4 → L5
 5 工具: remember / push_mid_memory 写 mid 表 (T1); recall_longterm 预算 → FTS5 + LanceDB; request_compaction(reason); sticker_search / qq_send_sticker; publish_port / unpublish_port; qq_reply / qq_react / qq_typing → gateway HTTP (turn token); defer_turn 挂起 (T8)
 6 gateway 收尾: NDJSON 映射 QQ 侧 (分段/typing/图片/文件) → 提交 session、写 qq_turns 与 routing_log、触发沉降/碎片/复盘 (T1)
@@ -198,6 +205,7 @@ endpoint:  ws://gateway:8082/onebot   # compose 内网; auth: Bearer <access_tok
 | 队列/防抖/会话键 | 表 `qq_inbox`、`qq_sessions`、`qq_turns` + per-key mutex; 重启扫未完成轮次 |
 | 噪音过滤 | 规则层（阶段 3） → 小模型（阶段 6） |
 | **模型分级路由（§9）** | 轮次开始定档; `agent/request` (waterfall → `LlmCallConfig`) 覆写；压缩 L3 + `reasoningEffort:'high'`; 按 `模型路由.MD`: 守卫 → L1 评分 → 启发式（§2.7.1） |
+| **接入中介层（模型目录 / 初始路由）** | `packages/router/src/catalog.ts`（目录 + 标记 + 简介 + 可达性）、`initial.ts`（定档 → 选可达模型）、`packages/dsh-component/src/llm-host.ts`（宿主 `llm` 取数）；生效写 `ModelSelectionRef.current`（§2.20） |
 | 视觉/子代理/提示词/表情/沙箱 | §2.7.2 / §2.7.3 / §2.8 / §2.9 / §2.10 |
 | 后台面板 | 记忆/压缩/召回/存储 → DSH Web (`main` keyed + `sidebar.panellist` / `prefix`); 队列/日志 → `/admin` |
 | 缓存监控 | 按轮次记 `TokenUsage.cacheReadTokens/cacheWriteTokens` (`dsh-llm/lib/types/types.d.ts:160-172`) |
@@ -274,6 +282,7 @@ D:\DSH-ForLife\  |- PLAN.MD  |- EXECUTION_PLAN.md  |- docs\research\
 
 #### D. 路由与评分（模型路由.MD §5–§9）
 - `router.minimum.model`=Qwen2.5-0.5B-Instruct (4-bit) / `router.minimum.resident`=是 / `router.minimum.timeoutMs`=50 ms / `router.minimum.maxTokens`=20（`max_tokens`）/ `router.confidence.low`=0.60（低于升一档）/ `router.confidence.high`=0.85（不低于采用）/ `router.guards.maxRules`=≤ 10 / `router.guards.targetIntercept`=40–60% / `router.preScore.enabled`=启用（防抖窗口内）/ `router.batch.enabled`=启用（群聊）/ `router.minimum.prefixCache`=启用（固定系统提示）/ `router.latencyBudgetMs`=< 30 ms —— 落点 `packages/router`
+- **档位命名**：`minimum` = **唯一的「超小模型层级」**（原档位名 `scorer`，已废弃、不作为用途标签）；基线 6 个键已统一为 `router.minimum.*`（`plan-baseline.json`）。职责四件 —— ① 复杂度评分（已实现：`scorer.ts` 的 `TierScorer`）/ ② 路由决策（已实现：守卫 + 启发式）/ ③ QQ 工具决策（时区、数据可信度、工具返回的总结与提示信息）/ ④ 工具内**拥有低阶智能与一定自主能力**的决策源；③④ 属既有要求、此前被忽略，**尚未实现**（§2.20）。`scorer.ts` / `TierScorer` / `routing_log.source='scorer'` 是实现名（评分后端），与档位名不冲突。**只在需要的地方接 `minimum`，不是每个工具都接**。
 
 #### D2. 模型供应与部署（模型路由.MD §3.2）
 - `inference.modes.enabled[]`=四种全支持：`resident`/`on-demand`/`remote-api`/`host-native` / `inference.mode.switchPolicy`=自动+手动网页；幂等、排水、回滚 / `inference.targets[]`=`local-docker`、`remote-ssh`；`external-api` 只登记 / `inference.local.backend`=`cpu`、`cuda`、`rocm`、`vulkan`、`sycl`；自动探测+覆盖 / `router.minimum.endpoint`=本地容器；可改外挂、远程、宿主内置 / `router.minimum.resident`=是 / `inference.local.runtime`=`llama-server`（llama.cpp）/ `storage.roots.models`=可配（§2.4 迁移）/ `inference.onDemand.idleTimeoutMs`=600000（10 分钟）/ `inference.download.*`=SHA-256+断点续传+镜像源 / `inference.warmup.enabled`=启用（T16）/ `router.preScore.softBudgetMs`=≤ 800 ms；偏离见 §2.13.4 / `router.minimum.timeoutMs`=50 ms；超时降级启发式 —— 落点 `packages/inference`
@@ -320,6 +329,7 @@ D:\DSH-ForLife\  |- PLAN.MD  |- EXECUTION_PLAN.md  |- docs\research\
 - 输出 `{"tier":"L1|L2|L3","confidence":0..1}`，`max_tokens=20`；解析失败按低置信度。
 - 预评分防抖窗口内并发；群聊批处理；观测 `routing_log`、`uncertain_cases`（<0.6）→ T15 定期 L3 复盘。
 - 档位→模型 `provider/model/reasoningEffort`；压缩固定 L3 + 高推理强度（PLAN §9.2）。
+- **档位是语义、模型是资源**：定档与选模型分离 —— 定档走本节的守卫/预评分/启发式，选模型走中介层的模型目录与实际可达性（§2.20）；某接入点挂掉只换模型，不改对任务的判断。档位名统一 `minimum`（原 `scorer`，§2.6 D）。
 
 #### 2.7.2 视觉与非视觉分开处理
 
@@ -461,7 +471,8 @@ QQ（§8.1）：`qq_reply(text, reply_to?)`发送；`qq_react(emoji, msg_id?)`�
 - `https://<host>/svc/*`->服务：公网/显式发布；端口段/网段白名单/人工批准/TTL
 - `tcp://<host>:<port>`->layer4:公网/显式发布；同上
 - DSH Web UI(`:3080`/`127.0.0.1:3080`):仅loopback/内网/VPN隧道；宿主令牌->cookie
-- OneBot/QQ WebUI/Caddy Admin:不暴露；unix socket;Admin API走`admin unix//run/caddy/admin.sock`(0200)
+- OneBot/Caddy Admin:不暴露；unix socket;Admin API走`admin unix//run/caddy/admin.sock`(0200)
+- QQ WebUI(`6099`):**不直接暴露**；经**独立域名站点块**`napcat.<host>`反代到同源（代理在根路径），NapCat 的绝对路径天然对得上 ⇒ 面板 iframe 无混合内容问题（§1.2、§6.3）
 - 备选（U15）：gateway 前置带鉴权的 DSH Web 反代（改写 `Host` + cookie 会话）；实测不可行则永久留隧道（见 §8.4 项 5b）
 
 面板：公网面板在gateway侧；DSH内嵌（slot/`/api/forlife/*`）仅隧道内；共用同一SQLite/API语义.
@@ -472,7 +483,7 @@ QQ（§8.1）：`qq_reply(text, reply_to?)`发送；`qq_react(emoji, msg_id?)`�
 
 - GPU:AMD R7 430 挂PVE/不直通⇒VM内纯CPU;GCN 1代Oland无ROCm⇒不做GPU假设.
 - 加速：无⇒本地CPU/量化；强算力走外挂/远程.
-- 评分器：0.5B Q4在CPU 30-60 ms,常触发50 ms降级⇒默认外挂/远程，启发式兜底（§2.13.4）.
+- `minimum`（超小模型层级，原「评分器」）：0.5B Q4在CPU 30-60 ms,常触发50 ms降级⇒默认外挂/远程，启发式兜底（§2.13.4）.
 
 #### 2.13.2 来源x模式
 
@@ -493,6 +504,10 @@ QQ（§8.1）：`qq_reply(text, reply_to?)`发送；`qq_react(emoji, msg_id?)`�
 目标：`local-docker`compose/`docker run`;`remote-ssh`SSH远端同步骤（凭据加密/不入日志/主机白名单）；`external-api`只登记（base URL/密钥/探活/模型发现）
 
 护栏：白名单/dry-run/显式确认/远端回滚/审计.
+
+**已实现的库（尚未接线）**：`packages/router/src/deploy.ts`（约 20 KB）+ `download.ts`（约 7 KB）—— 三种部署目标、断点续传、SHA-256 校验；测试 `packages/router/test/deploy.test.ts`。**当前生产路径零调用** ⇒ 把这条流水线接上线（含 `minimum` 的**自动部署能力**）是本计划的待办，见 §2.20.4。
+
+**`minimum` 选型（`模型路由.MD` 已定）**：Qwen2.5-0.5B-Instruct 4-bit / GGUF Q4 / 约 400 MB（纯 CPU 用 Q4）。
 
 流水线（共用）:
 
@@ -521,7 +536,7 @@ QQ（§8.1）：`qq_reply(text, reply_to?)`发送；`qq_react(emoji, msg_id?)`�
 
 1. 聚合：本地容器（`/v1/models`发现）/外挂自建/云provider(DSH配置，含能力位与`reasoning.efforts`)/宿主内置.
 2. 每行：来源/部署目标/后端/模式/能力（text/`image`）/上下文/推理强度集合/健康/p50-p95/内存/成本.
-3. 角色映射：`L1 / L2 / L3 / 视觉 / 嵌入 / 评分器 / 子代理角色…`各选模型/强度，主/备回退链.
+3. 角色映射：`L1 / L2 / L3 / minimum（原评分器）/ 视觉 / 嵌入 / 子代理角色…`各选模型/强度，主/备回退链.
 4. 端点运维（网页）：部署/卸载；模式切换（排水/回滚）；后端切换/直通参数；动作显示dry-run并需确认.
 5. 校验：视觉须声明`image`;嵌入须给维度；`cuda`无NVIDIA设备即报错.
 6. 与DSH:云provider以DSH配置为真源（只读）；UI合并展示不覆盖.
@@ -679,7 +694,7 @@ PLAN §8.3:`defer_turn` 同轮挂起恢复；本节跨轮自唤醒.
 
 工具：`get_clock(scope?)`/`set_clock(scope, {timezone?, hour_cycle?, note?})`/`list_clocks()`。
 
-小模型：复用 §2.7 L1 评分器端点（tier+时钟）；`{timezone?, hour_cycle?, confidence}`;低置信度 pending,高置信度落表标 `source: small_model_suggestion`;优先级 `user_set`>`model_note`>`small_model_suggestion`>`unknown`。
+小模型：复用 §2.7 的 `minimum` 端点（tier+时钟）；`{timezone?, hour_cycle?, confidence}`;低置信度 pending,高置信度落表标 `source: small_model_suggestion`;优先级 `user_set`>`model_note`>`small_model_suggestion`>`unknown`。
 
 渲染：① 双写「`14:23 UTC` = `22:23 Asia/Shanghai`（24h）」；② 存储恒用系统时区；③ 相对年龄与时区无关；④ 未设会话时区不猜不反问，标"（未确认时区）";⑤ 12/24 制只影响表述。
 
@@ -788,7 +803,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 
 #### 2.18.1 路由表
 
-表 model_routes:`role`（主对话/子代理：角色名/视觉/嵌入/评分器/压缩），`order`(0 起),provider,model,reasoning_effort,enabled,note;PK(role, order)。
+表 model_routes:`role`（主对话/子代理：角色名/视觉/嵌入/`minimum`（原评分器）/压缩），`order`(0 起),provider,model,reasoning_effort,enabled,note;PK(role, order)。
 
 - 允许 1 个或多个模型。
 - 失败/无额度自动降级（限流/超时/鉴权失败/额度耗尽）：按 `order` 降级，落 `routing_log`。
@@ -799,6 +814,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 - `switch_model(target, reason, scope?)`,仅主代理。
 - 代价：理由必录；N 轮冷却；切换预算（每轮/每天上限）；提示词写明切换成本>委派子代理。
 - 生效：写路由表覆盖+`agent/request`;粘性基线（§2.7.3） ⇒ 每 step 重新断言。
+- ★ **生效口径（每轮路由）**：写 **`ModelSelectionRef.current`** —— 宿主对该字段的定义是「**为下一个进入提示装配的 step 选择的模型**」。**不得**用 `agentDefaultModel.saveSelection()` 做每轮路由：那是**持久默认值**，每轮调用会污染配置；该方法只留给人工/后台（§2.20.3）。
 - 可逆：可撤销覆盖（TTL/"直到本轮结束"）；审计落 `routing_log`（发起方/原新模型/理由/代价/效果）。
 
 #### 2.18.3 子代理的模型
@@ -806,6 +822,16 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 - 子代理不得自切：无 `switch_model`+运行时断言（绕过即拒）。
 - 主代理可指定异构模型：`ctx.subagents.start(name, { agentOptions: { provider, model, reasoningEffort } })`（§2.7.3）。
 - 经济学：切换成本>委派成本。
+
+#### 2.18.4 模型自助工具与轮末建议
+
+主模型需要两个**自助工具**，以及一条**轮末建议**通道（均属中介层接线范围，§2.20.4）：
+
+1. **自助切换**：主模型自己决定换模型 —— 走既有 `switch_model` 语义（理由必录、冷却、预算），但**必须真落到 `ModelSelectionRef.current`**（不是写持久默认值）。
+2. **决定子代理用哪个模型**：主模型在分派时指定异构模型（`ctx.subagents.start(name, { agentOptions })`，§2.7.3）；子代理仍**不得自切**（§2.18.3）。
+3. **轮末建议下次模型**：允许主模型在结束本轮时**建议下次使用什么模型**。建议的落地形态（自动采纳 / 需满足置信度 / 仅登记待人工确认）**待定**；无论哪种形态都须写 `routing_log` 并留理由。
+
+> 现状：`packages/router/src/initial.ts` 文件末尾已登记这三项为 TODO，**尚无生产调用点**（接线守卫待补，§5）。
 
 ---
 
@@ -830,6 +856,67 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 **D. 来源追踪与增量更新**：来源记在既有列 `source_scope`（`feed:<来源>`），不加字段 / 表 / 迁移；条目 id 由「来源 + 段落序号」稳定派生（`feedIdFor`）⇒ 同源重导是更新而非新增；长期记忆重导变短 ⇒ 多出段落交给既有 `archiveLongMemory` 归档（可恢复）；中期记忆只追加（无 update 原语）⇒ 内容变更以新 id 追加新版本，重复喂同一版判为「已喂过」。
 
 **E. 参数登记**：`feed.dedupeSimilarity`=0.9（与 `recall.duplicateSimilarity` 同量级、同算法）/ `feed.dedupeCandidates`=5 / `feed.probeChars`=24 / `feed.summaryMaxChars`=120 / `feed.maxItemsPerCall`=200（单次喂食段落数上限，CLI / HTTP / 工具共用）。
+
+---
+
+### 2.20 中介层（模型目录 · 初始路由 · 取数层）
+
+定位：路由层不只接入自研的新版 go 接入点，也对接**宿主原有的那一大批接入点**，随后才发生模型调用。**本系统是插在「接入提供方」与「实际调用位置」之间的中介层**。
+
+```
+[ 接入提供方 ] ── listProviders() / listModels() ──▶ 模型目录（表 + 标记 + 简介 + 可达性）
+                                                        │
+   轮次输入 ─────────────────────────────────────────────┤
+                                                        ▼
+                                              初始路由（定档 → 选模型）
+                                                        │
+                                                 ModelSelection
+                                                        ▼
+[ 实际调用位置 ] ◀── 写 ModelSelectionRef.current
+```
+
+#### 2.20.1 三块组件与接线现状
+
+| 模块 | 职责 | 测试 | 生产接线 |
+| :--- | :--- | :--- | :--- |
+| `packages/router/src/catalog.ts` | **模型目录**：把宿主给的 provider/model 整理成决策表；每行带**标记**（`local` / `free` / `vision` / `native` / `ours` / `account`）、**简介**、**可达性**与不可达原因 | `packages/router/test/catalog.test.ts` | 由取数层喂入 |
+| `packages/router/src/initial.ts` | **初始路由**：守卫 → 预评分（接口已留、**未接**）→ 启发式定档，再从目录里挑一个**可达**模型；**选模型与定档分离** | `packages/router/test/initial.test.ts` | **尚无调用点**（§2.20.4） |
+| `packages/dsh-component/src/llm-host.ts` | **取数层**：从宿主 `llm` 服务取 `listProviders()` / `listModels()` ⇒ `buildCatalog()`；单个 provider 失败不影响整表 | `packages/dsh-component/test/llm-host.test.ts` | 已接：`src/index.ts` 启动时调用，目录与标记落日志；`catalog-wiring.test.ts` 守卫 |
+
+规则：标记是**启发式推出来的** ⇒ 规则要窄（宁可少标、不要标错 —— 标错一个 `local` 会让小模型把远程模型当本地用）；**简介只来自宿主**（`name` / `description`），没有就留空、不编。
+
+可达性口径：取数层给的是**能立刻判断的那一种** —— 枚举不出模型 / 枚举抛异常 ⇒ 标不可达并记原因。**更深的可达性（真发一个请求）不在取数层做**（要么花钱要么慢），由独立的**心跳/探测**产出并经 `unreachable` 传入。
+
+#### 2.20.2 输入约束（用户定）
+
+初始路由**不吃全部上下文**：不用特别关心记忆的内容，只需要三样 ——
+
+1. **轮次输入**（这一轮说了什么）
+2. **模型表**（条目 + 标记 + 简介）
+3. **各模型当前可达性**
+
+⇒ 初始路由因此可以在轮次开始前跑完，不依赖记忆内容；记忆的召回交给后续档位与工具。
+
+#### 2.20.3 宿主接口（从容器内 `.d.ts` 读出，非推测）
+
+- `ctx.get('llm')` → `listProviders(): LlmProviderInfo[]`、`listModels(provider): Promise<LlmModelInfo[]>`
+  - `LlmProviderInfo = { id, name }`
+  - `LlmModelInfo = { provider, id, name, description?, inputModalities? }`
+- `ctx.get('agentDefaultModel')` → `currentSelection(): ModelSelection`、`saveSelection(next): Promise<void>`
+  - `ModelSelection = { provider, model, reasoningEffort? }`
+- ★ `ModelSelectionRef`（`dsh-agent` 类型）：`{ current: ModelSelection | undefined, assembled: … }`；`current` 的定义是「**为下一个进入提示装配的 step 选择的模型**」
+
+**⇒ 生效口径**：每轮路由写 **`ModelSelectionRef.current`**；`agentDefaultModel.saveSelection()` 写的是**持久默认值**，每轮改它会污染配置 ⇒ 只留给人工/后台（§2.18.2）。
+
+#### 2.20.4 待接线清单
+
+1. `initialRoute()` 接进启动/轮次路径：取数结果 → 目录 → 初始路由 → `ModelSelectionRef.current`。
+2. `minimum` 预评分：部署 Qwen2.5-0.5B（§2.13.3）后，以 `renderCatalogForPrompt(catalog)` 为上下文、`turnText` 为问题，输出档位 + 置信度，作为 `preScore` 传入；未接时走启发式。
+3. 模型自助工具：主模型自助切换、主模型决定子代理用哪个模型（§2.18.4 ①②）。
+4. 轮末建议下次模型（§2.18.4 ③）；落地形态待定。
+5. `packages/router/src/deploy.ts` + `download.ts` 接上线：`minimum` 的**自动部署能力**（§2.13.3）。
+
+每一项新接线都配**接线守卫测试**与**回退验证**（§5）。
 
 ---
 
@@ -874,6 +961,9 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 - D34 统一记忆：`source_scope` 溯源 + 摘要分节
 - D35 QQ 在线状态 = 工作状态通道（`model`/`system`）
 - D36 铁律：`affects_model` 后台操作须唤醒报告（60 s）；禁 `user`
+- D37 路由层 = **中介层**：插在「接入提供方」与「实际调用位置」之间；模型目录（标记+简介+可达性）+ 初始路由（定档与选模型分离）+ 取数层；输入只要**轮次输入 / 模型表 / 可达性**（§2.20）
+- D38 `minimum` = **唯一的超小模型层级**（原 `scorer`，不作为用途标签）：复杂度评分 / 路由决策 / QQ 工具决策 / 工具内低阶智能决策源；**只在需要的地方接，不是每个工具都接**（§2.6 D）
+- D39 **接线纪律**：新接线必须同时交付「读源码断言调用点」的**接线守卫测试**与**回退验证**（对治第 18 类缺陷：库写好、单测绿、生产零调用）（§5）
 
 - U1（关闭）缓存指标 `TokenUsage.cacheReadTokens/cacheWriteTokens`
 - U2 长连接驱动（D6）：阶段 3 三驱动×100 轮
@@ -882,7 +972,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 - U5 版本漂移（`compat.hosts`）：升级跑契约测试，见 `research/dsh-plugin-authoring-reference.md`
 - U6 缺测试工具链（`@deepseek-ai/dsh-test*`/`./testing`）：靠 `boot()`、`createMemoryConnectionPair()`
 - U7（部分关闭）NapCat 免图形（WebUI `:6099`）；SnowLuma 需 Xvfb+VNC+noVNC+`SYS_PTRACE`/`seccomp=unconfined`；阶段 3 实测
-- U8 评分器形态（本地/外挂/云/宿主）× 纯 CPU PVE VM：阶段 5×500
+- U8 `minimum` 形态（本地/外挂/云/宿主）× 纯 CPU PVE VM：阶段 5×500
 - U9（关闭）视觉：`inputModalities`/`ctx.attachments.saveImage`/`agent/pre-step`/`resolveModelInfo`；`research/vision-modality-report.md`
 - U10（关闭）Caddy：`POST .../routes`/`DELETE /id/<id>`/`PUT .../routes/0`/`POST /load`；`research/caddy-sandbox-ports-report.md`
 - U11（关闭）`ctx.subagents.start(name, { agentOptions })` → provider/model/reasoningEffort；`research/subagent-model-routing-report.md`
@@ -895,6 +985,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 - U18 远程 SSH 部署：阶段 5 先 `--dry-run` 再全量
 - U19 既有调度/`dsh-webhook`/goal 复用度：`research/wake-scheduling-report.md` → §2.14.8
 - U20 `dsh-time-context` headless 是否正常/重复注入：阶段 4 实测
+- U21 `minimum` 参与工具决策（QQ 工具 / 子代理分派）与「轮末建议下次模型」的收益与误判率：阶段 5 实测
 
 ---
 
@@ -988,6 +1079,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
   4. `reasoningEffort` 按档；`lockTierForTurn`/`assertTierForTurn`;`agent/request-error`>`agent/request`（幂等/一步一换）；`Debouncer`/`onWindowOpen`/`routeBatch`.
   5. 视觉（§2.7.2）：三态（`undefined ≠ 不支持`）；复核+`ocr-unverified`/`source: ocr-unverified`;`attachmentId` 缓存；`vision-bridge.ts`;`agent/pre-step` 未接.
   6. 角色档位（`assignSubagent`）；`model_routes` 降级；`switch_model`/`decideSwitch`;禁自切.
+  7. **中介层接线**（§2.20）：`initialRoute()` → `ModelSelectionRef.current`；`minimum` 预评分（部署后接 `preScore`）；模型自助工具 + 轮末建议（§2.18.4）；`deploy.ts`/`download.ts` 接上线做 `minimum` 自动部署 —— 每项配**接线守卫测试**（§5）.
 - 依赖：阶段 3 轮次管线/阶段 4 提示缓存.
 - 验收:
   - 置信度 < 0.6 升档；拦截率 50.0% ∈ §5.2 的 40–60%(`router.test.ts`/`guards-rate.test.ts`).
@@ -995,7 +1087,8 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
   - 模式切换（在途不断/失败回滚/状态未知）(`mode-switch.test.ts`);OCR 复核+标记（`vision.test.ts`）；同图第二次 0 次视觉调用（`vision-cache.test.ts`/`vision_call_log`）；桥接链路（`vision-bridge.test.ts`）.
   - 降级/切换代价/禁自切：自阶段 4 移入（`failover.test.ts`/`failover-wiring.test.ts`/`router-tools.test.ts`/`subagents.test.ts`）.
   - 200 条语料回放（构造 50.0% 在带内/口径「面向机器人」）：部分；本地 p95 < 30 ms（真竞速/< 150 ms）：部分；远程部署/按需停唤醒/真模型读图/双路径对比：部分（待环境）.
-- 状态：进行中（真机待做）.
+  - 中介层（§2.20）：宿主某 provider 枚举失败时目录**不空表**（单点抖动不遮蔽其它接入点）；可达集合变化时**只换模型不改档**（`initial.test.ts`）；每轮路由**不写持久默认值**（守卫断言 `saveSelection` 不被每轮调用）；新接线有守卫测试 + 回退验证.
+- 状态：进行中（真机待做）;中介层已实现三块、接线待做（§2.20.4）.
 
 ### 阶段 6 · 表情包与媒体发送
 
@@ -1073,7 +1166,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 ### 阶段 10 · 部署与硬化
 
 - 目标：全新 PVE 从零部署 ≤ 30 分钟端到端；暴露面与鉴权达最低要求（工期 6–10 天）。
-- 交付物：①`docker-compose.yml`：`caddy` / `dsh` / `gateway` / `qq` / `llama-server` + 卷 + 健康检查 + `depends_on`；②`Caddyfile` 仅基线，动态路由经 Admin API；③PVE 交付说明（规格 / 开机 / 升级 / 备份 / 暴露约定）；④硬化：鉴权 / 限流 / 脱敏 / 密钥 / Caddy 安全头 / Admin API 仅内网；⑤噪音过滤 + 本地嵌入；⑥运维手册（掉线 / 契约不匹配 / 磁盘告警 / 评分器降级 / 端口泄漏）。
+- 交付物：①`docker-compose.yml`：`caddy` / `dsh` / `gateway` / `qq` / `llama-server` + 卷 + 健康检查 + `depends_on`；②`Caddyfile` 仅基线，动态路由经 Admin API；③PVE 交付说明（规格 / 开机 / 升级 / 备份 / 暴露约定）；④硬化：鉴权 / 限流 / 脱敏 / 密钥 / Caddy 安全头 / Admin API 仅内网；⑤噪音过滤 + 本地嵌入；⑥运维手册（掉线 / 契约不匹配 / 磁盘告警 / `minimum` 降级 / 端口泄漏）。
 - 依赖：阶段 7 端口出口 + 阶段 9 迁移 / 备份。
 - 验收标准：①全新 PVE 从零部署 ≤ 30 分钟 —— 通过：Docker 2:05、`--no-cache` 2:11、增量 3:14.6、造冷层 0.154 秒，合计 ≈ 5–6 分钟；②`forlife doctor` 报契约不匹配点且降级可用 —— 通过：`packages/dsh-component/scripts/doctor.mjs` / `src/host-contract.ts` 8/8（5 必需 / 3 加固 ⇒ `broken` / `degraded`）；③备份 ⇒ 销毁 ⇒ 恢复（DB + blob）—— 通过：`drill-backup-restore.mjs` 10/0；④公网仅 443 + 显式发布端口，`/onebot` / DSH 直连 / Caddy Admin API 不可达 —— 未验（需公网）。
 - 状态：进行中（部署与契约检查通过；多阶段 Dockerfile 未写，仅 `deploy/caddy/Dockerfile.forlife`；`docker-compose.yml` 中 `dsh` / `gateway` 为占位 `command: ["node", "--version"]`）。
@@ -1111,11 +1204,23 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 |提示词|编辑/回滚/覆盖|哈希恰变一次/误差 ≤2%|
 |集成（无 QQ）|headless+脚本化调用|压缩/沉降/召回/恢复|
 |集成（带 QQ）|测试账号+回放|防抖/分段/挂起恢复|
-|故障注入|kill -9/磁盘满/网络断/时钟跳变/评分器宕机|崩溃一致性/续传|
+|故障注入|kill -9/磁盘满/网络断/时钟跳变/`minimum` 宕机|崩溃一致性/续传|
 |性能|基准脚本|10 万条召回 p95/评分 p95/内存|
 |端到端|compose 起全栈|一轮真实 QQ 对话|
+|接线守卫|读源码断言调用点（去注释、要求语句位置）+ 回退验证|新接线不得「生产零调用」；`catalog-wiring.test.ts`/`profile-patch-ids.test.ts`/`feed-entries-wiring.test.ts`|
 
 结果：测试 1263 项、0 失败；typecheck 0 错误。
+
+**接线纪律（第 18 类缺陷的通用防线）**
+
+本项目反复栽同一个坑，**累计 18 次**：**「库代码写好了、单元测试全绿、生产路径上零调用」**。单元测试**永远抓不到它** —— 因为单元测试自己就是调用者。
+
+最典型的一次（第 17 处）：`profile patch` 的 `id` 写成了**包名**，而 base bundle 用的是**短 id**（`- id: llm-pi-ai` 配 `name: '@deepseek-ai/dsh-llm-pi-ai'`）⇒ dsh **静默丢弃整段 patch**（正常启动一个字不说，只在 `--dump-config` 时打一行警告）⇒ **`opencode-go` 这个 provider 从来没注册上过**，而容器一直 `healthy`、插件一直 `0 failed to import`。
+
+⇒ **纪律**：每个新接线都同时交付两样 ——
+
+1. **接线守卫测试**：**读源码**断言调用点存在。三个附加要求（三条都有对应的事故）：**先去掉注释再匹配**（栽过「锚点匹配到注释 ⇒ 结论相反」）、**必须落在语句位置**（不加这条 `void 0 && f(ctx)` 能蒙混过关）、**断言结果被真的用了**（`void f()` 后丢掉返回值等于白调）。已有：`tests/profile-patch-ids.test.ts`、`packages/dsh-component/test/catalog-wiring.test.ts`、`tests/feed-entries-wiring.test.ts`。
+2. **回退验证**：把接线**真的拆掉**（或改回错误写法）跑一次，守卫**必须变红**；不变红说明这条守卫是假的。
 
 **字节级稳定前缀**(PLAN §10.2):`renderMidMemory()`→SHA-256 同；`renderPrompt(await assemble())` 空转 N 轮→哈希不变；压缩事件→哈希恰变一次；`assemble().tools` 稳定。
 
@@ -1127,7 +1232,7 @@ E. 安全红线（不实现）：`send_packet`（任意 OIDB 包），`get_cooki
 
 |项|建议|说明|
 |---|---|---|
-|vCPU|4(+2 若评分器跑 CPU)|嵌入模型另加|
+|vCPU|4(+2 若 `minimum` 跑 CPU)|嵌入模型另加|
 |内存|16 GB|向量/附件缓存大；纯远端 8 GB;0.5B≈400 MB|
 |系统盘|64 GB SSD(virtio-scsi)|容器镜像+系统|
 |数据盘|128 GB+ SSD|`db`/`hot`/`warm`/`vectors`/`attachments`/`tmp`/`logs`/`workspace`|
@@ -1155,13 +1260,23 @@ memory.example.com {
   handle /admin*   { reverse_proxy gateway:8081 }   # 公网唯一入口
   handle /svc/*    { reverse_proxy gateway:8081 }   # 已发布服务
   # 不放兜底 handle：避免遮蔽动态路由
-  # DSH Web UI / OneBot / QQ WebUI / Admin API 一律不在公网
+  # DSH Web UI / OneBot / Admin API 一律不在公网
+}
+
+# QQ WebUI：独立域名站点块，**代理在根路径**（子路径反代会让 NapCat 的绝对路径
+# 请求 `/webui/assets/…`、`/api/…` 打到 Caddy 根 ⇒ 404）。面板 iframe 走它
+# ⇒ 同 HTTPS、无混合内容；6099 不直接对外。
+# ⚠️ 前提：Caddy 在 `edge` 网络且 qq 也在（靠 deploy/docker-compose.dev.yml 覆盖），否则 502。
+napcat.{$FORLIFE_HOST} {
+  reverse_proxy qq:6099
+  encode gzip
 }
 # TCP 穿透：layer4（自建 caddy 镜像），由 gateway 合成后 POST /load
 ```
 
 - 单一真源 = gateway:最小引导配置+变更合成整份 JSON→`POST /load`（原子、失败回滚）；禁用「Caddyfile 基线+Admin API 追加」（`caddy reload`/`adapt` 即 `POST /load`,静默抹路由）。
 - 端口发布两道硬闸门（gateway 侧）：端口段白名单、目标网段白名单（防反代 `127.0.0.1:2019`、`169.254.169.254`）；升级：拉新镜像→`forlife doctor --preflight`→重启 `dsh`。
+- QQ WebUI 反代是**静态站点块**（不进动态路由）：`napcat.<host>` → `qq:6099`，根路径；NapCat 侧零改动（§1.2、§2.12）。
 
 ### 6.4 部署验收
 
@@ -1173,7 +1288,7 @@ memory.example.com {
 |记忆端到端|写入/检索/spill/沉降/冷层回读/`recover`|9/9|
 |生产工具数|34|一致|
 
-**验证边界**:公网 ACME 证书、评分器 profile、QQ 扫码收发、cron 备份取法、容量实测未获端到端验证，首次上线按「第一次执行」对待；见 `docs/deploy/PVE_DEPLOY.md` 附录 B。
+**验证边界**:公网 ACME 证书、`minimum` profile、QQ 扫码收发、cron 备份取法、容量实测未获端到端验证，首次上线按「第一次执行」对待；见 `docs/deploy/PVE_DEPLOY.md` 附录 B。
 
 ---
 
@@ -1198,12 +1313,16 @@ memory.example.com {
 
 |风险 → 影响|缓解|
 |---|---|
-|评分器不可用/纯 CPU 达不到 50 ms/「粘性基线」→路由退化/档位漂移|50 ms 超时；软预算 ≤800 ms;每 step 重新断言|
+|`minimum` 不可用/纯 CPU 达不到 50 ms/「粘性基线」→路由退化/档位漂移|50 ms 超时；软预算 ≤800 ms;每 step 重新断言|
 |内核无跨模型 failover/插件无重试→整轮失败/丢功能|`agent/request-error`+`agent/request` 换路由|
 |权重下载失败/过大→部署失败|断点续传|
 |按需冷启动抖动/外挂端点不可用/加速后端不匹配驱动→桥接失效/回落|空闲超时 10 min;只保证 `cpu`;校验生效后端|
 |远程 SSH 凭据泄漏/模式切换打断轮次→起错主机/半截回复|凭据加密；优雅排水|
 |多后端镜像膨胀/频繁切换→成本升|`models remove`|
+|中介层写错目标：每轮调 `saveSelection()` 写**持久默认值**→默认模型被逐轮污染|每轮只写 `ModelSelectionRef.current`；`saveSelection` 只给人工/后台（§2.18.2、§2.20.3）|
+|模型目录取数失败/可达性过期→某接入点抖动时「看不见还有别的可用」|取数层全 try/catch、单个 provider 失败不空表；深度可达性交独立心跳/探测（§2.20.1）|
+|`minimum` 未部署/超时、目录无可达模型→初始路由无预评分或无从可选|50 ms 硬超时 + 启发式兜底；目录空**不硬选**（返回 `undefined` 带原因）（§2.20）|
+|库已实现但未接线（`deploy.ts`/`download.ts`/`initialRoute`）→生产零调用、能力白写|接线守卫测试（读源码断言调用点）+ 回退验证（§5、§2.20.4）|
 
 ### 7.4 视觉、媒体与记忆质量
 
@@ -1258,6 +1377,9 @@ memory.example.com {
 |M2|真模型结构化压缩|配 API key 触发压缩|JSON 过校验；L3 新条目；`已提交`|已验证（9/9 压缩→沉降→回读）|
 |M3|NapCat 登录与收发|起 `deploy/docker-compose.yml` 的 `qq` 扫码|登录态持久化；OneBot WS 连网关|容器 healthy;收发待确认|
 |M4|端口发布实测|`docker compose up -d` 后从宿主外访问 Caddy|该通才通（面板），DSH Web 与 QQ 不对外；v2.13.0|待确认|
+|M5|`minimum` 部署 + 初始路由|`deploy.ts`/`download.ts` 接线后一键部署 Qwen2.5-0.5B（GGUF Q4）|轮次开始产出初始路由并落到 `ModelSelectionRef.current`；**持久默认值不变**；`minimum` 超时走启发式|待接线|
+|M6|NapCat WebUI 同源反代|浏览器开 `https://napcat.<host>/webui`（面板 iframe 同一链路）|无混合内容拦截；`/webui/assets/*`、`/api/*` 均 200；`6099` 不对外|待确认（Caddyfile 站点块与面板地址已就绪；需 `docker-compose.dev.yml` 把 qq 接上 `edge`）|
+|M7|容器内 FFmpeg 与 PacketBackend|`docker compose logs qq`|`ffmpeg 4.4.2`；`[PacketHandler] 加载成功`；`[FFmpeg] ✓ 使用 Native Addon 适配器`|已验证|
 
 ### 8.2 死循环监控
 
@@ -1294,8 +1416,8 @@ memory.example.com {
 |1|QQ 客户端|已定|NapCat 主选，SnowLuma 备选（§1.2）|
 |2|向量后端|已定|LanceDB;维度与距离待定|
 |3|嵌入模型|待定|阶段 1 只 FTS5;阶段 5 定远端 API/ONNX|
-|4|评分器/本地推理后端|待定|外挂端点/`llama-server`/云 API/宿主内置|
-|4b|本地部署哪些模型|待定|CPU-only:0.5B–1.5B 级评分/嵌入|
+|4|`minimum` 超小模型/本地推理后端|待定|外挂端点/`llama-server`/云 API/宿主内置|
+|4b|本地部署哪些模型|部分已定|`minimum` 选型已定：Qwen2.5-0.5B-Instruct 4-bit / GGUF Q4 / 约 400 MB（纯 CPU 走 Q4）；嵌入模型仍待定（CPU-only 0.5B–1.5B 级）|
 |4c|外挂目标机信息|待提供|`remote-ssh` 需主机/端口、SSH 密钥、GPU|
 |5|常驻运行时 profile|待定|建议 `dsh-web`;轮次由 gateway 驱动|
 |5b|面板归属/DSH Web 公网可达|待决|A 只用 gateway 面板；B 试 Host 重写；C 放弃|
@@ -1309,6 +1431,11 @@ memory.example.com {
 |8e|小模型时钟建议|已定：生效|≥0.7 落表（`small_model_suggestion`）；<0.7 写 pending|
 |8f|「系统状态」阈值与文案|已定|3 次唤醒失败/90 s 无响应；`set_status_preset`|
 |8g|群消息免打扰|能力受限|QQ 无该接口（`mute-all`/`mute-member` 是禁言）；不唤醒|
+|9|路由中介层|已定|插在「接入提供方」与「实际调用位置」之间：模型目录（标记+简介+可达性）+ 初始路由（定档与选模型分离）+ 取数层；输入只要三样（轮次输入/模型表/可达性）（§2.20）|
+|10|档位命名与职责|已定|`minimum` 取代 `scorer` 且不作用途标签；职责四件，其中③QQ 工具决策、④工具内低阶智能决策源**待做**（§2.6 D、§2.20.4）|
+|11|`minimum` 自动部署|已定（未接线）|`deploy.ts`/`download.ts` 已有实现、生产零调用；三种部署目标 + 断点续传 + SHA-256（§2.13.3、§2.20.4）|
+|12|QQ WebUI 暴露方式|已定|独立域名站点块 `napcat.<host>` 根路径反代（同源、无混合内容）；不暴露 `6099`、不改 NapCat（§6.3、M6）|
+|13|轮末「建议下次模型」|待定|落地形态三选一：自动采纳 / 需满足置信度 / 仅登记待人工确认；均写 `routing_log` 留理由（§2.18.4）|
 
 ---
 
