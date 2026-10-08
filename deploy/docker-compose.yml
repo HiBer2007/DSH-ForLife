@@ -194,6 +194,22 @@ services:
       FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
       # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
       FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
+
+      # ── QQ 链路（OneBot 反向 WS）────────────────────────
+      # ★ 主编排**默认不开** —— gateway 只在 FORLIFE_ONEBOT=1 时才起 OneBot 服务，
+      #   否则日志里只有一行明确的提示（**不报错**）。
+      FORLIFE_ONEBOT: "1"
+      # accessToken 是唯一门槛：**必须与 NapCat 侧 onebot11_<QQ>.json 里的 token 完全一致**。
+      # 它也是密钥 ⇒ 这里只放**引用名**，真值在 deploy/.env。
+      FORLIFE_ONEBOT_TOKEN: ${FORLIFE_ONEBOT_TOKEN:-}
+      # NapCat 反向连过来的端口。qq 与 gateway 同在 internal 网络，
+      # 所以 NapCat 侧要写 ws://gateway:3010/ ——
+      # **不是 host.docker.internal**：那是 Docker Desktop 专有的，
+      # Linux 上不解析，真机表现是 getaddrinfo ENOTFOUND。
+      FORLIFE_ONEBOT_PORT: "3010"
+      # ★ 不设时默认 fake（**不真的驱动 DSH**）。
+      #   真机表现是“消息进来了但模型不动”。
+      FORLIFE_DRIVER: headless
     volumes:
       - forlife-data:/data
       # ★★ 2026-10-07 真机部署发现（**缺陷 7 的后半截**）：
