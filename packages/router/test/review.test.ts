@@ -76,7 +76,7 @@ test('路由表：按 (role, rank) upsert，且能看出优先级顺序', () => 
 test('路由日志：决策的每一层信息都能落库并统计出来', () => {
   recordRoutingDecision(db, {
     tier: 'L2',
-    source: 'scorer',
+    source: 'minimum',
     backend: 'local-container',
     confidence: 0.91,
     latencyMs: 12.4,
@@ -112,7 +112,7 @@ test('路由日志：决策的每一层信息都能落库并统计出来', () =>
   assert.equal(stats.total, 2)
   assert.equal(stats.degradedRate, 0.5)
   assert.ok(stats.byTier.some((row) => row.tier === 'L2' && row.count === 1))
-  assert.ok(stats.bySource.some((row) => row.source === 'scorer'))
+  assert.ok(stats.bySource.some((row) => row.source === 'minimum'))
 })
 
 test('不确定案例：落库为 pending，复盘后转 reviewed', () => {

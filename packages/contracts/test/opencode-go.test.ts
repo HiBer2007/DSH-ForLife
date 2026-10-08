@@ -66,14 +66,14 @@ test('过期后可用清单与路由计划都自动收缩', () => {
 test('路由计划：每个角色都有降级链，且 rank 从 0 连续', () => {
   const plan = planOpenCodeGoRoutes(IN_WINDOW)
   const roles = [...new Set(plan.map((row) => row.role))].sort()
-  assert.deepEqual(roles, ['L1', 'L2', 'L3', 'scorer'], '四个必需角色都要有候选')
+  assert.deepEqual(roles, ['L1', 'L2', 'L3', 'minimum'], '四个必需角色都要有候选')
 
   for (const role of roles) {
     const ranks = plan.filter((row) => row.role === role).map((row) => row.rank)
     assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b), `${role} 的 rank 必须升序`)
     assert.equal(ranks[0], 0, `${role} 必须从 rank 0 开始`)
     // 降级链至少要两条：只有一条时 provider 一抖就是整轮失败
-    if (role !== 'scorer') {
+    if (role !== 'minimum') {
       assert.ok(ranks.length >= 2, `${role} 至少要有 2 个候选（降级链）`)
     }
   }

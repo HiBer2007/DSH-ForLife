@@ -138,27 +138,27 @@
       "v": 3,
       "src": "PLAN.MD §7.4（同轮连续 3 次）"
     },
-    "router.scorer.model": {
+    "router.minimum.model": {
       "v": "Qwen2.5-0.5B-Instruct",
       "src": "模型路由.MD §3.1 / §9"
     },
-    "router.scorer.quantization": {
+    "router.minimum.quantization": {
       "v": "4bit",
       "src": "模型路由.MD §3.1"
     },
-    "router.scorer.resident": {
+    "router.minimum.resident": {
       "v": true,
       "src": "模型路由.MD §9"
     },
-    "router.scorer.timeoutMs": {
+    "router.minimum.timeoutMs": {
       "v": 50,
       "src": "模型路由.MD §5.3 / §9"
     },
-    "router.scorer.maxTokens": {
+    "router.minimum.maxTokens": {
       "v": 20,
       "src": "模型路由.MD §4.3 / §9"
     },
-    "router.scorer.prefixCache": {
+    "router.minimum.prefixCache": {
       "v": true,
       "src": "模型路由.MD §8.1 / §9"
     },

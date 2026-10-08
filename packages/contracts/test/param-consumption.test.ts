@@ -70,8 +70,8 @@ const KNOWN_UNCONSUMED = new Set<string>([
   // （三条的接线守卫在 `packages/dsh-component/test/recall-guardrails-wiring.test.ts` /
   //   `recall-budget-recover-wiring.test.ts`）
   // 路由二阶段（评分模型/预评分开关/批量/延迟预算/定时复核）——部分参数尚未接线
-  'router.scorer.quantization',
-  'router.scorer.resident',
+  'router.minimum.quantization',
+  'router.minimum.resident',
   'router.confidence.high',
   'router.guards.targetInterceptMin',
   'router.guards.targetInterceptMax',

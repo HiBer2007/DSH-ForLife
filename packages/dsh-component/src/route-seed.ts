@@ -90,7 +90,7 @@ export function seedDefaultRoutes(db: DatabaseSync, input: SeedRoutesInput): See
   // 评分器默认复用同一个模型：0.5B 专用评分模型是"有则更好"，
   // 但有太多环境装不下它（§2.13.4 就是为纯 CPU 写的），所以先给一个能用的。
   upsertModelRoute(db, {
-    role: 'scorer',
+    role: 'minimum',
     rank: 0,
     provider: input.provider,
     model: input.model,
@@ -212,7 +212,7 @@ export function roleGapSeverity(role: string): { readonly level: 'required' | 'o
     case 'L2':
     case 'L3':
       return { level: 'required', hint: '主对话按档位用它 —— 没有候选就只能一路用宿主的默认模型，降级链也不会生效' }
-    case 'scorer':
+    case 'minimum':
       return { level: 'required', hint: '复杂度评分器用它 —— 没有候选就永远走启发式兜底（守卫 + 启发式仍可用）' }
     case 'vision':
       return { level: 'optional', hint: '只有要"看图"时才需要，且**必须声明 image 能力**（否则保存会被拒）' }
@@ -302,5 +302,5 @@ const DEEPSEEK_OFFICIAL_MODEL = 'deepseek-flash'
 const DEEPSEEK_FALLBACK_ROLES: readonly { readonly role: string; readonly effort: string; readonly note: string }[] = [
   { role: 'L2', effort: 'high', note: '兜底：DS 官方（跨 provider，opencode-go 抖动时顶上）' },
   { role: 'L3', effort: 'max', note: '兜底：DS 官方（跨 provider，长链推理的第二个来源）' },
-  { role: 'scorer', effort: 'low', note: '兜底：DS 官方（评分器的高频小请求）' },
+  { role: 'minimum', effort: 'low', note: '兜底：DS 官方（评分器的高频小请求）' },
 ]

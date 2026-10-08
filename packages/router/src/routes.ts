@@ -32,10 +32,10 @@ import { escalate } from './pipeline.ts'
 import type { ReasoningEffort } from '@forlife/contracts'
 
 /** 角色：档位 + 专用模型（视觉/嵌入/评分器/子代理）。 */
-export type RouteRole = Tier | 'vision' | 'embedding' | 'scorer' | 'subagent'
+export type RouteRole = Tier | 'vision' | 'embedding' | 'minimum' | 'subagent'
 
 /** 全部角色（面板的角色映射编辑器按这个列表渲染）。 */
-export const ROUTE_ROLES: readonly RouteRole[] = ['L1', 'L2', 'L3', 'vision', 'embedding', 'scorer', 'subagent']
+export const ROUTE_ROLES: readonly RouteRole[] = ['L1', 'L2', 'L3', 'vision', 'embedding', 'minimum', 'subagent']
 
 /** 一条路由（有序表的一行）。 */
 export interface RouteEntry {
@@ -125,7 +125,7 @@ export function defaultRouteEntries(options: {
   ]
   if (options.vision !== undefined) entries.push({ role: 'vision', rank: 0, ...options.vision, note: '看图（必须声明 image 能力）' })
   if (options.embedding !== undefined) entries.push({ role: 'embedding', rank: 0, ...options.embedding, note: '向量（必须给维度）' })
-  if (options.scorer !== undefined) entries.push({ role: 'scorer', rank: 0, ...options.scorer, reasoningEffort: 'low', note: '复杂度评分器' })
+  if (options.scorer !== undefined) entries.push({ role: 'minimum', rank: 0, ...options.scorer, reasoningEffort: 'low', note: '复杂度评分器' })
   if (options.subagent !== undefined) entries.push({ role: 'subagent', rank: 0, ...options.subagent, note: '子代理（与主对话异构）' })
   return entries
 }

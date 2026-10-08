@@ -42,7 +42,7 @@ import { HeuristicTierScorer, type ScoreResult, type ScoringInput, type TierScor
  */
 function syncTimeoutMs(): number {
   // baselineValue 返回 unknown（它不是泛型函数），所以显式断言成 number
-  return baselineValue('router.scorer.timeoutMs') as number
+  return baselineValue('router.minimum.timeoutMs') as number
 }
 
 /** 档位顺序（用于"升一档"）。 */
@@ -65,7 +65,7 @@ export interface RoutingDecision {
   /** 最终档位（已应用低置信度升档）。 */
   readonly tier: Tier
   /** 哪一层定的。 */
-  readonly source: 'guard' | 'scorer' | 'heuristic'
+  readonly source: 'guard' | 'minimum' | 'heuristic'
   /** 守卫规则名（source=guard 时）。 */
   readonly rule?: string
   /** 评分后端（source=scorer/heuristic 时）。 */
@@ -187,7 +187,7 @@ export class Router {
       const tier = shouldEscalate ? escalate(scored.tier) : scored.tier
       return {
         tier,
-        source: 'scorer',
+        source: 'minimum',
         backend,
         rawTier: scored.tier,
         confidence: scored.confidence,

@@ -404,12 +404,12 @@ test('路由表：按 role 分组、组内按 rank 升序、NULL 字段不出现
   const db = freshDb(t)
   // 故意乱序插入：顺序必须由查询保证，而不是靠插入顺序
   insertRoute(db, { role: 'L1', rank: 1, provider: 'deepseek-official', model: 'backup', effort: 'low', note: '备用' })
-  insertRoute(db, { role: 'scorer', rank: 0, provider: 'local', model: 'judge' })
+  insertRoute(db, { role: 'minimum', rank: 0, provider: 'local', model: 'judge' })
   insertRoute(db, { role: 'L1', rank: 0, provider: 'deepseek-official', model: 'main' })
   insertRoute(db, { role: 'L2', rank: 0, provider: 'deepseek-official', model: 'mid', enabled: false })
 
   const { roles } = queryRouting(db)
-  assert.deepEqual(roles.map((role) => role.role), ['L1', 'L2', 'scorer'])
+  assert.deepEqual(roles.map((role) => role.role), ['L1', 'L2', 'minimum'])
 
   const l1 = roleOf(roles, 'L1')
   assert.deepEqual(
@@ -540,9 +540,9 @@ test('路由日志：倒序、limit、NULL 字段缺席，24h 统计只算窗口
     provider: 'deepseek-official',
     model: 'deepseek-flash',
   })
-  insertLog(db, { id: 'l2', at: at(2), tier: 'L1', source: 'scorer', confidence: 0.4, escalated: true, switched: true, switchReason: 'escalate', latencyMs: 230 })
+  insertLog(db, { id: 'l2', at: at(2), tier: 'L1', source: 'minimum', confidence: 0.4, escalated: true, switched: true, switchReason: 'escalate', latencyMs: 230 })
   insertLog(db, { id: 'l4', at: at(3), tier: 'L2', source: 'heuristic', confidence: 0.6, latencyMs: 5 })
-  insertLog(db, { id: 'l3', at: at(25), tier: 'L3', source: 'scorer', confidence: 0.9, latencyMs: 99 })
+  insertLog(db, { id: 'l3', at: at(25), tier: 'L3', source: 'minimum', confidence: 0.9, latencyMs: 99 })
 
   const overview = queryRouting(db)
   assert.deepEqual(
@@ -580,7 +580,7 @@ test('路由日志：倒序、limit、NULL 字段缺席，24h 统计只算窗口
   assert.deepEqual(overview.stats.bySource, [
     { source: 'guard', count: 1 },
     { source: 'heuristic', count: 1 },
-    { source: 'scorer', count: 1 },
+    { source: 'minimum', count: 1 },
   ])
 
   assert.equal(queryRouting(db, { logLimit: 2 }).log.length, 2)

@@ -701,7 +701,7 @@
           "candidates": []
         },
         {
-          "role": "scorer",
+          "role": "minimum",
           "candidates": [
             {
               "rank": 0,

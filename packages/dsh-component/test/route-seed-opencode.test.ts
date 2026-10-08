@@ -33,7 +33,7 @@ test('空库：播种四个角色 + 登记端点，密钥只存引用', () => {
     const roles = opened.db.prepare('SELECT DISTINCT role FROM model_routes ORDER BY role').all() as { role: string }[]
     assert.deepEqual(
       roles.map((row) => row.role),
-      ['L1', 'L2', 'L3', 'scorer'],
+      ['L1', 'L2', 'L3', 'minimum'],
     )
 
     const endpoint = opened.db

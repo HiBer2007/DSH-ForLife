@@ -72,7 +72,7 @@ export interface ScoringPrompt {
  * @returns 提示词三件套。
  */
 export function defaultScoringPrompt(): ScoringPrompt {
-  const maxTokens = defaultFor<number>('router.scorer.maxTokens')
+  const maxTokens = defaultFor<number>('router.minimum.maxTokens')
   return {
     system: [
       '你是复杂度评分器。判断用户这条消息需要多强的模型来处理。',
@@ -173,7 +173,7 @@ export class HttpTierScorer implements TierScorer {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: this.options.model ?? defaultFor<string>('router.scorer.model'),
+        model: this.options.model ?? defaultFor<string>('router.minimum.model'),
         messages: [
           { role: 'system', content: this.prompt.system },
           { role: 'user', content: this.prompt.userTemplate(input) },
@@ -181,7 +181,7 @@ export class HttpTierScorer implements TierScorer {
         max_tokens: this.prompt.maxTokens,
         temperature: 0,
         // 约束解码：优先用服务端支持的语法约束（vLLM 的 guided_json）
-        ...(defaultFor<boolean>('router.scorer.prefixCache') ? { guided_json: { type: 'object', properties: { tier: { enum: ['L1', 'L2', 'L3'] }, confidence: { type: 'number' } }, required: ['tier'] } } : {}),
+        ...(defaultFor<boolean>('router.minimum.prefixCache') ? { guided_json: { type: 'object', properties: { tier: { enum: ['L1', 'L2', 'L3'] }, confidence: { type: 'number' } }, required: ['tier'] } } : {}),
       }),
       signal,
     })

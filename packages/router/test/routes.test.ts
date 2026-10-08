@@ -34,7 +34,7 @@ const ENTRIES: readonly RouteEntry[] = [
 ]
 
 test('角色清单：三档 + 视觉/嵌入/评分器/子代理', () => {
-  assert.deepEqual([...ROUTE_ROLES], ['L1', 'L2', 'L3', 'vision', 'embedding', 'scorer', 'subagent'])
+  assert.deepEqual([...ROUTE_ROLES], ['L1', 'L2', 'L3', 'vision', 'embedding', 'minimum', 'subagent'])
 })
 
 test('选择：按 rank 取主选，未降级', () => {

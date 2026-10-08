@@ -60,7 +60,7 @@ export interface RuleDeviation {
  * 所以 `DEVIATIONS` 为空只说明"没有改动文档数值"，不说明这些数值真的在跑。
  *
  * 关于阶段的预评分软预算：它**不是**数值偏离。文档里唯一的评分时间预算
- * （`router.scorer.timeoutMs` = 50ms 硬超时）**一分未改**；软预算是我们**新增**的
+ * （`router.minimum.timeoutMs` = 50ms 硬超时）**一分未改**；软预算是我们**新增**的
  * 另一条路径上的参数（design 来源，`router.preScore.softBudgetMs`）。
  * 把它登记成数值偏离会误导 —— 它会让人以为"文档的 50ms 被改成了 800ms"，
  * 而事实是两条路径并存。所以它进 `RULE_DEVIATIONS`（规则级例外）。

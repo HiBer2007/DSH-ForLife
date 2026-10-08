@@ -40,11 +40,11 @@ test('播种：空表时补 L1/L2/L3/scorer —— 档位只决定推理强度',
   assert.equal(result.seeded, true)
   assert.equal(result.count, 4)
   const rows = listModelRoutes(db)
-  assert.deepEqual(rows.map((r) => r.role).sort(), ['L1', 'L2', 'L3', 'scorer'])
+  assert.deepEqual(rows.map((r) => r.role).sort(), ['L1', 'L2', 'L3', 'minimum'])
   assert.equal(rows.find((r) => r.role === 'L1')?.reasoning_effort, 'low')
     assert.equal(rows.find((r) => r.role === 'L2')?.reasoning_effort, 'high')
     assert.equal(rows.find((r) => r.role === 'L3')?.reasoning_effort, 'max', '拉满必须是 max')
-  assert.match(String(rows.find((r) => r.role === 'scorer')?.note), /默认复用主模型/)
+  assert.match(String(rows.find((r) => r.role === 'minimum')?.note), /默认复用主模型/)
 })
 
 test('播种：**绝不覆盖已有配置**（这条最重要）', () => {
@@ -78,7 +78,7 @@ test('播种：刻意不给视觉/嵌入猜模型（**猜错比空着更糟**）
 test('角色缺失分轻重：主对话与评分器是 required，视觉/嵌入/子代理是 optional', () => {
   assert.equal(roleGapSeverity('L1').level, 'required')
   assert.equal(roleGapSeverity('L3').level, 'required')
-  assert.equal(roleGapSeverity('scorer').level, 'required')
+  assert.equal(roleGapSeverity('minimum').level, 'required')
   assert.equal(roleGapSeverity('vision').level, 'optional')
   assert.equal(roleGapSeverity('embedding').level, 'optional')
   assert.equal(roleGapSeverity('subagent').level, 'optional')

@@ -233,9 +233,9 @@ export function planOpenCodeGoRoutes(now: Date = new Date()): readonly OpenCodeR
   add('L3', 0, 'deepseek-v4.1-flash', 'max', '复杂任务：同模型但拉满推理强度')
   add('L3', 1, 'glm-5.3-flash', 'max', '降级候选')
 
-  add('scorer', 0, 'deepseek-v4.1-flash', 'low', '复杂度评分器：高频小请求，优先用快的')
-  add('scorer', 1, 'glm-5.3-flash', 'low', '降级候选')
-  add('scorer', 2, 'mimo-v2.6-flash', 'low', '降级候选')
+  add('minimum', 0, 'deepseek-v4.1-flash', 'low', '复杂度评分器：高频小请求，优先用快的')
+  add('minimum', 1, 'glm-5.3-flash', 'low', '降级候选')
+  add('minimum', 2, 'mimo-v2.6-flash', 'low', '降级候选')
 
   return plan
 }
