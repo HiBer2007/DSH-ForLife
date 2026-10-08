@@ -33,17 +33,26 @@ FROM node:24-alpine AS build
 #   - `npm i -g @deepseek-ai/dsh@0.1.7-rc.2`  → **786 MB，≈15 分钟**
 #   - `pnpm install --frozen-lockfile --prod` → **579 秒**（缓存热时只要 55 秒）
 #   - `corepack` 下 `pnpm-12.3.4.tgz`
+
+# ⚠️ `pnpm` 到这一步才存在（corepack 装出来的）—— 所以 registry 要**分两次设**：
+#   `npm config set` 在第一个 FROM 之后就行，`pnpm config set` 必须在这里。
+#   （我第一次把两条写在一起 ⇒ `/bin/sh: pnpm: not found`、构建 exit 127。）
 #
 # 宿主 `~/.npmrc` 指向 npmmirror，**但容器读不到它**（干净的 node:24-alpine）。
 # ⇒ 在这里显式设一次，**对所有后续 RUN 生效**。
 #
 # 用 `--global`（落 `/usr/local/etc/npmrc`）而不是写 `~/.npmrc`：
 # 镜像里跑构建的用户可能不是 root，写文件容易写错位置。
-RUN npm config set --global registry https://registry.npmmirror.com \
- && pnpm config set --global registry https://registry.npmmirror.com
+RUN npm config set --global registry https://registry.npmmirror.com
 
 # pnpm 用 corepack（与根 package.json 的 packageManager 字段一致）
 RUN corepack enable
+
+# ⚠️ `pnpm` 到**这一步**才存在（上一行 corepack 装出来的）——
+#   所以 registry 要**分两次设**：`npm config set` 在第一个 FROM 之后就行，
+#   `pnpm config set` 必须在这里。
+#   （我第一次把两条写在一起 ⇒ `/bin/sh: pnpm: not found`、构建 exit 127。）
+RUN pnpm config set --global registry https://registry.npmmirror.com
 
 WORKDIR /build
 
@@ -70,6 +79,12 @@ RUN pnpm -F @forlife/admin-ui build
 FROM node:24-alpine AS runtime
 
 RUN corepack enable
+
+# ★★ **runtime 阶段必须自己设一遍** —— `FROM` 会开一个**新阶段**，
+#   build 阶段的 `npm config set` **不会带过来**。
+#   而**最慢的那一步**（`npm i -g @deepseek-ai/dsh`，786 MB、≈15 分钟）就在**这个阶段**。
+RUN npm config set --global registry https://registry.npmmirror.com \
+ && pnpm config set --global registry https://registry.npmmirror.com
 
 WORKDIR /app
 

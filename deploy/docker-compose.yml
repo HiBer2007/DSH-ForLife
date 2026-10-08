@@ -63,20 +63,28 @@ services:
     #     Error: dsh: profile "forlife-web" does not exist;
     #            create it with 'dsh plugin --profile forlife-web add <package>'
     #     ⇒ **dsh 崩溃重启循环**。
+    # ★★ 2026-10-07 真机部署发现（**缺陷 5 的后半截** + **第 11 处缺陷**）：
+    #
+    #   ① **profile 符号链接**：DSH 只从 `$DSH_HOME/profiles/<名>` 找 profile，
+    #      而 `DSH_HOME=/data/dsh` 是**命名卷** —— 镜像里的 `/app/profiles/…` 不在它下面。
+    #      少了它：`Error: dsh: profile "forlife-web" does not exist` ⇒ **崩溃重启循环**。
+    #   ② **冷层子目录**：`tiers/cold` / `archives` / `backups` 没人建，
+    #      在**空的**冷盘上 `touch` 会 `No such file or directory`，而**应用一句话都不报**
+    #      ⇒ 沉降/归档/备份全部写不进去。
+    #
+    # ⚠️⚠️ **这些说明必须在 `command:` 这一行之前** ——
+    #   写成下面的 `>-` 块**里面**的话，`#` 是**内容不是注释**，
+    #   而 `>-` 会把多行**折叠成一行** ⇒ 整条命令变成一句注释、什么都不执行
+    #   ⇒ 容器退出码 **0** ⇒ `restart: unless-stopped` 无限重启。
+    #   （**现场症状就是 `Restarting (0)`** —— 退出码 0 是那个关键线索。）
     command:
       - sh
       - -c
       - >-
-        # ★★ 2026-10-07 真机部署发现（**第 11 处缺陷**）：
-        #   冷层的**子目录**（`tiers/cold` / `archives` / `backups`）没人建 ——
-        #   文档 §4 只让建挂载点本身。在一块**空的**冷盘上：
-        #     touch: /cold/tiers/cold/x: No such file or directory
-        #   而**应用一句话都不报** ⇒ 沉降/归档/备份全部写不进去。
-        #   ⇒ 入口里补建（幂等）。
-        mkdir -p /cold/tiers/cold /cold/archives /cold/backups
-        mkdir -p /data/dsh/profiles
-        && ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web
-        && exec dsh --profile forlife-web --no-open
+        mkdir -p /cold/tiers/cold /cold/archives /cold/backups &&
+        mkdir -p /data/dsh/profiles &&
+        ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web &&
+        exec dsh --profile forlife-web --no-open
     environment:
       # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
       DSH_HOME: /data/dsh
