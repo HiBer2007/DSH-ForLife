@@ -129,15 +129,6 @@ FORLIFE_HOST=your.domain ACME_EMAIL=you@example.com \
 
 ---
 
-## 三条不可动摇的规则
-
-1. **绝不碰宿主 `~/.dsh`。** 一律用 `DSH_HOME` 指向仓库内目录。
-2. **默认值只能来自保真度基线。** 见上面「配置」。
-3. **协议级危险能力不进适配器。** `send_packet` / `get_cookies` 之类**根本不实现**，
-   而不是"实现了但不给工具"。
-
----
-
 ## 目录
 
 ```
