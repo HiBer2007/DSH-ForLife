@@ -100,6 +100,15 @@ services:
       FORLIFE_ROOT_COLD: /cold/tiers/cold
       FORLIFE_ARCHIVE_DIR: /cold/archives
       FORLIFE_BACKUP_DIR: /cold/backups
+
+      # ── provider 密钥（**引用名在此，真值在 deploy/.env**）──────────────────
+      # 用户给的三个 OpenCode Go key，优先级 **GO → QQ → CL**（哪个有额度用哪个，CL 最后）。
+      # `apiKeyEnv` 在 profiles/*/cordis.patch.yml 里指向 FORLIFE_OPENCODE_GO_KEY。
+      FORLIFE_OPENCODE_GO_KEY: ${FORLIFE_OPENCODE_GO_KEY:-}
+      FORLIFE_OPENCODE_QQ_KEY: ${FORLIFE_OPENCODE_QQ_KEY:-}
+      FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
+      # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
+      FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
     volumes:
       - forlife-data:/data # db / vectors / attachments / workspace / models
       - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
@@ -176,6 +185,15 @@ services:
       # NapCat WebUI 的 token —— 它是**密钥**，所以这里只放**引用名**，
       # 真值写在 `deploy/.env`（不进仓库）。不设时 NapCat 页仍能打开，只是要手动填 token。
       FORLIFE_NAPCAT_TOKEN: ${FORLIFE_NAPCAT_TOKEN:-}
+
+      # ── provider 密钥（**引用名在此，真值在 deploy/.env**）──────────────────
+      # 用户给的三个 OpenCode Go key，优先级 **GO → QQ → CL**（哪个有额度用哪个，CL 最后）。
+      # `apiKeyEnv` 在 profiles/*/cordis.patch.yml 里指向 FORLIFE_OPENCODE_GO_KEY。
+      FORLIFE_OPENCODE_GO_KEY: ${FORLIFE_OPENCODE_GO_KEY:-}
+      FORLIFE_OPENCODE_QQ_KEY: ${FORLIFE_OPENCODE_QQ_KEY:-}
+      FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
+      # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
+      FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
     volumes:
       - forlife-data:/data
       # ★★ 2026-10-07 真机部署发现（**缺陷 7 的后半截**）：
