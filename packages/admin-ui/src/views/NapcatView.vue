@@ -37,7 +37,10 @@ interface NapcatInfo {
   readonly connected?: boolean
 }
 
-const state = useAsyncData<NapcatInfo>(() => api.get<NapcatInfo>('/napcat'))
+// 连接状态**会自己变**（扫码登录成功、掉线重连）：不轮询的话，角标会一直停在
+// "打开页面那一刻"，而这一页恰恰是用户盯着看"到底连上没有"的地方。
+// 30 秒足够：状态是几秒级的事件，刷太快只会白打接口。
+const state = useAsyncData<NapcatInfo>(() => api.get<NapcatInfo>('/napcat'), { pollMs: 30_000 })
 
 /** 用当前访问地址的主机名 + 服务端给的端口拼出 WebUI 地址。 */
 /**

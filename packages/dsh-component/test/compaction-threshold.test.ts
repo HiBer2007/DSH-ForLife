@@ -18,9 +18,14 @@
  *
  * 真机装配一次（`new Context()` + 真的 `new ForlifeCompactionEngine(...)`），
  * 断言**引擎最终持有的 `config.thresholdRatio`**（宿主 `resolveCompactSpec` 就是拿它
- * 算 `thresholdTokens = contextWindow × ratio`）等于基线值，而不是宿主缺省 0.8。
+ * 算 `thresholdTokens = contextWindow × ratio`）等于**生效值**，而不是宿主缺省 0.8。
  *
- * 两条一起才等于"部署里生效"：本文件证「插件缺省 = 基线」，
+ * ⚠️ 2026-10-09：PLAN §12.1 原文是 **50%**，但我们按用户口径登记了一条数值偏离
+ * （`compaction.autoTriggerRatio` → **0.6**，见 `contracts/src/deviations.ts`）。
+ * 所以这里断的是 `defaultFor(...)`（= 基线 + 偏离登记），并且**显式钉住 0.6** ——
+ * 否则谁把偏离删了、生效值悄悄回到 0.5，这条测试会照样绿。
+ *
+ * 两条一起才等于"部署里生效"：本文件证「插件缺省 = 生效值」，
  * 下面那条 profile 测试证「四个 profile 挂的都是这份插件」。
  * 消费点本身由 `packages/contracts/test/param-consumption.test.ts` 守。
  *
@@ -51,21 +56,26 @@ const PROFILES: readonly string[] = [
   'forlife-web',
 ]
 
-test('★★ 生效阈值 = 基线值（不是宿主缺省 0.8）', () => {
+test('★★ 生效阈值 = 生效值（不是宿主缺省 0.8）', () => {
   const engine = new ForlifeCompactionEngine(new Context(), {})
 
   const expected = defaultFor<number>('compaction.autoTriggerRatio')
-  assert.equal(expected, 0.5, 'PLAN §4.2 Step 1 / §12.1：系统自动触发阈值 50%（基线被改过？）')
+  assert.equal(
+    expected,
+    0.6,
+    'PLAN §12.1 原文是 50%（基线 0.5 未动），但用户 2026-10-09 拍板用 60% —— ' +
+      '生效值必须来自 contracts/src/deviations.ts 的登记；跌破 0.5 说明登记丢了',
+  )
   assert.equal(
     engine.config.thresholdRatio,
     expected,
-    '引擎最终持有的 thresholdRatio 必须等于 plan-baseline.json 的 compaction.autoTriggerRatio —— ' +
+    '引擎最终持有的 thresholdRatio 必须等于 defaultFor(compaction.autoTriggerRatio) —— ' +
       '否则宿主会用 DEFAULT_THRESHOLD_RATIO 算出别的触发点',
   )
   assert.notEqual(
     engine.config.thresholdRatio,
     HOST_DEFAULT_THRESHOLD_RATIO,
-    '宿主缺省 0.8 不是 PLAN 的值：说明阈值又没被显式设置',
+    '宿主缺省 0.8 不是我们的值：说明阈值又没被显式设置',
   )
 })
 

@@ -557,6 +557,10 @@
       "v": 128000,
       "src": "EXECUTION_PLAN §4.4 裁决所需（design：占比分母，宿主 tokenMeter 可用时以它为准）"
     },
+    "memory.midWindow.maxTokens": {
+      "v": 100000,
+      "src": "用户 2026-10-09 拍板（design：中期记忆**注入窗口**的 token 预算。PLAN §1.2 只说 L3 是「上下文窗口中的稳定前缀」、§10.2/T17 说「仅压缩时追加/替换」，都没给数值；不给数就退化成「把整张表渲染进前缀」（真机 10,794 条 / 1,504,850 token ⇒ 唤醒即 CONTEXT_WINDOW_EXCEEDED），故由用户定值：预算留到 100k，因为系统提示词里还有工具定义等其它内容）"
+    },
     "multiplex.compactionScale": {
       "v": null,
       "status": "tbd",

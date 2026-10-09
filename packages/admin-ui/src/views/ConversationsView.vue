@@ -38,7 +38,12 @@ import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatDuration, formatNumber, formatRelative, formatTokens } from '../utils/format.ts'
 
-const state = useAsyncData<ConversationsOverview>(() => api.get<ConversationsOverview>('/conversations'))
+// 队列深度 / 待读 / 出站积压都是**会自己变的运行状态**：不轮询的话，
+// 看到的是"打开这一页那一刻"的快照（用户会照着旧数字去排查一个已经不存在的问题）。
+// 30 秒：这一页是观察面，不是操作面，比总览的 15 秒慢一拍就够。
+const state = useAsyncData<ConversationsOverview>(() => api.get<ConversationsOverview>('/conversations'), {
+  pollMs: 30_000,
+})
 
 const sessions = computed<readonly ConversationSession[]>(() => state.data.value?.sessions ?? [])
 const queue = computed<readonly InboxItem[]>(() => state.data.value?.queue ?? [])

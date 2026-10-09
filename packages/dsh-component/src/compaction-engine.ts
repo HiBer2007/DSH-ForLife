@@ -311,24 +311,32 @@ export function applyCompactionDecision(
 
 
 /**
- * 自动压缩触发阈值（占上下文窗口比例）：PLAN §4.2 Step 1 / §12.1 的「50%」。
+ * 自动压缩触发阈值（占上下文窗口比例）：PLAN §4.2 Step 1 / §12.1 写的是「50%」，
+ * 我们实际用 **60%**（用户 2026-10-09 拍板：模型总上下文 1M ⇒ 60% 等效 600k）。
  *
- * **唯一真源是 `plan-baseline.json` 的 `compaction.autoTriggerRatio`** ——
- * 代码里**不允许**出现 `0.5` 这个字面量（基线改了这里必须跟着改）。
+ * **唯一真源是 `plan-baseline.json` 的 `compaction.autoTriggerRatio` + 偏离登记**
+ * （`contracts/src/deviations.ts` 的 `DEVIATIONS`）—— 代码里**不允许**出现
+ * `0.5` / `0.6` 这类字面量（生效值改了这里必须跟着走，所以这里读的是 `defaultFor`）。
  *
  * ## 为什么必须在这里补上
  *
  * 宿主 `BasicCompactionEngine` 自己的缺省是
  * `DEFAULT_THRESHOLD_RATIO = 0.8`（`node_modules/@deepseek-ai/dsh-compaction-basic/lib/index.js:15`），
  * 而四个 profile 插入 `forlife-compaction` 时**都没有写 config** ⇒ 不显式补的话，
- * 生效阈值就是宿主的 **0.8**，与 PLAN 的 0.5 差 30 个百分点
- * （真机后果：上下文压到 80% 才开始压缩，比 PLAN 晚得多，L4 明显更胖）。
+ * 生效阈值就是宿主的 **0.8**（真机后果：上下文压到 80% 才开始压缩，比 PLAN 晚得多，
+ * L4 明显更胖）。
  *
  * ## 为什么补在插件缺省、而不是四个 profile 的 YAML 里
  *
  * 一处生效、四个 profile 同时覆盖，也不会在 YAML 里留下一份
- * **会和基线漂移**的 `0.5` 字面量（YAML 读不了 `plan-baseline.json`）。
+ * **会和基线漂移**的 `0.6` 字面量（YAML 读不了 `plan-baseline.json`）。
  * profile 若显式写了 `thresholdRatio`，仍然以 profile 为准（运维可覆盖）。
+ *
+ * ⚠️ 比例只是**因子**，真正决定触发点的是 `contextWindow × ratio`（宿主 `resolveCompactSpec`），
+ * 而 `contextWindow` 来自 adapter 模型声明 —— 四个 profile 给 `deepseek-v4.1-flash`
+ * 写的是 `262144`，所以当前生效阈值约 **157k**，不是"60% of 1M = 600k"。
+ * 要等效 600k 得把 profile 的 `contextWindow` 声明成 `1000000`（比例不能 > 1，宿主会拒）。
+ * 那是另一处改动（不在本次口径内），**本次未改** —— 记在 `deviations.ts` 的偏离说明里，另行提出。
  */
 const AUTO_TRIGGER_RATIO = defaultFor<number>('compaction.autoTriggerRatio')
 
@@ -365,13 +373,16 @@ export class ForlifeCompactionEngine extends BasicCompactionEngine {
    */
   constructor(...args: ConstructorParameters<typeof BasicCompactionEngine>) {
     const [ctx, config] = args
-    // 把 PLAN 的自动压缩阈值**显式**交给宿主（见 AUTO_TRIGGER_RATIO 的说明）：
+    // 把生效阈值**显式**交给宿主（见 AUTO_TRIGGER_RATIO 的说明）：
     // 不传的话宿主用它的 DEFAULT_THRESHOLD_RATIO = 0.8，而四个 profile 都不写 config。
     super(ctx, { ...config, thresholdRatio: config?.thresholdRatio ?? AUTO_TRIGGER_RATIO })
+    // ⚠️ 这行日志的百分比必须**现算**（`this.config.thresholdRatio`），不能写死：
+    // 写死的话比例一改，日志就会报旧值 —— "日志说的和实际做的不一致"是本仓栽过的坑。
     console.log(
       `[forlife] 压缩引擎已挂载（ctx.compaction = ForlifeCompactionEngine）｜摘要模型：` +
         `${config?.summarizationProvider ?? '(跟随路由)'}/${config?.summarizationModel ?? '(跟随路由)'}` +
-        `｜自动压缩阈值=${String(Math.round(this.config.thresholdRatio * 100))}%（PLAN §4.2 Step 1 / §12.1）` +
+        `｜自动压缩阈值=${String(Math.round(this.config.thresholdRatio * 100))}%` +
+        `（生效值：基线 compaction.autoTriggerRatio + deviations 登记；PLAN §4.2 Step 1 / §12.1 原文为 50%）` +
         `｜maxTokens=${String(config?.maxTokens ?? '默认')}`,
     )
   }

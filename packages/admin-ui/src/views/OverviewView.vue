@@ -6,9 +6,17 @@
  * 所以最上面一排是连接/队列/失败这类"要不要现在动手"的指标，
  * 下面才是记忆、压缩、路由这些需要下钻的块。
  *
- * 自动刷新 15 秒一次；切到后台标签页时停掉（手机省电，也不打扰服务端）。
+ * ## 刷新（两块数据**都要自己动**）
+ *
+ *  - 指标卡（`/overview`）**15 秒**一次：这一排回答的是"现在要不要动手"，必须新鲜；
+ *  - 运行图表（`/series`）**60 秒**一次：它是**按小时**聚合的，15 秒刷一次只是白打接口，
+ *    但**一次都不刷就是一张静止的照片**（这里原来就栽在这一条上：手写的定时器只刷了
+ *    `/overview`，图表从打开页面起再也没动过）。
+ *
+ * 节奏与可见性判断都交给 `useAsyncData` 的 `pollMs`（见 `poll-schedule.ts`）：
+ * 切到后台标签页会**停掉定时器**，切回来**立刻补一次**，失败会**退避**。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { api } from '../api/client.ts'
 import type { Overview, SeriesPayload } from '../api/types.ts'
@@ -20,7 +28,7 @@ import TimeSeriesChart from '../components/TimeSeriesChart.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatBytes, formatDuration, formatNumber, formatPercent, formatRelative, formatTokens } from '../utils/format.ts'
 
-const state = useAsyncData<Overview>(() => api.get<Overview>('/overview'))
+const state = useAsyncData<Overview>(() => api.get<Overview>('/overview'), { pollMs: 15_000 })
 
 /** 图表的时间范围（小时）。默认 24 小时：日常最常看的一段。 */
 const RANGES = [
@@ -29,7 +37,9 @@ const RANGES = [
   { value: 168, label: '7 天' },
 ] as const
 const seriesHours = ref<number>(24)
-const series = useAsyncData<SeriesPayload>(() => api.get<SeriesPayload>('/series', { hours: seriesHours.value }))
+const series = useAsyncData<SeriesPayload>(() => api.get<SeriesPayload>('/series', { hours: seriesHours.value }), {
+  pollMs: 60_000,
+})
 watch(seriesHours, () => void series.refresh())
 
 /** 图表用到的序列（写成 computed 免得模板里塞一堆数组字面量）。 */
@@ -52,40 +62,6 @@ const chartSeries = computed(() => {
       { name: '发送失败', values: m.outboxFailed, tone: 5 },
     ],
   }
-})
-
-const REFRESH_MS = 15_000
-let timer: number | undefined
-
-function startTimer(): void {
-  stopTimer()
-  timer = window.setInterval(() => {
-    if (document.visibilityState === 'visible') void state.refresh()
-  }, REFRESH_MS)
-}
-function stopTimer(): void {
-  if (timer !== undefined) {
-    window.clearInterval(timer)
-    timer = undefined
-  }
-}
-
-function onVisibility(): void {
-  if (document.visibilityState === 'visible') {
-    void state.refresh()
-    startTimer()
-  } else {
-    stopTimer()
-  }
-}
-
-onMounted(() => {
-  startTimer()
-  document.addEventListener('visibilitychange', onVisibility)
-})
-onBeforeUnmount(() => {
-  stopTimer()
-  document.removeEventListener('visibilitychange', onVisibility)
 })
 
 const data = computed(() => state.data.value)

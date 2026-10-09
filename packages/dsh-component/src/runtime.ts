@@ -66,6 +66,7 @@ import {
   makeFragmentHint,
   planFragmentation,
   renderMidMemory,
+  selectMidWindow,
   textSimilarity,
   type RenderedView,
 } from '@forlife/memory-core'
@@ -324,13 +325,36 @@ export class MemoryRuntime {
    * 取当前中期记忆区的渲染视图（带缓存）。
    *
    * 同一 `(epoch, revision)` 下**必然返回同一份字节**，这是"缓存断点"承诺的落点。
+   *
+   * ## ★ 只渲染**窗口**，不是整张表（2026-10-09 修）
+   *
+   * PLAN §1.2 的中期记忆是「**上下文窗口中的稳定前缀**」——"窗口"两个字以前没落地：
+   * 这里直接渲染 `listRenderableMidEntries()` 的**全表**。真机后果（2026-10-09 实测）：
+   * 10,794 条 / 1,504,850 token 全进系统提示词 ⇒ QQ 唤醒报
+   * `CONTEXT_WINDOW_EXCEEDED: pi-ai detected context overflow`；而压缩要看"上下文占比"
+   * 才触发，上下文一开始就爆 ⇒ **压缩永远不触发**（`compaction_epoch` 恒为 0、
+   * 长期记忆恒为空）—— 四层记忆流水线第一层就堵死。
+   *
+   * 现在按基线 `memory.midWindow.maxTokens` **从最新往回**取（选取规则与排序键的理由
+   * 写在 `selectMidWindow()` 的模块头：`window_offset` 是**按 epoch 分桶**的，
+   * 只看它会把"压缩刚 push 的条目"判成最旧、第一批丢掉）。
+   * 预算读基线、**不在这里写死数字**；丢了东西**不静默**（verbose 时如实报数）。
    */
   renderView(): RenderedView {
     const key = `${String(this.epoch())}:${String(this.revision())}`
     if (this.cache !== undefined && this.cache.key === key) return this.cache.view
     const entries = listRenderableMidEntries(this.db)
+    const maxTokens = defaultFor<number>('memory.midWindow.maxTokens')
+    const window = selectMidWindow(entries, { maxTokens })
+    if (this.config.verbose && window.droppedCount > 0) {
+      this.log(
+        `中期窗口：进 ${String(window.entries.length)} 条 / ${String(window.tokens)} token，` +
+          `丢下 ${String(window.droppedCount)} 条 / ${String(window.droppedTokens)} token` +
+          `（表共 ${String(entries.length)} 条；预算 ${String(maxTokens)} token）`,
+      )
+    }
     const now = new Date() // 只在缓存刷新时取一次，随后冻结在文本里
-    const view = renderMidMemory(entries, {
+    const view = renderMidMemory(window.entries, {
       header: this.config.l3Header,
       relativeAges: this.config.relativeAges,
       now,

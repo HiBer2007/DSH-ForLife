@@ -17,7 +17,9 @@ import { useAsyncData } from '../composables/useAsyncData.ts'
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.ts'
 import { formatRelative } from '../utils/format.ts'
 
-const state = useAsyncData<PortsOverview>(() => api.get<PortsOverview>('/ports'))
+// 发布**有 TTL（会过期）**，有效性是服务端读取时判定的：不轮询的话，
+// 列表里会一直显示一个其实已经 404 的出口 —— 那比"不显示"更误导。
+const state = useAsyncData<PortsOverview>(() => api.get<PortsOverview>('/ports'), { pollMs: 30_000 })
 
 const { state: menuState, onContextMenu, touchHandlers, close: closeMenu, clampToViewport } = useContextMenu()
 

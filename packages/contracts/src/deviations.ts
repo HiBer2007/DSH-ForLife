@@ -2,8 +2,8 @@
  * 偏离登记处（**唯一**允许偏离设计文档的地方）。
  *
  * 分两类：
- *  - `DEVIATIONS`：**数值/配置**偏离（针对 `doc` 来源的基线参数）。目前为**空**，说明
- *    PLAN.MD / 模型路由.MD 里的每个可调项都按原值实现；
+ *  - `DEVIATIONS`：**数值/配置**偏离（针对 `doc` 来源的基线参数）。目前只有一条
+ *    （`compaction.autoTriggerRatio`：文档 50%，用户 2026-10-09 拍板用 60%）；
  *  - `RULE_DEVIATIONS`：**规则级**偏离（文档里的行为约定，没有对应的数值参数）。
  *
  * `test/fidelity.test.ts` 会校验：
@@ -21,6 +21,11 @@
  * 守这两件事的是另外两条接线守卫：
  *   - `packages/contracts/test/param-consumption.test.ts`（关键 `doc` 参数必须在**代码**里有消费点）；
  *   - `packages/dsh-component/test/compaction-threshold.test.ts`（真机装配后断言**生效阈值**）。
+ *
+ * ⚠️ 还有一类它同样看不见：**分母**。`compaction.autoTriggerRatio` 是比例，
+ * 真正决定触发点的是 `contextWindow × ratio`（宿主 `resolveCompactSpec`），
+ * 而 `contextWindow` 来自 adapter 模型声明（四个 profile 里写的是 `262144`）。
+ * 比例改对了、分母不对，生效阈值照样不是想要的数 —— 见下面那条偏离的 ⚠️ 说明。
  *
  * @module @forlife/contracts/deviations
  */
@@ -50,14 +55,11 @@ export interface RuleDeviation {
 }
 
 /**
- * 数值偏离：目前**没有**。
+ * 数值偏离：**文档说 50%，我们实际用 60%**（用户 2026-10-09 拍板）。
  *
- * 这本身是一个可断言的结论 —— "PLAN.MD 与 模型路由.MD 里的每个可调项都按原值实现"。
- *
- * ⚠️ 但"按原值实现"**不等于**"被消费/生效"：`compaction.autoTriggerRatio` 曾经就是
- * "基线 0.5、代码零引用、部署里实际生效 0.8"（见文件头的 ⚠️）。守"被消费"与"生效值"的是
- * 另一对守卫：`test/param-consumption.test.ts` 与 `dsh-component/test/compaction-threshold.test.ts`。
- * 所以 `DEVIATIONS` 为空只说明"没有改动文档数值"，不说明这些数值真的在跑。
+ * 基线里的 `0.5` **保持不动** —— 它是"PLAN §12.1 原文写了什么"的记录；
+ * 生效值由本条目给出（`defaultFor()` 先查本表）。这样"文档原值"与"我们的取值"
+ * 两件事都能被机器读到，也不会把文档抽取结果改成一个没人能追溯的数字。
  *
  * 关于阶段的预评分软预算：它**不是**数值偏离。文档里唯一的评分时间预算
  * （`router.minimum.timeoutMs` = 50ms 硬超时）**一分未改**；软预算是我们**新增**的
@@ -65,7 +67,31 @@ export interface RuleDeviation {
  * 把它登记成数值偏离会误导 —— 它会让人以为"文档的 50ms 被改成了 800ms"，
  * 而事实是两条路径并存。所以它进 `RULE_DEVIATIONS`（规则级例外）。
  */
-export const DEVIATIONS: readonly Deviation[] = []
+export const DEVIATIONS: readonly Deviation[] = [
+  {
+    key: 'compaction.autoTriggerRatio',
+    value: 0.6,
+    reason:
+      'PLAN §4.2 Step 1 / §12.1 的「系统自动触发阈值 50%」是一个**比例**，它的绝对值取决于部署时的上下文上限；' +
+      '本项目实际跑的模型（`deepseek-v4.1-flash`）总上下文是 **1M token**（用户 2026-10-09 澄清），' +
+      '50% = 500k 意味着上下文要攒到 500k 才开始压缩 —— 高峰期单次请求极贵，' +
+      '而 L4（短期轨迹）在此之前一直是胖的，正是 §10.4 想省的东西。' +
+      '改成 **60%（在 1M 上下文上 = 600k token）**：仍留 40% 余量（宿主还会再扣 ' +
+      '`reservedCompletionTokens` 与 `headroomTokens=65536`），但把单次请求的峰值上下文压下来。' +
+      '代价如实写明：**压缩来得更晚** ⇒ 压缩那一次的"前缀缓存失效"成本更高（§10.4），' +
+      'T13 的"未命中约每 5–8 轮一次"在长会话里会更稀疏。' +
+      '⚠️ **本偏离只改了比例，没改分母**：宿主算的是 `contextWindow × ratio`，' +
+      '而四个 profile 给 `deepseek-v4.1-flash` 声明的是 `contextWindow: 262144` ⇒ ' +
+      '当前生效阈值约 **0.6 × 262144 ≈ 157k**，不是 600k。要真的等效 600k，' +
+      'profile 的 `contextWindow` 必须声明成 `1000000`（比例本身不能 > 1，宿主 `assertRatio` 会拒）——' +
+      '那是**另一处改动**（不在本次口径内），本次未改，已单独提出。',
+    approvedBy:
+      '用户 2026-10-09 明确口径：「a。改成阈值百分之60把，等效600k，因为现在模型总上下文空间是1M」。' +
+      '消费点：`dsh-component/src/compaction-engine.ts` 的 `AUTO_TRIGGER_RATIO`（插件缺省喂给宿主 ' +
+      '`BasicCompactionEngine`，否则宿主缺省 0.8 生效）；生效值守卫：' +
+      '`dsh-component/test/compaction-threshold.test.ts`。',
+  },
+]
 
 /**
  * 规则级偏离：允许受控例外，但必须显式登记。
@@ -163,8 +189,11 @@ export const RULE_DEVIATIONS: readonly RuleDeviation[] = [
       '若按 §2.2 的字面过滤，**第一次压缩之后整个 L3 会立刻变空**（新条目还没写、旧条目全被过滤掉），' +
       '那与 §1.2 / §4.2 的「L3 跨压缩累积」直接冲突，等于每次压缩都把中期记忆清空 —— 这个坑实测踩到过，' +
       '`repository.ts:210-220` 与 `runtime.ts:415-421` 都记录了当时的推理。反过来，要让「新条目落在新 epoch」成立，' +
-      '就只能先推进 epoch 再写条目。代价如实写明：① §2.2 的字面被违背，「当前窗口」退化成了「全部历史」，' +
-      '按窗口算的中期预算（`fragment.activeBudgetRatioMin/Max`）算的是全量而不是当前窗口；' +
+      '就只能先推进 epoch 再写条目。代价如实写明：① §2.2 的字面被违背 —— **不做 epoch 过滤**，' +
+      '渲染源是跨压缩累积的全部历史（"当前窗口"= 表里的相关行，而不是"当前 epoch 的条目"）；' +
+      '⚠️ 2026-10-09 起**注入窗口**另有 token 预算（基线 `memory.midWindow.maxTokens`，' +
+      '`runtime.renderView()` 从最新往回取、只渲染一段），但 §5.3 那套"中期区独立预算"' +
+      '（`fragment.activeBudgetRatioMin/Max`）仍按**全表**算（`midStats` 不过滤）—— 两件事别混为一谈；' +
       '② `window_offset` 仍按 epoch 分桶（`repository.ts:169` 的 `max(window_offset)` 限定在当前 epoch），' +
       '压缩后新条目从 offset 0 重新开始，渲染时**排在旧条目之前**，「追加到 L3 尾部」的次序保证因此不成立' +
       '（审计 §3 第 2 条）—— ⚠️ **那不是本登记的许可范围**，而是本取舍的待修副作用' +

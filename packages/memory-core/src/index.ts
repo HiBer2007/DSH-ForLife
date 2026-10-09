@@ -8,6 +8,8 @@
  */
 export { DEFAULT_HEADER, formatAge, renderMidMemory } from './render.ts'
 export type { RenderOptions, RenderedView } from './render.ts'
+export { selectMidWindow } from './window.ts'
+export type { MidWindowOptions, MidWindowResult } from './window.ts'
 export { estimateTokens } from './tokens.ts'
 export {
   decideCompaction,

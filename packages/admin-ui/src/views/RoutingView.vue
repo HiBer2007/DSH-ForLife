@@ -34,7 +34,9 @@ const LOG_LIMIT = 50
 /** 不确定样本的固定条数（`UNCERTAIN_LIMIT`，服务端不开放参数）。 */
 const UNCERTAIN_LIMIT = 30
 
-const state = useAsyncData<RoutingOverview>(() => api.get<RoutingOverview>('/routing'))
+// 端点健康（`health_ok`）由探活写库、会自己变：不轮询的话，"健康 N/M"永远是旧账。
+// 60 秒：探活本身是个慢循环，刷太快只是重复读同一份结果。
+const state = useAsyncData<RoutingOverview>(() => api.get<RoutingOverview>('/routing'), { pollMs: 60_000 })
 const data = computed(() => state.data.value)
 
 /** 只留真正有值的字符串：`undefined` 与空串都算"没有"（空串在等宽列里看起来像有值，最误导）。 */
