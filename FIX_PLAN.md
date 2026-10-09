@@ -626,3 +626,58 @@ const bridge = env['FORLIFE_WAKE_BRIDGE_URL']
 **⇒ 在做 A/B/C 之前，先查证一件事**：唤醒桥端点到底挂在哪、与 DSH web 是否同端口。
 这决定了 `dsh-status.ts` 那个"推导"是不是一个**错的假设** —— 如果是，
 那它不只是"未配置"，而是**会推导出一个连不上的地址**（更糟：`reachable:false` 会让你去查一个不存在的问题）。
+
+
+### ★★ §15 二次补充：我上一条的怀疑**被证伪**，但真问题因此更清楚了
+
+**证据一**（`packages/gateway/test/dsh-status.test.ts:41`）：
+
+```ts
+assert.equal(dshUrlFromEnv({ FORLIFE_WAKE_BRIDGE_URL: 'http://127.0.0.1:3080/forlife/wake' }),
+             'http://127.0.0.1:3080')
+```
+
+**证据二**（`packages/dsh-component/src/index.ts` 的三条失败分支）：
+
+```
+:243  ⚠️ 宿主没有 ctx.inject：唤醒桥端点未挂载（无法延迟获取 webServer）
+:267  ⚠️ 未找到 webServer 服务：唤醒桥端点未挂载（gateway 无法唤醒模型）
+:282  ⚠️ 缺少服务 …：唤醒桥端点未挂载（挂上去也只会让 gateway 收到一堆 500）
+```
+
+⇒ **唤醒桥就挂在 DSH 自己的 webServer 上，路径 `/forlife/wake`，端口正是实测的 3080。**
+我先前怀疑"唤醒桥与 DSH web 未必同端口" —— **证伪了**。
+`dsh-status.ts:67-77` 那个"从 bridge URL 推 host:port"的假设**是按设计成立的**，不是错的。
+
+### 但真问题因此**更严重**，不是更轻
+
+链条现在是完整的：
+
+1. 唤醒桥 = DSH webServer 上的一条路由 ⇒ **监听在 dsh 容器内的 `127.0.0.1:3080`**
+2. `gateway` 是**另一个容器**
+3. ⇒ gateway 调 `http://127.0.0.1:3080/forlife/wake` 打的是**它自己的回环**
+
+⇒ **不只是面板那张卡显示不出来 —— 整条 gateway → DSH 的 HTTP 唤醒链路在当前拓扑下都够不着。**
+这不是"忘了配变量"，是**两个容器之间没有那条回环**。
+
+### 那代码里为什么处处写 `127.0.0.1:3080`？
+
+因为**设计意图很可能是"gateway 与 dsh 共享网络命名空间"**（sidecar）：
+那样 `127.0.0.1:3080` 正好可达，DSH 的 web UI 又**保持只留回环**
+（满足 Caddy 那条"官方不支持非本机反代"的硬规则），
+而面板由 Caddy 反代到 **gateway 自己的端口**。
+
+⚠️ **这是推断，我没有验证过 compose 里两个服务的 network 配置。**
+但它给出一个**可验证的假设**：
+
+> **假设**：给 gateway 加 `network_mode: "service:dsh"`（或等价的共享 netns），
+> 那三个变量就能用 `127.0.0.1:3080` 正常工作。
+
+**判据（可观察）**：
+- 日志里不再出现"未配置 `FORLIFE_WAKE_BRIDGE_SECRET`：唤醒桥端点未挂载"
+- 面板「DSH 后端」卡从"未配置"变成**可达**
+- 且 Caddy 那条硬规则**不被违反**（DSH web UI 仍只在回环）
+
+**风险**：改网络拓扑会影响 gateway 与 caddy 之间既有的连通方式
+（gateway 的 8081 是 Caddy 反代的目标）—— **改之前必须先把"caddy 怎么找到 gateway"读清楚**，
+否则会把面板一起弄断。**所以这条仍然是"先读清再动"。**
