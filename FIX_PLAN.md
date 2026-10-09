@@ -874,3 +874,67 @@ dsh `Up (healthy)`；**QQ 容器 ID 前后一致**。仓库**完全没动**（�
 所以这次故障换来一条硬事实，而不是白挂一次。
 **凡是"改配置让某处能对外通信"的改动，先在容器里手动试一次那条命令**，
 别直接改 compose 再重建：`dsh --profile web --host 0.0.0.0 --help` 一秒就能试出来。
+
+
+---
+
+## 17. ★★ P1-b 的收敛点找到了（比先前判断的更窄，而且模型早就有 `feed_memory`）
+
+### 唯一写库路径 = `feedMemory()`
+
+```
+feed.ts:5     后台「喂食记忆」页、模型可调的 feed_memory 工具）**都只走这一条写入路**
+feed.ts:462   export function feedMemory(db, options: FeedOptions): FeedResult
+feed-batch.ts:29   ## 为什么每批还是走 feedMemory()（而不是在这里写库）
+gateway/src/index.ts:137  后台接口（/api/admin/feed）与模型工具（feed_memory）都走 feedInput
+```
+
+⇒ **三条入口（后台 HTTP / CLI / 模型工具 `feed_memory`）共用同一个 `feedMemory()`。**
+
+### 而切分**就在 `feedMemory` 内部**
+
+```
+feed-batch.ts:208   核心（feedMemory）拿到 items 后做的第一件事就是 splitIntoFeedChunks()
+feed.ts:471        // ① 段落切分（朴素段落切；段落级的复杂分块属于记忆系统本身）
+feed.ts:477          for (const chunk of splitIntoFeedChunks(item.content)) paragraphs.push(...)
+feed.ts:480        // ①b 天花板切分：只有超过 feed.chunkMaxTokens 的段落才被切开
+feed.ts:695        const appended = appendMidEntry(db, { … })   ← 每个"段落"写一条
+```
+
+⇒ **P1-b 的靶心在 `feedMemory()` 里那一处 `splitIntoFeedChunks`**，不在 `feed-batch.ts`。
+改那一处，三条入口一起改到 —— 这比"改 feed.ts 四处 + 三条入口"窄得多。
+
+### ★ 而且模型**本来就有** `feed_memory`
+
+`dsh-component/src/feed-tools.ts:2` / `:13`：
+
+> 「手动喂食记忆资料」的**模型工具面** —— `feed_memory`
+> `feed_memory`：把**一段外部资料**喂进记忆，带**来源**
+
+`feed-tools-wiring.test.ts:3` 还记着：「模型自己决定记成**知识**还是**经历**」。
+
+⇒ **所以 C-② 的缺口比想象中小**：模型**已经能**自己投喂、自己决定记成什么。
+缺的只是两件：
+
+1. **投喂路径现在由 gateway 子系统调 `feedMemory`，而不是让模型来调** ——
+   要把"整块原文"作为一轮输入交给模型（`forlife:feed-mode` 已经存在，
+   实测日志里那段写着"只在投喂期非空"）
+2. **`feedMemory` 内部那次切分要能关掉**（否则模型即使拿到整块，写进去时又被切开）
+
+### 因此 P1-b 的最小可行形状（三条）
+
+| | 改动 | 判据 |
+|---|---|---|
+| ① | `feedMemory` 加一个"**不切分**"的入参（或让它按 `feed.chunkMaxTokens` 这个**天花板**判，而不是无条件按空行切） | 传一整块 ⇒ 落库**一条**（而不是 50~77 条） |
+| ② | 投喂路径改成**把整块原文交给模型**（一轮输入 + `feed-mode`），
+由模型自己决定调几次 `feed_memory`、记成知识还是经历 | 模型真的调了 `feed_memory`（日志/工具记账可见） |
+| ③ | `feed.chunkMaxTokens`（2000）重新定档到 10k–50k 量级 | 整块不再被 ①b 那道天花板切开（实测 282/283 段超 2000） |
+
+**⚠️ 但 ③ 单独做没有意义**（实测它今天一次都没触发过，因为条目只有 140 token）——
+它只有在 ① 做出来、整块真的整块进库之后才起作用。**所以 ①→③ 必须相邻落地。**
+
+### 仍然需要用户已给的确认
+
+用户已明确选 **C-②**（交给模型），并补了目标语义：
+**「让模型以为在回想过去的记忆」** ⇒ 那轮输入的框架是"你在回想过去"，
+不是"这是份文档，请处理"。这与既有的 `forlife:feed-mode` 是同一件事，要一起对齐。
