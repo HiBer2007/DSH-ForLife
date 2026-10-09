@@ -462,6 +462,85 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
+  /**
+   * ★★ `recall_mid` —— **中期记忆的回填路径**（`FIX_PLAN.md` D2 / P0-a）。
+   *
+   * ## 为什么必须有它
+   *
+   * 中期记忆区只有预算内的一段会进上下文（`memory.midWindow.maxTokens`）。
+   * 线上实测：**全表 1,555,127 token，窗口内只有 99.9k —— 94% 落在窗口外。**
+   *
+   * 而窗口外的条目**摘要与正文都不在模型眼前，且当时没有任何工具能取回来**：
+   *  - `recall_full` 取的是**溢出工具结果**（spill），不是中期条目；
+   *  - `recover(id)` 只处理**长期**冷层条目，且不含正文；
+   *  - `recall_longterm` 自己的中期兜底 `return this.recallResult([], …)`
+   *    —— **返回空数组**，命中的条目从来没被当内容返回（它只用来数个数、生成一句 note）。
+   *
+   * `runtime.ts:580-588` 的注释里，代码自己承认了这件事：
+   * 「真要给一条回填路径，得先有『按 id 取中期条目正文』的工具」。
+   * **这个工具就是它。**
+   */
+  const recallMid = defineSpillingTool({
+    name: 'recall_mid',
+    description: [
+      '按 id 取回**中期记忆条目**的正文 —— 那些已经滑出上下文窗口、你眼前看不到的过往。',
+      '什么时候用：`recall_longterm` 回给你一句「中期记忆里有 N 条相关，但都已滑出当前上下文窗口，本次检索也取不回来」，',
+      '而那个 N 条里可能有你正需要的东西。这是唯一能把它们捞回来的路。',
+      '⚠️ 一次只取一条。取回的内容会重新占上下文预算 —— 按需取，别为了"看看有什么"批量捞。',
+      '⚠️ 返回里的 `inWindow` 告诉你它是不是本来就在你眼前（true 的话你不需要取）。',
+    ].join('\n'),
+    parameters: {
+      id: { type: 'string', required: true, description: '中期条目 id（`recall` 的提示或面板里给的）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          found: { type: 'boolean', required: true },
+          content: { type: 'string', description: '条目正文（仅在 found=true 时存在）。' },
+          summary: { type: 'string' },
+          status: { type: 'string', description: 'active（活跃）或 fragmented（已沉降，正文在长期记忆里）。' },
+          inWindow: { type: 'boolean', description: 'true = 它本来就在当前上下文里，无需取回。' },
+          tokens: { type: 'integer' },
+        },
+      },
+      render: (_args: never, value: never): ContentBlock[] => {
+        const v = value as {
+          found: boolean
+          content?: string
+          summary?: string
+          status?: string
+          inWindow?: boolean
+          tokens?: number
+        }
+        if (!v.found) return text('找不到这条中期记忆（id 不对，或它已被归档/清理）。')
+        const head =
+          `已取回一条中期记忆（${String(v.tokens ?? 0)} token，status=${v.status ?? '?'}` +
+          `${v.inWindow === true ? '，⚠️ 它本来就在你的上下文里' : ''}）：\n`
+        return text(`${head}${v.summary === undefined ? '' : `【摘要】${v.summary}\n`}${v.content ?? ''}`)
+      },
+    },
+    execute: async (args: never): Promise<unknown> => {
+      const a = args as { id: string }
+      // 走 `runtime.listEntries()` 而不是新引一个 store 函数：
+      // `tools.ts` 至今**只依赖 `MemoryRuntime` 这一个数据入口**（见文件头的 import），
+      // 保持这条边界比省一次全表扫描重要 —— 这个工具是罕见的显式调用，不是热路径。
+      const row = runtime.listEntries().find((entry) => entry.id === a.id)
+      if (row === undefined) return { ok: true, found: false }
+      return {
+        ok: true,
+        found: true,
+        content: row.content ?? row.summary,
+        summary: row.summary,
+        status: row.status,
+        inWindow: runtime.midWindow().entries.some((entry) => entry.id === row.id),
+        tokens: row.token_count,
+      }
+    },
+  })
+
   const requestCompaction = defineSpillingTool({
     name: 'request_compaction',
     description: [
@@ -676,7 +755,9 @@ export function buildMemoryTools(defineTool: DefineToolLike, runtime: MemoryRunt
     },
   })
 
-  return [remember, pushMidMemory, recallLongterm, recallFull, requestCompaction, requestRecallExtension, recover]
+  // ★ `recallMid` 紧跟在 `recallFull` 之后：两个都是"把当时看不见的东西捞回来"的回填路径，
+  //   放在一起读的人一眼能看到它们是**一对**（一个捞工具结果，一个捞中期记忆）。
+  return [remember, pushMidMemory, recallLongterm, recallFull, recallMid, requestCompaction, requestRecallExtension, recover]
 }
 
 /** 宽松解析 entities（长期表里存的是 JSON 文本）。 */
@@ -696,6 +777,9 @@ export const MEMORY_TOOL_NAMES = [
   'push_mid_memory',
   'recall_longterm',
   'recall_full',
+  // ★ `recall_mid`：中期记忆的回填路径（`FIX_PLAN.md` D2 / P0-a）。
+  //   漏在这里 ⇒ `tool-spill-wiring.test.ts` 那条"走接缝的定义数 = 注册的工具数"立刻变红。
+  'recall_mid',
   'request_compaction',
   'request_recall_extension',
   'recover',

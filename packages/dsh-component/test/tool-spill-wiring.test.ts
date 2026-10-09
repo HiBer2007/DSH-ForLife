@@ -112,9 +112,42 @@ test('★ 失败**不静默**：落库失败要计数（finalizeContent 必须 t
 test('★ `recall_full` 工具的 execute 真的读 runtime（读路径没断）', () => {
   const src = read('../src/tools.ts')
   const start = src.indexOf("name: 'recall_full'")
-  const seg = src.slice(start, src.indexOf('requestCompaction', start))
+  const seg = src.slice(start, src.indexOf("name: 'recall_mid'", start))
   assert.match(seg, /runtime\.recallFull\(a\.id\)/, '**必须真的去读溢出记录**')
   assert.match(seg, /found: true/, 'found=true 的分支必须真的存在（原事故：永远走 found:false）')
+})
+
+/**
+ * ★★ 接线守卫：`recall_mid` —— 中期记忆的回填路径（`FIX_PLAN.md` D2 / P0-a）。
+ *
+ * ## 这条盯的是什么
+ *
+ * 窗口外的中期条目（线上实测占 **94%**：全表 1,555k / 窗口内 99.9k）
+ * **摘要与正文都不在模型眼前**，而在此之前**没有任何工具能取回来** ——
+ * `runtime.ts:580-588` 的注释里代码自己承认了这件事。
+ *
+ * 所以这个工具一旦写成空壳（比如忘了返回 `content`、或永远走 `found: false`），
+ * **症状和"没有这个工具"一模一样**：模型以为能捞、实际捞回来一片空。
+ * 那正是本仓反复栽的那个模式 —— 库代码写好了、单测全绿、**行为是空的**。
+ */
+test('★★ 守卫：`recall_mid` 真的读库、真的返回正文、真的标出在不在窗口里', () => {
+  const src = read('../src/tools.ts')
+  const start = src.indexOf("name: 'recall_mid'")
+  assert.ok(start > 0, '找不到 `recall_mid` 的定义 —— 工具被摘掉了？')
+  const seg = src.slice(start, src.indexOf('requestCompaction', start))
+
+  assert.match(seg, /runtime\.listEntries\(\)\.find\(/, '**必须真的去库里找那一条**（不是返回占位）')
+  assert.match(
+    seg,
+    /row\.content \?\? row\.summary/,
+    '**必须返回正文**（content 优先、退化到 summary）—— 只回摘要等于没捞回来',
+  )
+  assert.match(
+    seg,
+    /runtime\.midWindow\(\)\.entries\.some\(/,
+    '**必须标出它是不是本来就在窗口里** —— 与 `renderView()` 同源的那份选取，否则模型会重复捞已经看得见的东西',
+  )
+  assert.match(seg, /found: true/, 'found=true 的分支必须真的存在（否则永远走 found:false，捞了个寂寞）')
 })
 
 test('★ index.ts 的接线状态（宿主工具全覆盖需要它；未挂时点名，不静默）', (t) => {
