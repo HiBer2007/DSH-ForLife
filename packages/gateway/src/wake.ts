@@ -161,8 +161,29 @@ export const WAKE_CONDITION_PRODUCERS: Readonly<Record<WakeCondition, WakeCondit
   },
   peer_input_status: {
     by: null,
-    waitingOn: 'onebot.ts 需要把 `notice_type: notify / sub_type: input_status` 归一成事件（P1-3）',
-    note: '对方正在输入 —— 只有 C2C 有',
+    // ★ 2026-10-09 更正：这里原来写的是「onebot.ts 还没把它归一成事件（P1-3）」。
+    //   那句话**已经过时了** —— 而这张表存在的唯一理由就是"不能变成新的谎话"，
+    //   所以指错文件比不写更糟：下一个人会去 onebot.ts 白找一遍。
+    //
+    //   事实是：事件**早就有**了。`onebot.ts:463` 归一出 `InboundEvent{type:'peer_input_status'}`，
+    //   `gateway.ts:237` 也认它。真正的卡点在**事件被有意分流**：
+    //   `gateway.ts:231-246` 对非消息事件先 `recordTyping()` 写进 `forlife_state`
+    //   （自带过期时刻，由 `read_pending` 现问现答），然后**直接 return** ——
+    //   根本走不到 `decideWake`。那段代码的注释写明了理由：
+    //   「正在输入是瞬时信号，不该进待办队列、也不该靠 effects 报告」。
+    //
+    //   ⇒ 所以这**不是"忘了接"，是设计上决定不接**。
+    //   但基线仍然给它 25% 的唤醒概率（`scheduler.ts`）、面板也让人配它、分组里也列着它
+    //   —— 三处都当它是个能唤醒的条件，只有事件路径不当。**两边对不上。**
+    //
+    //   **该由用户拍板**（两条都自洽，选哪条取决于"正在输入值不值得打断模型"）：
+    //     ① 把它从 `WAKE_CONDITIONS` 摘掉，承认它只是「记录 + 现问现答」；
+    //     ② 真把它接进 `decideWake`（在 `recordTyping` 之后补一次唤醒判定）。
+    waitingOn:
+      '★ 不是缺事件，是**有意分流**：`gateway.ts:237` 把它 recordTyping 进 forlife_state 后直接 return，' +
+      '从不进 decideWake（设计上视它为瞬时信号，由 read_pending 现问现答）。' +
+      '**待用户拍板**：从 WAKE_CONDITIONS 摘掉，还是真接进唤醒矩阵。',
+    note: '对方正在输入 —— 只有 C2C 有；当前只记录、不唤醒（与基线的 25% 概率不一致）',
   },
   peer_status_change: {
     by: null,
