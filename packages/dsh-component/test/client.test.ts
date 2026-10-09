@@ -28,7 +28,11 @@ let captured: { id: string; factory: (require: (id: string) => unknown) => unkno
 //   而 `pnpm test` 用 `--experimental-test-isolation=none`（所有测试共用一个进程）
 //   ⇒ ESM 只求值一次，后加载的文件只会拿到缓存、`captured` 永远 undefined。
 //   带上只属于本文件的 query ⇒ 各拿一份实例。
-await import('../client/index.js?owner=client')
+//
+//   ⚠️ 写成**变量**而不是字面量：字面量会被 TS 做模块解析，
+//      带 query 的路径解析不到 ⇒ `pnpm typecheck` 红（TS2307）。
+const CLIENT_MODULE_URL = new URL('../client/index.js?owner=client', import.meta.url).href
+await import(CLIENT_MODULE_URL)
 
 /** 假 React：只提供面板用到的那几个。 */
 function fakeReact(): { React: unknown; jsxCalls: { type: string; props: unknown }[] } {

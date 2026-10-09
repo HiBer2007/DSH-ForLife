@@ -117,10 +117,30 @@ export function installModelRouter(
   const disposers: (() => void)[] = []
   const observed = new Map<string, ObservedAgent>()
 
-  /** 安全订阅（事件名对不上、或宿主没有这个事件时不炸）。 */
-  const on = (event: string, handler: (payload: unknown) => void): void => {
+  /**
+   * 安全订阅（事件名对不上、或宿主没有这个事件时不炸）。
+   *
+   * ★★ **两种事件，签名不一样，别搞混**（2026-10-09 真机血案）：
+   *
+   *  - **瀑布 / waterfall**（`agent/pre-step`）：宿主用 `dispatch.waterfall(...)` 派发，
+   *    链上每个监听器都长成 `(payload, next) => …`。**必须调用 `next()` 并把它
+   *    返回的决定原样传回去** —— 少一个环节，上个监听器就拿到 `undefined`。
+   *  - **通知 / serial**（`agent/created`、`agent/turn-stopping`）：
+   *    宿主用 `dispatch.serial(...)` / `ctx.serial(...)` 派发，**不传 `next`**，
+   *    返回值也没人要。这里写 `(payload) => {…}` 是对的。
+   *
+   * `next` 只在瀑布事件里存在；通知事件里它是 `undefined`。
+   */
+  const on = (
+    event: string,
+    handler: (payload: unknown, next: () => Promise<unknown>) => unknown,
+  ): void => {
     try {
-      const off = (ctx as unknown as { on(name: string, fn: (p: unknown) => void): () => void }).on(event, handler)
+      const off = (
+        ctx as unknown as {
+          on(name: string, fn: (p: unknown, n: () => Promise<unknown>) => unknown): () => void
+        }
+      ).on(event, handler)
       if (typeof off === 'function') disposers.push(off)
     } catch (error) {
       log('⚠️ 订阅 ' + event + ' 失败：' + String(error).slice(0, 120))
@@ -156,8 +176,27 @@ export function installModelRouter(
   })
 
   // ── ② agent/pre-step：每一步之前（**轮次输入就在 messages 里**）
+  //
+  // ★★ 这是**瀑布（waterfall）**事件，不是通知 —— 宿主用
+  //    `this.dispatch.waterfall("agent/pre-step", …)` 派发
+  //    （`dsh-agent-loop/lib/index.js:911`），链上每个监听器都长成 `(payload, next) => …`。
+  //
+  //    我们原来只写了 `(payload) => {…}`：**既不接 `next`、也不返回决定**
+  //    ⇒ 瀑布在这一环断掉，**上一个监听器 `await next()` 拿到 `undefined`**。
+  //
+  //    真机后果（2026-10-09 实测，靠给 `dsh-agent-loop` 临时补打印堆栈才挖出来）：
+  //      `dsh-plan-mode/lib/index.js:155`：`if (decision.kind === "reject" …)`
+  //      ⇒ TypeError: Cannot read properties of undefined (reading 'kind')
+  //      ⇒ **整轮直接失败**，而且报错是 `dsh: UNKNOWN: …`、**连堆栈都没有**。
+  //
+  //    一句话：一个"只是观察一下"的订阅，把整个 agent 跑回合的能力干掉了；
+  //    而且症状（一开回合就 UNKNOWN）离原因（少了个 next）十万八千里。
+  //    **凡是接瀑布事件，就必须把决定原样传下去。**
   let preStepCount = 0
-  on('agent/pre-step', (payload) => {
+  on('agent/pre-step', async (payload, next) => {
+    // ★ `next()` 放在 try **外面**：链上后面那几环抛错时，
+    //   必须让异常穿过去，不能被我们"观察失败"的 catch 吞掉。
+    const decision = await next()
     try {
       const p = (payload ?? {}) as AgentPayload
       preStepCount += 1
@@ -181,6 +220,8 @@ export function installModelRouter(
     } catch (error) {
       log('⚠️ agent/pre-step 处理出错：' + String(error).slice(0, 120))
     }
+    // ★ 只观察 ⇒ 决定**一个字都不改**地传回去
+    return decision
   })
 
   // ── ③ agent/turn-stopping：轮次即将结束（收"建议下次用什么"）

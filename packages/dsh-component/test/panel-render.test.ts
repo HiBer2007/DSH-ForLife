@@ -46,7 +46,13 @@ let captured: { id: string; factory: (require: (id: string) => unknown) => unkno
 // 而单独跑这个文件又是绿的（这就是"顺序相关偶发失败"的真身）。
 //
 // 带上只属于本文件的 query ⇒ 两个文件各自一份实例，谁也不抢谁的。
-await import('../client/index.js?owner=panel-render')
+//
+// ⚠️ 必须写成**变量**而不是字面量：字面量会走 TS 的模块解析，
+//    而 ``../client/index.js?owner=...`` 这种带 query 的路径它解析不到
+//    ⇒ `pnpm typecheck` 直接红（TS2307）。变量形式 TS 按动态导入处理，
+//    运行时照样把 query 带进 URL ⇒ 实例隔离生效。
+const CLIENT_MODULE_URL = new URL('../client/index.js?owner=panel-render', import.meta.url).href
+await import(CLIENT_MODULE_URL)
 
 /** 从真实服务端抓的面板接口响应。 */
 const FIXTURES = JSON.parse(
