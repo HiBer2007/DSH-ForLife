@@ -151,6 +151,22 @@ export function setState(db: DatabaseSync, key: string, value: string): void {
   ).run(key, value)
 }
 
+/**
+ * 删掉一个状态值（键消失，而不是留一个空串）。
+ *
+ * 为什么要单独一个函数：`forlife_state` 是**一张没有过期机制的表**。
+ * 用"写空串"来清键的话，每一次用完即弃的键（例如 `probe.ts` 的查询结果）
+ * 都会在表里留一行垃圾 —— 用到几万次之后，"表里有多少行"就不再能回答
+ * "现在有多少状态"这个它本该回答的问题了。
+ *
+ * @param db - 数据库。
+ * @param key - 键。
+ * @returns 是否真的删掉了一行（键本来就不存在时为 false）。
+ */
+export function deleteState(db: DatabaseSync, key: string): boolean {
+  return Number(db.prepare('DELETE FROM forlife_state WHERE key = ?').run(key).changes) > 0
+}
+
 /** 当前渲染修订号。 */
 export function currentRevision(db: DatabaseSync): number {
   return Number(getState(db, 'render_revision') ?? '0')

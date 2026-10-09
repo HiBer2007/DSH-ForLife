@@ -37,6 +37,7 @@ import StatCard from '../components/StatCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatDuration, formatNumber, formatRelative, formatTokens } from '../utils/format.ts'
+import { inboundPreview } from '../utils/message-labels.ts'
 
 // 队列深度 / 待读 / 出站积压都是**会自己变的运行状态**：不轮询的话，
 // 看到的是"打开这一页那一刻"的快照（用户会照着旧数字去排查一个已经不存在的问题）。
@@ -100,13 +101,18 @@ function kindLabel(value: unknown): string {
   return kind ?? '—'
 }
 
-/** 入站消息的文本预览；图片/文件消息的 `text` 往往是空的，用媒体标记补位。 */
+/**
+ * 入站消息的文本预览。
+ *
+ * ## 为什么不能只映射 `image` / `file`（2026-10-09 审计 §6.2）
+ *
+ * 以前这里只有那两个分支，于是**语音（`record`）与视频（`video`）落到「（无文本）」** ——
+ * 用户看到的是"一条空消息"，而实际上那里有一条语音。
+ * 类型清单与占位符翻译搬进了 `utils/message-labels.ts`（媒体列与文本占位符是两个来源，
+ * 见那里的说明），这里只负责"拼起来 + 截断"。
+ */
 function textPreview(row: Record<string, unknown>): string {
-  const media = text(row['mediaKind'])
-  const prefix = media === 'image' ? '[图片] ' : media === 'file' ? '[文件] ' : ''
-  const body = (text(row['text']) ?? '').trim()
-  if (body === '') return prefix === '' ? '（无文本）' : prefix.trim()
-  return prefix + clip(body)
+  return clip(inboundPreview({ mediaKind: row['mediaKind'], text: row['text'] }))
 }
 
 /** 已处理是布尔，**不是** 0/1；取不到就给"—"，不能默认成"待处理"（那是替数据下结论）。 */

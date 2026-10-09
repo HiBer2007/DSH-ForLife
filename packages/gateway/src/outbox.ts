@@ -27,7 +27,30 @@ import type { DatabaseSync } from 'node:sqlite'
 import { nowIso } from '@forlife/store'
 
 /** 出站动作的种类。 */
-export type OutboundKind = 'text' | 'image' | 'file' | 'sticker' | 'notice' | 'mention_all' | 'reaction' | 'input_status' | 'delete'
+export type OutboundKind =
+  | 'text'
+  | 'image'
+  | 'file'
+  | 'sticker'
+  | 'notice'
+  | 'mention_all'
+  | 'reaction'
+  | 'input_status'
+  | 'delete'
+  /** 合并转发（QQ 原生"聊天记录"卡片）。`payload.nodes` 是已构造好的 OneBot node 数组。 */
+  | 'forward'
+  /** 同意/拒绝好友申请（`payload.flag` / `approve` / `reason`）。 */
+  | 'friend_request'
+  /** 同意/拒绝入群请求或邀请。 */
+  | 'group_request'
+  /**
+   * **跨进程只读查询**（`get_forward_msg` / 各种列表）。
+   *
+   * ⚠️ 它出现在"出站动作"表里是因为**接缝只有这一条**（工具在 DSH 进程、
+   * QQ 连接在网关进程，见模块头）。结果不回写这一行，而是写进
+   * `forlife_state` 的 `qq_probe:<id>` 键（见 `probe.ts`）。
+   */
+  | 'probe'
 
 /** 队列里的一行。 */
 export interface OutboxRow {

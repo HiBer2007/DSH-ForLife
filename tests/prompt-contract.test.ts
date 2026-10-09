@@ -46,8 +46,11 @@ test('真实仓库：位置契约检查必须通过（前缀里没有动态内�
   const { code, output } = runLint()
   assert.equal(code, 0, `lint 应当通过，实际输出：\n${output}`)
   assert.match(output, /位置契约检查通过/)
-  // 我们的四段都要被扫到（漏扫等于没守）
-  for (const name of ['P1_NAME', 'P2_NAME', 'L2_NAME', 'L3_NAME']) {
+  // 我们的每一段都要被扫到（漏扫等于没守）。
+  // ⚠️ 2026-10-09 加 `FEED_MODE_NAME`：新加的段如果**没被扫到**，
+  //    "前缀里没有动态内容"这条承诺就有一个盲区（那段恰好也在前缀区、order 140）。
+  // ⚠️ 2026-10-09 加 `PROACTIVITY_NAME`（order 115）—— 同一类盲区，别再漏第三次。
+  for (const name of ['P1_NAME', 'P2_NAME', 'PROACTIVITY_NAME', 'L2_NAME', 'L3_NAME', 'FEED_MODE_NAME']) {
     assert.ok(output.includes(name), `lint 应当扫到 ${name}`)
   }
 })

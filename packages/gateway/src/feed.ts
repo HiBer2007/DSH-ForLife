@@ -1,10 +1,23 @@
 /**
- * 手动喂食记忆资料 —— **四条入口共用的唯一核心**。
+ * 手动喂食记忆资料 —— **四条入口共用的唯一写入核心**。
  *
  * 四条入口（`scripts/feed-memory.ts` 的文件/目录扫描与 `--text`、`POST /api/forlife/feed`、
- * 后台「喂食记忆」页、模型可调的 `feed_memory` 工具）**都只调这一个函数**。
+ * 后台「喂食记忆」页、模型可调的 `feed_memory` 工具）**都只走这一条写入路**。
  * 各写一套的直接后果是"某一条入口喂进去的东西在沉降/召回/面板上跟正常记忆不一样"，
  * 而那种不一致只有在出事时才被发现。
+ *
+ * ## 它与「投喂子系统」（`feed-batch.ts`）的分工（2026-10-09 起）
+ *
+ * 用户的口径是：**喂食要能接住任意大的输入，切分由系统做、不由调用方做**，
+ * 而且要**分段投入**（段间让出控制权，别再被一次性灌爆）。
+ * 那套调度（输入形态判定 / 切分 / 分批 / 批间让出 / 会话记账 / 进度）在
+ * `feed-batch.ts`（`feedInput()`）里，**本文件仍然是唯一的写入核心**：
+ * 子系统**每一批**都调一次 `feedMemory()` —— 没有第二套写入、没有第二张表。
+ *
+ * | 谁 | 管什么 |
+ * | :--- | :--- |
+ * | `feed-batch.ts` / `feed-ingest.ts` / `feed-chunk.ts` | 任意大输入 → 有界流 → 切分 → 分批 → 批间让出 → 记账 |
+ * | **本文件** | 一个批次内的**记忆语义**：来源与 id 对齐、判重、更新、归档、两条写入路 |
  *
  * ## 它走的是**真实沉降路径**，不是旁路
  *
@@ -26,12 +39,17 @@
  *
  * 逐条落到代码上：
  *
- *  1. **分块**：只做最朴素的"空行或标题行断开"（`splitIntoFeedChunks`）——
+ *  1. **分块**：段落级只做最朴素的"空行或标题行断开"（`splitIntoFeedChunks`）——
  *     这就是人写 Markdown 时的自然段落边界。**复杂分块不在这里**：
  *     什么时候该把一条记忆切成碎片、碎片留多长，PLAN §5.3 已经有一套
  *     （`fragment.maxHintTokens` / 碎片区占比上限），由压缩与碎片维护实现。
- *     某一段太长时**不在这里切** —— 它作为一整条进中期记忆，
- *     超出预算的部分由既有的压缩流程处理（和"某一轮对话特别长"走的是同一条路）。
+ *
+ *     ⚠️ 2026-10-09 补上这条取舍的**边界条件**：段落**超过 `feed.chunkMaxTokens`** 时
+ *     由 `feed-chunk.ts` 机械切开（句子边界对齐、不重叠）。原因是真机实测发现
+ *     "让压缩去处理超长段落"对**单条就超过窗口**的情况**不成立** ——
+ *     压缩看的是"上下文占比"，而占比一开始就爆（中期窗口对"单条超预算"的处理是**整窗为空**）。
+ *     所以这里多出来的不是"另一套分块器"，而是"单条不许无界"这条**上界**：
+ *     **不超过上限时 `refineFeedChunk()` 原样返回一片，整条链路与过去逐字节一致**。
  *  2. **去重**：复用既有的 FTS 检索（`searchLongFts` / `searchMidFts`）拿候选，
  *     再用**与 recall 重复查询同一份**的 `textSimilarity()` 判近似（阈值 `feed.dedupeSimilarity`）。
  *     **没有 sha256 内容指纹表** —— 那正是"平行机制"：两张表迟早对不上，
@@ -79,6 +97,7 @@ import {
 } from '@forlife/store'
 
 import { archiveLongMemory, updateLongMemory } from './admin/memory-write.ts'
+import { refineFeedChunk, withPieceSuffix, type FeedPiece } from './feed-chunk.ts'
 
 /** 喂食目标：知识进长期记忆，经历进中期记忆。 */
 export type FeedKind = 'knowledge' | 'experience'
@@ -127,6 +146,25 @@ export interface FeedOptions {
   readonly source?: string
   /** 只算不写：返回"会发生什么"，一行都不落库（CLI `--dry-run` / 面板预览）。 */
   readonly dryRun?: boolean
+  /**
+   * 段落序号的**全局偏移**（投喂子系统分批时用）。
+   *
+   * 为什么要它：段落 id 是「来源 + 段落序号」派生的（`feedIdFor`），
+   * 而分批投喂如果每批都从 0 开始编号，第二批的第 0 段就会**顶掉**第一批的第 0 段。
+   * 传了偏移之后：同一个来源 = **同一个 scope**、序号全局连续，
+   * 于是"批量大小怎么调"都不影响 id（调参不会让整份文档重写一遍）。
+   *
+   * `details[].index` 报的也是**加上偏移后**的序号（"这次输入"= 整份输入，不是一个批次）。
+   */
+  readonly indexOffset?: number
+  /**
+   * 本次调用是否负责"把上一版多出来的段落归档"（默认 `true`，与历史行为一致）。
+   *
+   * 分批时必须传 `false`：每批都去扫一遍会把**别的批次**的段落判成"上一版多出来的"并归档掉。
+   * 收尾那一次归档由调度方在全部喂完之后调用 {@link archiveFeedLeftovers} 完成
+   * （与这里用的是同一个实现，不是第二套）。
+   */
+  readonly archiveLeftovers?: boolean
 }
 
 /** 一段资料的处理结果。 */
@@ -146,7 +184,13 @@ export type FeedAction =
 
 /** 单段的处理明细。 */
 export interface FeedChunkResult {
-  /** 该段在**这次输入**里的序号（从 0 起，跨 item 连续）。 */
+  /**
+   * 该段在**这次输入**里的序号（从 0 起，跨 item 连续）。
+   *
+   * 分批投喂时它是**加上 `indexOffset` 之后**的全局序号（整份输入的口径），
+   * 所以同一个来源的两批之间不会出现两个"第 0 段"。
+   * 上一版多出来的那些段（归档项）固定报 `-1`。
+   */
   readonly index: number
   /** 目标条目 id（`archived` 的段是其上一版留下的那个 id）。 */
   readonly id: string
@@ -195,6 +239,13 @@ export interface FeedResult {
   readonly details: readonly FeedChunkResult[]
   /** 给人看的一句话（删除/重导该怎么做）。 */
   readonly hint: string
+  /**
+   * 这次投喂切了几批（**只有投喂子系统**会填；直接调 `feedMemory()` 时没有这个字段 = 一批）。
+   *
+   * 为什么要报出来：批数是"段间让出控制权"的可见证据 ——
+   * 用户看到"1 批"会以为又是"一口气灌进去"，看到"37 批 / 每批之间让出"才敢相信压缩跟得上。
+   */
+  readonly batches?: number
 }
 
 /**
@@ -213,11 +264,17 @@ export const FEED_DELETE_HINT =
 /**
  * 把一段文本切成"段落"：**空行断开**，`#`~`######` 标题行也断开。
  *
- * ★ 就这么多 —— **分块属于记忆系统本身**（用户的明确要求）。这里刻意不做：
+ * ★ 就这么多 —— **段落级的分块策略属于记忆系统本身**（用户的明确要求）。这里刻意不做：
  * 定长滑窗、按 token 预算切、句子边界对齐、重叠窗口……那些一旦做进来，
  * 就会长成"喂食专用的分块器"，与压缩/碎片那套判据并存且互相矛盾。
  *
- * 长段落（比如一整篇没有空行的文章）会作为**一整条**进记忆系统，
+ * ⚠️ 2026-10-09 起有一层**例外**（`feed-chunk.ts` 的 `refineFeedChunk`）：
+ * 单段**超过 `feed.chunkMaxTokens`** 时会被机械切开。这不是"这里的分块策略变了"，
+ * 而是补上"单条不许无界"这条**上界** —— 真机教训：一条超过窗口的段落
+ * 压缩救不了（压缩看上下文占比，而占比一开始就爆），中期窗口甚至会对它**整窗为空**。
+ * **不超过上限时行为与过去逐字节一致**（本函数不变，切分层原样返回一片）。
+ *
+ * 长段落（不超过上限的那些，比如一整篇没有空行的文章）仍然作为**一整条**进记忆系统，
  * 由既有的压缩/碎片机制决定它的命运（PLAN §5.3 / §4.2）。
  *
  * @param text - 原文（可以是整个文件）。
@@ -265,6 +322,32 @@ export function deriveFeedSummary(content: string): string {
 /** 来源标记：`feed:<来源>`。 */
 export function feedScopeOf(source: string): string {
   return `${FEED_SCOPE_PREFIX}${source}`
+}
+
+/**
+ * 缺省来源的派生式：`<as>:<sha1(切分前的段落文本用 \n 连起来) 前 8 位>`。
+ *
+ * 为什么单独抽出来（而不是留在 `feedMemory` 里算）：**投喂子系统**要在一个批次写库**之前**
+ * 就知道来源（多批必须落在同一个 scope 上，见 `feed-batch.ts`），
+ * 而它只能以流的方式拿到输入。两处各写一份派生式 = 迟早对不上（"同一个文件换个入口就变成新来源"），
+ * 所以真源只有这里一处，两边都调它。
+ *
+ * ⚠️ 传入的必须是**切分前**的段落文本：这样"天花板调大调小"不会换来源
+ * （否则调一次基线，同源的条目就会被当成"另一个文档"重新插一份）。
+ *
+ * @param as - 喂成知识还是经历（来源的第一段就是它，避免两条路的来源撞车）。
+ * @param rawTexts - 切分前的段落文本（顺序即段落序号顺序）。
+ * @returns 派生出来的来源名。
+ */
+export function deriveFeedSource(as: FeedKind, rawTexts: Iterable<string>): string {
+  const hash = createHash('sha1')
+  let first = true
+  for (const text of rawTexts) {
+    // 增量 update：与 `rawTexts.join('\n')` 逐字节等价，但不必把整份输入再拼一遍（巨量输入下那是第二份拷贝）
+    hash.update(first ? text : `\n${text}`)
+    first = false
+  }
+  return `${as}:${hash.digest('hex').slice(0, 8)}`
 }
 
 /**
@@ -381,17 +464,33 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
   const threshold = defaultFor<number>('feed.dedupeSimilarity')
   const candidateLimit = defaultFor<number>('feed.dedupeCandidates')
   const maxChunks = defaultFor<number>('feed.maxItemsPerCall')
+  const maxTokens = defaultFor<number>('feed.chunkMaxTokens')
+  const rawOffset = options.indexOffset ?? 0
+  const indexOffset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0
 
-  // ① 分块（朴素段落切；复杂分块属于记忆系统本身）
+  // ① 段落切分（朴素段落切；段落级的复杂分块属于记忆系统本身）
   //
   // 每段都记下它来自哪个 item：摘要与实体要按**它所属的那一条输入**取，
   // 不能一律用 `items[0]` 的（那会给第二份文件的段落安上第一份的摘要/实体）。
-  const chunks: { readonly text: string; readonly itemIndex: number }[] = []
+  const paragraphs: { readonly text: string; readonly itemIndex: number }[] = []
   for (const [itemIndex, item] of options.items.entries()) {
-    for (const chunk of splitIntoFeedChunks(item.content)) chunks.push({ text: chunk, itemIndex })
+    for (const chunk of splitIntoFeedChunks(item.content)) paragraphs.push({ text: chunk, itemIndex })
   }
 
-  // ② 来源：显式给的用显式的，没给就**按内容派生**。
+  // ①b **天花板切分**：只有超过 `feed.chunkMaxTokens` 的段落才被切开（见 `feed-chunk.ts`）。
+  //     不超上限 ⇒ 原样一片 ⇒ 段文本、段落序号、来源全都与过去逐字节一致。
+  const chunks: { readonly text: string; readonly itemIndex: number; readonly piece?: FeedPiece }[] = []
+  for (const paragraph of paragraphs) {
+    const pieces = refineFeedChunk(paragraph.text, maxTokens)
+    if (pieces.length === 0) continue
+    if (pieces.length === 1) {
+      chunks.push({ text: paragraph.text, itemIndex: paragraph.itemIndex })
+      continue
+    }
+    for (const piece of pieces) chunks.push({ text: piece.text, itemIndex: paragraph.itemIndex, piece })
+  }
+
+  // ② 来源：显式给的用显式的，没给就**按内容派生**（派生式的真源在 `deriveFeedSource`）。
   //
   // ★ 为什么缺省值不能是一个常量（例如 `knowledge:unnamed`）：
   //   来源决定 id（`feed_<来源>_<序号>`），而"同源同序号 = 同一份东西的不同版本"。
@@ -400,11 +499,17 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
   //   按内容派生之后：同样的内容重复喂 ⇒ 幂等；不同的内容 ⇒ 天然是两个来源，谁也不会盖谁。
   //   代价是缺省来源长成 `knowledge:3f9a1c2b`（面板「来源」列可见），
   //   想要人名可读、可增量重导的来源，就显式给 `source`。
+  //
+  // ⚠️ 派生吃的是**切分前**的段落（`paragraphs`）：这样调 `feed.chunkMaxTokens`
+  //    不会把同一份文档变成"另一个来源"（那会让重导变成又插一份）。
   const explicitSource = options.source?.trim()
   const source =
     explicitSource !== undefined && explicitSource !== ''
       ? explicitSource
-      : `${as}:${createHash('sha1').update(chunks.map((chunk) => chunk.text).join('\n')).digest('hex').slice(0, 8)}`
+      : deriveFeedSource(
+          as,
+          paragraphs.map((paragraph) => paragraph.text),
+        )
   const scope = feedScopeOf(source)
 
   /** 失败的统一出口：字段齐、`details` 为空（调用方只要看 `error`）。 */
@@ -428,11 +533,14 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
 
   if (chunks.length === 0) return failed('没有可喂的内容（items 为空，或分块后全是空白）')
   if (chunks.length > maxChunks) {
-    // 只报"超了"不够：同源分批会破坏"第 N 段"的对齐（第二批的第 0 段会顶掉第一批的第 0 段），
-    // 所以出路只有"拆成**不同来源**的批次"或"调高上限"。
+    // 只报"超了"不够：这条上限管的是"**一次调用**不许无限大"。
+    // ⇒ 出路是走投喂子系统（它自己会分批，段间还会让出控制权），或者调高上限。
+    //    ⚠️ 2026-10-09 起**不再**建议"每批用不同的 source"：
+    //    那是老办法（会破坏"第 N 段"的全局对齐、面板上也不再是一份文档），
+    //    现在有 `indexOffset`（`feed-batch.ts`），同一个来源照样能分批。
     return failed(
       `分块后有 ${String(chunks.length)} 段，超过单次上限 ${String(maxChunks)} 段：` +
-        '请拆成更小的文件/批次（**每批用不同的 source** —— 同源分批会让段落序号错位），' +
+        '请走投喂子系统（feed-batch.ts 的 feedInput，它会自动分批且在批间让出控制权），' +
         '或调高 packages/contracts/plan-baseline.json 里的 feed.maxItemsPerCall',
     )
   }
@@ -443,18 +551,18 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
 
   if (as === 'knowledge') {
     // ②a 长期记忆：来源 ⇒ 同源条目 ⇒ id 对齐 ⇒ 更新/新增/归档
-    const existing = listLongEntriesByScope(db, scope)
-    const byId = new Map<string, LongEntryRow>(existing.map((row) => [row.id, row]))
+    const byId = new Map<string, LongEntryRow>(listLongEntriesByScope(db, scope).map((row) => [row.id, row]))
     const touched = new Set<string>()
 
-    for (const [index, chunkItem] of chunks.entries()) {
+    for (const [localIndex, chunkItem] of chunks.entries()) {
       const chunk = chunkItem.text
       const owner = options.items[chunkItem.itemIndex]
+      const index = indexOffset + localIndex
       const id = feedIdFor(source, index)
       const tokenCount = estimateTokens(chunk)
       tokens += tokenCount
       const previous = byId.get(id)
-      const summary = owner?.summary ?? deriveFeedSummary(chunk)
+      const summary = summaryOf(chunk, owner, chunkItem.piece)
       const entities = entitiesOf(owner)
 
       touched.add(id)
@@ -531,37 +639,18 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
       details.push({ index, id, action: 'inserted', reason: '新增到长期记忆（FTS + 沉降自动生效）', tokenCount })
     }
 
-    // ③a 上一版多出来的段落 ⇒ 交给**既有**归档能力（不新写删除接口）
-    for (const row of existing) {
-      if (touched.has(row.id)) continue
-      if (row.status === 'archived') {
-        details.push({
-          index: -1,
-          id: row.id,
-          action: 'unchanged',
-          reason: '上一版多出来的段落：已经归档过了',
-          tokenCount: 0,
-        })
-        continue
-      }
-      if (dryRun) {
-        details.push({ index: -1, id: row.id, action: 'planned', wouldBe: 'archived', reason: '预览：上一版多出的这一段会被归档', tokenCount: 0 })
-        continue
-      }
-      const result = archiveLongMemory(db, row.id)
-      details.push({
-        index: -1,
-        id: row.id,
-        action: result.ok ? 'archived' : 'unchanged',
-        reason: result.ok ? '上一版多出来的段落：已归档（可恢复）' : `归档未生效：${result.reason}`,
-        tokenCount: 0,
-      })
+    // ③a 上一版多出来的段落 ⇒ 交给**既有**归档能力（不新写删除接口）。
+    //     分批投喂时这一步由调度方在**全部喂完之后**调同一个实现做（见 `archiveFeedLeftovers`），
+    //     否则每一批都会把别的批次的段判成"上一版多出来的"。
+    if (options.archiveLeftovers !== false) {
+      details.push(...archiveFeedLeftovers(db, { scope, keepIds: touched, dryRun }))
     }
   } else {
     // ②b 中期记忆：只追加（既有系统没有 update 原语）
-    for (const [index, chunkItem] of chunks.entries()) {
+    for (const [localIndex, chunkItem] of chunks.entries()) {
       const chunk = chunkItem.text
       const owner = options.items[chunkItem.itemIndex]
+      const index = indexOffset + localIndex
       const base = feedIdFor(source, index)
       const tokenCount = estimateTokens(chunk)
       tokens += tokenCount
@@ -605,7 +694,7 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
       const entities = entitiesOf(owner)
       const appended = appendMidEntry(db, {
         id: allocated.id,
-        summary: owner?.summary ?? deriveFeedSummary(chunk),
+        summary: summaryOf(chunk, owner, chunkItem.piece),
         content: chunk,
         ...(entities === undefined ? {} : { entities }),
         tokenCount,
@@ -651,6 +740,69 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
 function entitiesOf(item: FeedItem | undefined): readonly string[] | undefined {
   const entities = item?.entities
   return entities === undefined || entities.length === 0 ? undefined : entities
+}
+
+/**
+ * 这一段的摘要：调用方给的优先，否则按首行派生；**被天花板切过的片**再加"（第 k/N 段）"。
+ *
+ * 为什么只给"被切过的片"加后缀：没被切过的段要保持与过去逐字节一致（摘要也一样），
+ * 而那正是绝大多数情况；被切过的片如果不加，同一段切出来的 N 条摘要会长得一模一样
+ * （面板上看起来像喂重了）。
+ *
+ * 为什么后缀只动摘要不动正文：`previous.content === chunk` 是"同源重导没变"的判据，
+ * 正文一旦掺进标记，重导就永远判成"变了"（幂等破产）。见 `feed-chunk.ts` 的说明。
+ */
+function summaryOf(chunk: string, owner: FeedItem | undefined, piece: FeedPiece | undefined): string {
+  const base = owner?.summary ?? deriveFeedSummary(chunk)
+  return piece === undefined ? base : withPieceSuffix(base, piece)
+}
+
+/**
+ * 上一版多出来的段落 ⇒ 交给**既有**归档能力（`archiveLongMemory`）。
+ *
+ * 抽出来是因为有**两个调用方**，而它们必须行为一致：
+ *  - `feedMemory()` 单次调用（批内：`keepIds` = 本次碰到过的 id）；
+ *  - 投喂子系统的收尾（跨批：`keepIds` = 全部批次喂到的 id）。
+ * 各写一份的下场是"分批喂和一次性喂对同一份文档给出不同的归档结果"，
+ * 而那种不一致只有在用户发现"文档变短了但老条目还活着"时才会被发现。
+ *
+ * @param db - 数据库连接。
+ * @param options.scope - 来源标记（`feed:<来源>`）。
+ * @param options.keepIds - **本次喂到的** id（不在这里面、又不是已归档的 ⇒ 上一版多出来的）。
+ * @param options.dryRun - 只算不写。
+ * @returns 归档项的明细（已经归档过的如实报"已经归档过了"，不重复报"归档了 1 条"）。
+ */
+export function archiveFeedLeftovers(
+  db: DatabaseSync,
+  options: { readonly scope: string; readonly keepIds: ReadonlySet<string>; readonly dryRun: boolean },
+): readonly FeedChunkResult[] {
+  const details: FeedChunkResult[] = []
+  for (const row of listLongEntriesByScope(db, options.scope)) {
+    if (options.keepIds.has(row.id)) continue
+    if (row.status === 'archived') {
+      details.push({
+        index: -1,
+        id: row.id,
+        action: 'unchanged',
+        reason: '上一版多出来的段落：已经归档过了',
+        tokenCount: 0,
+      })
+      continue
+    }
+    if (options.dryRun) {
+      details.push({ index: -1, id: row.id, action: 'planned', wouldBe: 'archived', reason: '预览：上一版多出的这一段会被归档', tokenCount: 0 })
+      continue
+    }
+    const result = archiveLongMemory(db, row.id)
+    details.push({
+      index: -1,
+      id: row.id,
+      action: result.ok ? 'archived' : 'unchanged',
+      reason: result.ok ? '上一版多出来的段落：已归档（可恢复）' : `归档未生效：${result.reason}`,
+      tokenCount: 0,
+    })
+  }
+  return details
 }
 
 // ── 数据库路径推导（CLI 与"仓库内默认库"共用）────────────────────────────────

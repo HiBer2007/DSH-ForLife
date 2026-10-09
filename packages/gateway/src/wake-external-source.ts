@@ -30,6 +30,8 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { listWakeTriggers, updateWakeTrigger } from '@forlife/store'
 
+import { decideWake } from './wake.ts'
+
 /** 外部触发规格。 */
 export interface ExternalSpec {
   /** 令牌的哈希（**不存明文**）。 */
@@ -123,6 +125,35 @@ export function createExternalWakeSource(options: {
     if (row.enabled !== 1) return { ok: false, reason: `触发器「${row.title}」已停用` }
     if (row.scope === '*' || row.scope.trim() === '') {
       return { ok: false, reason: `触发器「${row.title}」没有绑定会话（scope=*），无处唤醒` }
+    }
+
+    // ★ 过**唤醒矩阵**（`wake_rules` 的 `external_request` 一行）。
+    //
+    // ## 为什么这一道闸必须在这里
+    //
+    // 面板上 `wake.rules.externalRequest` 的开关/概率曾经**没有任何消费者** ——
+    // 外部触发走的是触发器自己的 `enabled`/`daily_limit`/`min_interval_ms`，
+    // 与那条规则无关。于是"改了面板上的开关，什么都不会发生，而且不报错"。
+    // 现在由这里消费它，两个闸门的分工写清楚：
+    //
+    // | 闸门 | 管什么 | 谁来配 |
+    // | :--- | :--- | :--- |
+    // | `wake_rules.externalRequest`（这里） | **全局策略**：外部系统到底能不能吵醒它、多大概率、每天几次 | 面板「唤醒」页 |
+    // | `wake_triggers.*`（引擎里那道） | **单条集成**：这一个 CI/传感器自己的启停与配额 | 面板「触发器」页 / 模型工具 |
+    //
+    // 作用域用 `*`（全局口径）：外部触发是"外部系统叫我"，不是"某个群里的消息"，
+    // 按会话切分没有语义。`conversationKey` 仍填触发器绑定的会话 —— 那是**留痕**用的
+    // （面板的判定列表要能看出"是哪一条触发器被拦下的"）。
+    const gate = decideWake(db, {
+      scope: '*',
+      condition: 'external_request',
+      conversationKey: row.scope,
+      // ⚠️ 不给 `summary`：跳过时 `decideWake` 会把它记进待读池 ——
+      // "有个外部系统想叫我但被规则拦了"不是一条未读消息（与 backlog/bot_offline 同一条纪律）
+    })
+    if (gate.decision !== 'wake') {
+      log(`外部触发「${row.title}」被唤醒矩阵拦下（${gate.reason}）`)
+      return { ok: false, reason: `唤醒矩阵拦下（${gate.reason}）：外部触发规则「external_request」当前不放行` }
     }
 
     const at = now()

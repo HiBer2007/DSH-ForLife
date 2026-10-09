@@ -80,7 +80,12 @@
         models:
           - id: deepseek-v4.1-flash
             name: DeepSeek V4.1 Flash
-            contextWindow: 262144
+            # ★ 2026-10-09 用户裁定 ①：这个模型的总上下文是 **1M**，不是 262144。
+            # 262144 是 `dsh-llm-pi-ai` 的**通用兜底默认值**（`lib/index.js` 的
+            # `DEFAULT_CONTEXT_WINDOW = 262144`），不是本模型的事实 —— 照抄它会让
+            # 压缩阈值变成 `contextWindow × ratio` = 0.6 × 262144 ≈ **157k**，
+            # 而用户口径是 **600k**（0.6 × 1M）。**分母错了，比例改对了也没用。**
+            contextWindow: 1000000
             # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
             # 真机报错：does not support reasoning effort "high"。
             # 按项目规定（**没有 medium**）：none | low | high | max
@@ -91,7 +96,16 @@
               max: max
           - id: deepseek-v4-pro
             name: DeepSeek V4 Pro
-            contextWindow: 262144
+            # ★ 2026-10-09 补齐（用户裁定：**把所有值都补上**）。原来写的 262144 **不是**
+            # 本模型的事实 —— 它是 `dsh-llm-pi-ai` 的通用兜底 `DEFAULT_CONTEXT_WINDOW`
+            # （`lib/index.js:923`），照抄进 profile 反而**盖掉**了包内目录里的真值。
+            # 真值来源（同一上游 models.dev 的两份快照，都可核对）：
+            #  ① pi-ai 包内目录 `@earendil-works/pi-ai/dist/providers/data/opencode-go.json`
+            #     （`generatedAt 2026-09-05`）该模型 `contextWindow: 1000000`；
+            #  ② https://models.dev/providers/opencode-go/ 同值。
+            # ⚠️ 声明值 > 真值 ⇒ 压缩永不触发（上下文直接溢出），所以**查不到就别填**；
+            #     这三个都查到了，才敢填。
+            contextWindow: 1000000
             # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
             # 真机报错：does not support reasoning effort "high"。
             # 按项目规定（**没有 medium**）：none | low | high | max
@@ -102,7 +116,9 @@
               max: max
           - id: glm-5.3-flash
             name: GLM 5.3 Flash
-            contextWindow: 204800
+            # ★ 2026-10-09 补齐：真值 **1M**（原来抄的 204800 是本仓第一次登记时的
+            # 臆测值，不是本模型的事实）。来源与核对方式见上面 `deepseek-v4-pro` 那段注释。
+            contextWindow: 1000000
             # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
             # 真机报错：does not support reasoning effort "high"。
             # 按项目规定（**没有 medium**）：low | high | max
@@ -112,7 +128,8 @@
               max: max
           - id: glm-5.3
             name: GLM 5.3
-            contextWindow: 204800
+            # ★ 2026-10-09 补齐：真值 **1M**（同上，204800 不是本模型的事实）。
+            contextWindow: 1000000
             # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
             # 真机报错：does not support reasoning effort "high"。
             # 按项目规定（**没有 medium**）：low | high | max

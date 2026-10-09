@@ -23,7 +23,7 @@ import { isAbsolute, join } from 'node:path'
 
 import { Config, resolveConfig, type ForlifeConfig } from './config.ts'
 import { contractsSummary } from './diagnostics.ts'
-import { registerMemorySections, registerPromptSections, type SystemPromptLike } from './prompt.ts'
+import { registerMemorySections, registerProactivitySection, registerPromptSections, type SystemPromptLike } from './prompt.ts'
 import { seedDefaultPrompts } from './prompt-store.ts'
 import { seedDefaultRoutes, seedDeepSeekFallback, seedOpenCodeGoRoutes } from './route-seed.ts'
 import { probeLlm } from './llm-probe.ts'
@@ -629,6 +629,11 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
         })
     if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
     disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
+    // ★ 「你的主动性」段（2026-10-09 用户要求）：主动发消息 / 提问题 / 唤醒自己的能力与边界。
+    //   **必须在这里注册**（而不是只导出函数）：本仓栽过 20+ 次"库写好了、测试全绿、
+    //   生产路径零调用"，所以这条注册由 wiring.test.ts（按 apply 的真实注册表断言）
+    //   与 proactivity-wiring.test.ts（真宿主字节级）两处守着。
+    disposers.push(registerProactivitySection(systemPrompt))
     disposers.push(registerMemorySections(systemPrompt, runtime))
 
     // ★★ 2026-10-08 中介层第 ③' 块：**把路由接进调用链**。
@@ -640,7 +645,12 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     if (modelRouter.mode === 'off') {
       log('模型路由：未启用（设 FORLIFE_ROUTER_MODE=observe 可先观察）')
     }
-    log('已注册提示段 forlife:p1-system(100) / forlife:p2-style(110) / forlife:l2-index(120) / forlife:l3-mid(130)')
+    // ⚠️ 这份清单必须与 `prompt.ts` 里真正注册的段**一一对应**（它出现在启动日志里，
+    //    少写一个就是日志撒谎 —— 而"日志说法与实际不符"正是这个项目最贵的一类问题）。
+    log(
+      '已注册提示段 forlife:p1-system(100) / forlife:p2-style(110) / forlife:proactivity(115) / ' +
+        'forlife:l2-index(120) / forlife:l3-mid(130) / forlife:feed-mode(140，只在投喂期非空)',
+    )
   } else if (config.registerPromptSections) {
     always('⚠️ 未找到 systemPrompt 服务：记忆区不会进入系统提示词（只写库不生效）。')
   }

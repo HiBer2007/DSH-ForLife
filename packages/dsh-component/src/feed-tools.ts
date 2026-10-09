@@ -15,15 +15,23 @@
  *
  * ## 分块/去重/删除都不在这里
  *
- * 这个文件只做"参数 → `feedMemory()` → 把结果说成人话"。分块、去重、归档全是
+ * 这个文件只做"参数 → 投喂子系统（`feedInput()`）→ 把结果说成人话"。
+ * 输入形态、切分（含单条天花板）、分批、批间让出、去重、归档全是
  * 记忆系统既有能力（用户原话："尤其是分块和去重这本就是属于记忆系统的一部分"），
- * 实现与理由见 `packages/gateway/src/feed.ts` 的模块头。
+ * 实现与理由见 `packages/gateway/src/feed.ts` / `feed-batch.ts` 的模块头。
+ *
+ * ## ★ 它也要**告知工作模式**（2026-10-09）
+ *
+ * 模型自己调这个工具时，**本轮的系统提示词早就装配完了** ——
+ * 提示段里那段"你在半梦半醒 / 这些是前世的记忆"它这一轮看不到。
+ * 所以工具返回里必须**同时**带上同一份措辞（`feedDigestNote()`）：
+ * 那是她这一轮唯一能知道"我刚才是把过去收进记忆，不是在跟人对话"的地方。
  *
  * @module forlife-memory/feed-tools
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 
-import { FEED_DELETE_HINT, FEED_KINDS, feedMemory, isFeedKind, type FeedItem } from '@forlife/gateway'
+import { FEED_DELETE_HINT, FEED_KINDS, feedDigestNote, feedInput, firstFeedResult, isFeedKind, type FeedItem } from '@forlife/gateway'
 
 import type { MemoryRuntime } from './runtime.ts'
 import type { DefineToolLike } from './tools.ts'
@@ -187,13 +195,19 @@ export function buildFeedTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       if (items.length === 0) return failure('必须给 content 或 items（且不能是空白）')
 
       const source = typeof a.source === 'string' && a.source.trim() !== '' ? a.source.trim() : undefined
-      const result = feedMemory(runtime.db, {
-        items,
+      // ★ 走**投喂子系统**（切分/分批/批间让出/会话记账都在它里面）。
+      // 直觉上"这里只有一段话，直接调核心就行" —— 但那正是老毛病：
+      // 一段话也可能是一百万字（模型自己 `read` 完一坨资料再喂），
+      // 而"调用方已经切好了"这个假设不成立（用户 2026-10-09 明确要求不许假设）。
+      const run = await feedInput(runtime.db, {
         as: a.as,
+        items,
         ...(source === undefined ? {} : { source }),
       })
-      if (!result.ok) {
-        return { ...failure(result.error ?? '喂食失败'), source: result.source, scope: result.scope }
+      const result = firstFeedResult(run)
+      if (result === undefined || !result.ok) {
+        const reason = run.error ?? result?.error ?? '喂食失败'
+        return { ...failure(reason), ...(result === undefined ? {} : { source: result.source, scope: result.scope }) }
       }
 
       // 把"发生了什么"说成人话：模型看到"判重 3 段"才会知道
@@ -202,7 +216,12 @@ export function buildFeedTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       if (result.duplicates > 0) notes.push(`${String(result.duplicates)} 段判为已有记忆，已跳过（没有重复记）`)
       if (result.unchanged > 0) notes.push(`${String(result.unchanged)} 段与库里一致，未改动`)
       if (result.archived > 0) notes.push(`${String(result.archived)} 段是上一版多出来的，已归档（可恢复）`)
+      if ((result.batches ?? 1) > 1) {
+        notes.push(`分 ${String(result.batches)} 批投入（批间让出控制权，压缩/沉降有机会跟上）`)
+      }
       if (notes.length === 0) notes.push('全部写入成功。')
+      // ★ 工作模式：这一段是"你的过去"，不是"刚刚发生的事"（见模块头）
+      notes.push(feedDigestNote())
       notes.push(FEED_DELETE_HINT)
 
       return {

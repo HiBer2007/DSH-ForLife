@@ -48,6 +48,7 @@ export {
   appendMidEntry,
   currentEpoch,
   currentRevision,
+  deleteState,
   fragmentMidEntry,
   getSpill,
   getLongEntry,

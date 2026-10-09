@@ -15,6 +15,8 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import ThemeControl from './components/ThemeControl.vue'
 import { useAuth } from './composables/useAuth.ts'
+import { useNow, useRefreshActivity } from './composables/useRefreshActivity.ts'
+import { formatRefreshAge } from './refresh-activity.ts'
 import { NAV_GROUPS } from './router.ts'
 import LoginView from './views/LoginView.vue'
 
@@ -23,6 +25,31 @@ const route = useRoute()
 
 /** 手机上侧栏是否展开。桌面端这个值不起作用（CSS 里侧栏常驻）。 */
 const navOpen = ref(false)
+
+// ── 顶栏的「刷新指示器 + 最后刷新时间」（2026-10-09 用户要求）──────────────────
+//
+// 数据源**不是**这里新起的：`useRefreshActivity()` 读的是 `useAsyncData()` 每个
+// 数据源早就持有的 `loading` / 上次成功时间（见 `refresh-activity.ts`）。
+// 登记表靠"页面卸载就注销"自然收敛 ⇒ 聚合出来的**就是"当前这一页"**：
+// 切页后上一页的数据源已经不在表里，顶栏不会报一个已经不在屏幕上的数字。
+//
+// 为什么显示**相对时间**（"刚刚 / 12 秒前"）而不是绝对时刻：
+// 相对时间会自己走，"轮询死了"这件事因此**直接看得见**（数字冻在"47 秒前"不动）；
+// 绝对时刻永远是同一串字符，刷没刷肉眼分不出来。
+const activity = useRefreshActivity()
+/** 每秒走一次的"现在" —— 相对时间必须自己走。 */
+const now = useNow(1000)
+
+const lastRefreshText = computed(() => formatRefreshAge(activity.value.lastSuccessAt, now.value))
+
+/** 鼠标悬停时给全话（顶栏放不下）：刷新中 / 这一页有没有自动刷新的数据源。 */
+const refreshTitle = computed(() => {
+  const { refreshing, sources, lastSuccessAt } = activity.value
+  if (sources === 0) return '这一页没有自动刷新的数据源（顶栏只报告当前页面的刷新情况）'
+  const head = refreshing ? '正在刷新…' : '当前没有正在进行的刷新'
+  if (lastSuccessAt === undefined) return `${head}｜这一页还没有成功取到过数据`
+  return `${head}｜最后刷新 ${new Date(lastSuccessAt).toLocaleTimeString('zh-CN', { hour12: false })}｜共 ${String(sources)} 个数据源`
+})
 
 const pageTitle = computed(() => (typeof route.meta.title === 'string' ? route.meta.title : 'DSH-ForLife 控制台'))
 
@@ -113,6 +140,20 @@ async function onLogout(): Promise<void> {
         </button>
         <h1 class="page-title">{{ pageTitle }}</h1>
         <span class="spacer" />
+        <!--
+          刷新指示器 + 最后刷新时间（用户 2026-10-09 要求）。
+
+          ⚠️ **不许改变自身尺寸**：这里是顶栏，任何宽高变化都会把标题和整个内容区推一下
+          —— 那正是用户报的"刷新时界面跳动"。所以：
+           - 图标只在 `data-refreshing` 时**转 + 变色**（transform / color 不参与布局）；
+           - 时间文案每秒都在变，所以给它 `min-width` + `tabular-nums`（见样式），
+             宽度由 CSS 固定，不由文字长度决定。
+        -->
+        <div class="refresh" :data-refreshing="activity.refreshing" :title="refreshTitle">
+          <AppIcon name="refresh" :size="15" class="refresh-icon" />
+          <span class="refresh-label">最后刷新</span>
+          <span class="refresh-age">{{ lastRefreshText }}</span>
+        </div>
         <slot name="topbar-actions" />
       </header>
 
@@ -349,6 +390,44 @@ async function onLogout(): Promise<void> {
   font-weight: 600;
 }
 
+/* ── 顶栏的刷新指示器 + 最后刷新时间 ─────────────────────────────
+ *
+ * 关键约束：**这一块在任何状态下都必须占同样的宽高**。
+ * 顶栏是 sticky 的，它一变尺寸，下面的内容区就跟着挪 —— 用户报的"刷新时跳动"
+ * 正是这么来的。所以：
+ *  - "正在刷新"只表达为**颜色 + 旋转**（两者都不参与布局，不会 reflow）；
+ *  - 时间文案的宽度交给 `min-width`，不交给文字长度。
+ */
+.refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+  color: var(--c-text-3);
+  font-size: var(--t-xs);
+  white-space: nowrap;
+}
+.refresh-icon {
+  flex: none;
+}
+.refresh[data-refreshing='true'] {
+  color: var(--c-brand);
+}
+.refresh[data-refreshing='true'] .refresh-icon {
+  /* 复用启动态那个 `spin`（同一个 scoped 样式块里已定义） */
+  animation: spin 900ms linear infinite;
+}
+.refresh-age {
+  /* ★ 固定宽度 + 等宽数字：文案每秒都在变（"刚刚" → "12 秒前" → "13:45:02"），
+     宽度不定的话它会一直推挤左边的"最后刷新"，整条顶栏跟着抖。
+     5.5em 按最长的那几种写法留（"59 分钟前" ≈ 5 个全角字符）。 */
+  display: inline-block;
+  min-width: 5.5em;
+  text-align: right;
+  color: var(--c-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .icon-btn {
   display: grid;
   place-items: center;
@@ -404,6 +483,17 @@ async function onLogout(): Promise<void> {
   }
   .content {
     padding: var(--s-4) var(--s-3);
+  }
+}
+
+/* 更窄的屏幕上顶栏放不下"最后刷新"这四个字：只留图标 + 时间。
+   注意这条只在**断点**上生效，不会随刷新状态变化 —— 所以不会造成刷新时的跳动。 */
+@media (max-width: 640px) {
+  .refresh-label {
+    display: none;
+  }
+  .refresh-age {
+    min-width: 4.5em;
   }
 }
 

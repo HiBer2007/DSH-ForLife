@@ -66,11 +66,73 @@ const chartSeries = computed(() => {
 
 const data = computed(() => state.data.value)
 
+/** 指标卡的一格（`health` / `vitals` 共用同一个形状）。 */
+interface Card {
+  readonly label: string
+  readonly value: string
+  readonly tone: 'neutral' | 'ok' | 'warn' | 'err'
+  readonly icon?: string
+  readonly hint: string
+}
+
+/**
+ * DSH 后端状态卡（★ 2026-10-09：这个字段**以前前端根本没显示**）。
+ *
+ * ## 为什么它必须在这一排、而且排第一
+ *
+ * 这一排回答的是"**现在要不要动手**"。而"DSH 挂了"是这里**唯一**一个
+ * 面板上别处看不出来的故障：QQ 在收消息、库在写、图表在动，只有模型那一侧没在跑。
+ * 数据链修好之前，这个字段在 gateway 那边被展开进了 `time` 对象里，
+ * 前端连类型都没有 —— 于是"DSH 状态未知"永远显示，等于没做。
+ *
+ * ## 为什么是四态而不是两态
+ *
+ * `dsh === undefined`（服务端这一轮没给）、`reachable === undefined`（**没配 URL，
+ * 无法判断**）、`reachable === false`（配了但连不上）、`reachable === true`。
+ * 把"没配"和"连不上"合成一个，用户会去查一个根本不存在的东西
+ * （`dsh-status.ts` 的模块注释里就是这么定性的）。
+ */
+function dshCard(dsh: Overview['dsh']): Card {
+  if (dsh === undefined) {
+    return {
+      label: 'DSH 后端',
+      value: '未知',
+      tone: 'neutral',
+      icon: 'external',
+      hint: '这次总览没有带 DSH 状态（gateway 那一轮没探）',
+    }
+  }
+  const where = dsh.url ?? '未配置 FORLIFE_DSH_URL'
+  if (dsh.reachable === undefined) {
+    return {
+      label: 'DSH 后端',
+      value: '未配置',
+      tone: 'neutral',
+      icon: 'external',
+      hint: `${where} · 无法判断 DSH 是否在跑（**不是**"连不上"）`,
+    }
+  }
+  if (!dsh.reachable) {
+    const latency = dsh.latencyMs === undefined ? '' : ` · ${String(dsh.latencyMs)} ms`
+    return {
+      label: 'DSH 后端',
+      value: '连不上',
+      tone: 'err',
+      icon: 'warning',
+      hint: `${where}${latency} · 模型那一侧可能没在跑`,
+    }
+  }
+  const latency = dsh.latencyMs === undefined ? '' : ` · ${String(dsh.latencyMs)} ms`
+  return { label: 'DSH 后端', value: '在线', tone: 'ok', icon: 'external', hint: `${where}${latency}` }
+}
+
 /** 第一排：要不要现在动手。 */
-const health = computed(() => {
+const health = computed<Card[]>(() => {
   const d = data.value
   if (d === undefined) return []
   return [
+    // ★ DSH 排第一：它挂了的时候，下面每一张卡看起来都还是正常的
+    dshCard(d.dsh),
     {
       label: 'QQ 连接',
       // undefined = 本服务没接管连接（不知道），不能当成"离线"来吓人
@@ -106,6 +168,18 @@ const health = computed(() => {
   ]
 })
 
+/**
+ * 「窗口丢弃」卡的副标题：丢了几条、是不是撞到**条数**上限、以及两个预算。
+ *
+ * 为什么单独抽一个函数：这段有三个条件分支，塞进 `computed` 里就会变成
+ * 模板字面量套模板字面量 —— 本仓约定**不嵌套反引号**（少看一个反引号就整段跑偏）。
+ */
+function windowDropHint(memory: Overview['memory']): string {
+  const head = `${formatNumber(memory.windowDroppedEntries)} 条出窗`
+  const byCount = memory.windowDroppedByCount > 0 ? `，其中 ${formatNumber(memory.windowDroppedByCount)} 条撞条数上限` : ''
+  return `${head}${byCount} · 预算 ${formatTokens(memory.windowMaxTokens)} / ${formatNumber(memory.windowMaxCount)} 条`
+}
+
 /** 第二排：体检数据。 */
 const vitals = computed(() => {
   const d = data.value
@@ -113,9 +187,22 @@ const vitals = computed(() => {
   const total = d.routing.total24h
   return [
     {
+      // ★ 2026-10-09：「活跃 token」= **窗口口径**（真正进系统提示词的量）。
+      // 之前这里读的是 `activeTokens`（**全表** SUM，真机 1,505k），
+      // 而窗口实际只放进去一小段 —— 数字对不上时用户会以为窗口没生效。
+      // 全表那个数**没删**，挪到副标题里：它是诊断口径，排障时要看的就是它。
       label: '活跃 token',
-      value: formatTokens(d.memory.activeTokens),
-      hint: `碎片 ${formatTokens(d.memory.fragmentTokens)}`,
+      value: formatTokens(d.memory.windowTokens),
+      hint: `窗口内 ${formatNumber(d.memory.windowEntries)} 条 · 全表 ${formatTokens(d.memory.activeTokens)}`,
+    },
+    {
+      // 新增（用户裁定 ④ 的"暴露窗口丢弃了多少"）：窗口丢了多少 token / 多少条。
+      // tone 用 warn 而不是 err：丢弃是**正常**的容量管理，只有撞条数上限才是畸形信号
+      // （那种情况副标题会写出来）。
+      label: '窗口丢弃',
+      value: formatTokens(d.memory.windowDroppedTokens),
+      tone: d.memory.windowDroppedEntries > 0 ? ('warn' as const) : ('ok' as const),
+      hint: windowDropHint(d.memory),
     },
     {
       label: '记忆条目',
@@ -332,6 +419,14 @@ const dbLine = computed(() => {
               <div>
                 <dt>时钟漂移</dt>
                 <dd>{{ data.time.driftMs === undefined ? '—' : `${data.time.driftMs} ms` }}</dd>
+              </div>
+              <!-- ★ DSH 的细节：上面那张卡只给结论，这里给"是哪个地址、桥配没配"。 -->
+              <div v-if="data.dsh">
+                <dt>DSH 探测</dt>
+                <dd>
+                  {{ formatRelative(data.dsh.at) }}
+                  <span class="muted"> · 唤醒桥 {{ data.dsh.wakeBridgeConfigured ? '已配置' : '未配置' }}</span>
+                </dd>
               </div>
               <div>
                 <dt>已运行</dt>

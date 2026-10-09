@@ -131,7 +131,9 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
     description:
       '给自己安排一次未来的唤醒（到某个时间点做一件事）。' +
       '一次性用 delaySeconds（多少秒后）或 at（具体时刻）；重复用 everySeconds（每多少秒）。' +
-      '最小 60 秒。**如果你要的是"某个条件成立时"而不是"某个时间点"，用 register_watcher** —— ' +
+      '最小 60 秒。**必须给 scope**：唤醒要送到某个会话才有地方可去 —— ' +
+      '不给的话到点会被判成"无处唤醒"，你写的事不会有人做（详见 scope 参数说明）。' +
+      '**如果你要的是"某个条件成立时"而不是"某个时间点"，用 register_watcher** —— ' +
       '用定时轮询去模拟监视既费钱又慢。',
     parameters: {
       title: { type: 'string', required: true, description: '给这次唤醒起个短标题（列表里显示）。' },
@@ -143,7 +145,12 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       delaySeconds: { type: 'number', description: '多少秒后触发一次（一次性）。最小 60。' },
       everySeconds: { type: 'number', description: '每多少秒触发一次（重复）。最小 60。' },
       at: { type: 'string', description: '具体时刻（ISO 8601）。必须是未来时间。' },
-      scope: { type: 'string', description: '要唤醒哪个会话；不给表示与具体会话无关。' },
+      scope: {
+        type: 'string',
+        description:
+          '要唤醒哪个会话（如 onebot11:88888）。⚠️ **不给 = 这次唤醒没有地方可去**：' +
+          '到点引擎会判它"无处唤醒（scope=*）"，你写的事不会有人做，只在列表里留一条记录。',
+      },
       dailyLimit: { type: 'number', description: '每天最多醒几次（0 或省略 = 不限）。防刷屏用。' },
       minIntervalMs: { type: 'number', description: '两次唤醒之间的最小间隔（毫秒），防抖。' },
     },
@@ -195,7 +202,9 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
     description:
       '登记一个**条件监视**：某个条件成立时唤醒你（文件出现 / 文件内容变化 / 端口通了 / 命令输出匹配）。' +
       '它不是定时的 —— 它盯着，一有变化就叫你（秒级），比定时轮询既快又省。' +
-      '要写一个监视脚本（放工作区里），登记后由监督器常驻运行、崩溃会自动重启。',
+      '要写一个监视脚本（放工作区里），登记后交给**网关侧的监督器**负责运行。' +
+      '⚠️ 监督器**是否已经启用取决于部署**：登记成功只代表"记下来了"，' +
+      '别把"我在盯着"当成事实说出口。',
     parameters: {
       name: { type: 'string', required: true, description: '监视程序的名字（唯一）。' },
       path: { type: 'string', required: true, description: '脚本在工作区里的相对路径。' },
@@ -207,7 +216,12 @@ export function buildWakeTools(defineTool: DefineToolLike, runtime: MemoryRuntim
       },
       title: { type: 'string', required: true, description: '给这个监视起个短标题。' },
       prompt: { type: 'string', required: true, description: '被唤醒后你自己要做什么。' },
-      scope: { type: 'string', description: '要唤醒哪个会话；不给表示与具体会话无关。' },
+      scope: {
+        type: 'string',
+        description:
+          '要唤醒哪个会话（如 onebot11:88888）。⚠️ **不给 = 监视触发了也没有地方可去**：' +
+          '监视源会判它"没有绑定会话（scope=*）"并跳过，事件不会有人处理。',
+      },
       dailyLimit: { type: 'number', description: '每天最多醒几次（0 或省略 = 不限）。' },
     },
     output: {

@@ -82,6 +82,36 @@ function inertTransport(): { transport: QqTransport; sent: unknown[] } {
     async deleteMessage() {
       return { ok: true }
     },
+    // 合并转发 / 请求 / 列表（阶段 3 补齐的接口）—— 这个假传输层**只记录、不做事**，
+    // 后台对话路径压根不该碰它们，所以全部返回"什么都不做"的成功。
+    async sendForward() {
+      return { ok: true }
+    },
+    async getForward() {
+      return undefined
+    },
+    async handleFriendRequest() {
+      return { ok: true }
+    },
+    async handleGroupRequest() {
+      return { ok: true }
+    },
+    async listFriends() {
+      return undefined
+    },
+    async listGroups() {
+      return undefined
+    },
+    async listGroupMembers() {
+      return undefined
+    },
+    // 入站媒体取回（P1-2 / P2-b）—— 同上：后台对话路径压根不该碰它们
+    async fetchPttText() {
+      return { ok: false, error: '假传输层没有语音转写' }
+    },
+    async getFileInfo() {
+      return undefined
+    },
   }
   return { transport, sent }
 }

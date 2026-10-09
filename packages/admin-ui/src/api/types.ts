@@ -90,6 +90,36 @@ export interface SessionInfo {
   readonly expiresAt?: string
 }
 
+/**
+ * DSH 后端探测结果（`packages/gateway/src/dsh-status.ts` 的 `DshStatus` 的前端镜像）。
+ *
+ * **为什么总览必须有它**：gateway 与 DSH 是**两个进程**、共享一个库。DSH 挂了时
+ * 面板看起来一切正常（QQ 在收、库在写、图表在动），但模型那一侧根本没在跑。
+ *
+ * ⚠️ 三个状态必须分开表达，混成一个布尔就白做了：
+ *  - 字段**缺席**（`overview.dsh === undefined`）= 服务端没探（旧版接口 / 探针被删）；
+ *  - `reachable === undefined` = **没配 URL，无法判断**（不是"连不上"）；
+ *  - `reachable === false` = **配了但连不上**。
+ */
+export interface DshStatus {
+  /** `undefined` = 未配置，**无法判断**（不是"连不上"）。 */
+  readonly reachable: boolean | undefined
+  /** HTTP 状态码（可达时有）。 */
+  readonly status?: number
+  readonly latencyMs?: number
+  readonly error?: string
+  /** 这次探测的时刻（ISO）。 */
+  readonly at: string
+  /** 配置的 DSH web 地址（未配则 undefined）。 */
+  readonly url: string | undefined
+  /** 唤醒桥是否已配置（gateway 侧发唤醒的前提）。 */
+  readonly wakeBridgeConfigured: boolean
+  /** 唤醒桥地址（未配时整个字段不出现）。 */
+  readonly wakeBridgeUrl?: string
+  /** 给人看的一句话结论（已含"该怎么理解"）。 */
+  readonly note: string
+}
+
 /** `GET /api/admin/overview` —— 运行总览。 */
 export interface Overview {
   /** 服务端生成这份数据的时刻（ISO）。 */
@@ -107,11 +137,29 @@ export interface Overview {
   readonly memory: {
     readonly epoch: number
     readonly revision: number
+    /** **全表**口径：active 条目数（不等于进上下文的条数）。 */
     readonly activeEntries: number
+    /** **全表**口径：碎片条目数。 */
     readonly fragmentEntries: number
     readonly longEntries: number
+    /** **全表**口径：active 的 token 之和（诊断用；真机曾达 1,505k）。 */
     readonly activeTokens: number
+    /** **全表**口径：碎片的 token 之和。 */
     readonly fragmentTokens: number
+    /** **窗口**口径：真正进系统提示词的条目数。 */
+    readonly windowEntries: number
+    /** **窗口**口径：真正进系统提示词的 token 之和 —— 「活跃 token」显示的是它。 */
+    readonly windowTokens: number
+    /** 被窗口丢掉的条目数。 */
+    readonly windowDroppedEntries: number
+    /** 被窗口丢掉的 token 之和。 */
+    readonly windowDroppedTokens: number
+    /** 其中由**条数上限**造成的条数（0 ⇒ token 预算在生效）。 */
+    readonly windowDroppedByCount: number
+    /** 窗口的 token 预算（基线 `memory.midWindow.maxTokens`）。 */
+    readonly windowMaxTokens: number
+    /** 窗口的条数上限（基线 `memory.midWindow.maxCount`）。 */
+    readonly windowMaxCount: number
     readonly lastWriteAt?: string
   }
   readonly compaction: {
@@ -132,6 +180,14 @@ export interface Overview {
     readonly lastInboundAt?: string
     readonly lastTurnAt?: string
   }
+  /**
+   * DSH 后端连接状态（**整段缺席** = 服务端这一轮没探到，界面显示"未知"）。
+   *
+   * ⚠️ 必须渲染它：这个字段存在的**全部理由**就是"**DSH 挂了时面板看起来一切正常**"。
+   * 声明了却不显示，等于白探 —— 2026-10-09 修的就是这条数据链（服务端那边它一度
+   * 被展开进了 `time` 对象里，前端这边压根没声明）。
+   */
+  readonly dsh?: DshStatus
   readonly routing: {
     readonly endpoints: number
     readonly healthyEndpoints: number

@@ -68,9 +68,13 @@ import {
   renderMidMemory,
   selectMidWindow,
   textSimilarity,
+  type MidWindowResult,
   type RenderedView,
 } from '@forlife/memory-core'
 import { defaultFor } from '@forlife/contracts'
+// 投喂期的「工作模式」文本：真源在 gateway 那一侧（与工具返回、CLI 输出共用同一份措辞），
+// 这里只把它接到提示段上（导入改名以免与方法同名 —— 同名不算错，但读的人会以为在递归）
+import { feedModeText as renderFeedModeText } from '@forlife/gateway'
 
 import type { ForlifeConfig } from './config.ts'
 
@@ -272,6 +276,16 @@ export class MemoryRuntime {
   private readonly config: ForlifeConfig
   private readonly logger: (message: string) => void
   private cache: { readonly key: string; readonly view: RenderedView } | undefined
+  /**
+   * **窗口**选取结果的缓存（键与 `cache` 同源，与它同时写入）。
+   *
+   * 为什么单独留一份：`stats()`（面板）必须报**窗口口径**的数字，
+   * 而它得与 `renderView()` 真正渲染的那一段**同源** —— 各自选一次窗口虽然
+   * 在纯函数上结果相同，但"面板说窗口里 30 条、实际渲染了 29 条"这种偏差
+   * 一旦出现就再也解释不清（本仓已经吃过"面板数字与生效值不一致"的亏）。
+   * 所以窗口**只选一次**，两处共用。
+   */
+  private windowCache: { readonly key: string; readonly window: MidWindowResult } | undefined
   /** 上下文上限（用于算"短期占比"）。配置优先，其次基线默认值。 */
   private get contextWindowTokens(): number {
     return this.config.contextWindowTokens > 0
@@ -335,22 +349,25 @@ export class MemoryRuntime {
    * 才触发，上下文一开始就爆 ⇒ **压缩永远不触发**（`compaction_epoch` 恒为 0、
    * 长期记忆恒为空）—— 四层记忆流水线第一层就堵死。
    *
-   * 现在按基线 `memory.midWindow.maxTokens` **从最新往回**取（选取规则与排序键的理由
-   * 写在 `selectMidWindow()` 的模块头：`window_offset` 是**按 epoch 分桶**的，
-   * 只看它会把"压缩刚 push 的条目"判成最旧、第一批丢掉）。
-   * 预算读基线、**不在这里写死数字**；丢了东西**不静默**（verbose 时如实报数）。
+   * 现在按基线 `memory.midWindow.maxTokens`（**内容**预算）与 `memory.midWindow.maxCount`
+   * （**条数**防呆上限）**从最新往回**取（选取规则与排序键的理由写在 `selectMidWindow()`
+   * 的模块头：`window_offset` 是**按 epoch 分桶**的，只看它会把"压缩刚 push 的条目"
+   * 判成最旧、第一批丢掉）。两个预算都读基线、**不在这里写死数字**；
+   * 丢了东西**不静默**（verbose 时如实报数，并说清是撞到哪个约束）。
    */
   renderView(): RenderedView {
     const key = `${String(this.epoch())}:${String(this.revision())}`
     if (this.cache !== undefined && this.cache.key === key) return this.cache.view
     const entries = listRenderableMidEntries(this.db)
     const maxTokens = defaultFor<number>('memory.midWindow.maxTokens')
-    const window = selectMidWindow(entries, { maxTokens })
+    const maxCount = defaultFor<number>('memory.midWindow.maxCount')
+    const window = selectMidWindow(entries, { maxTokens, maxCount })
     if (this.config.verbose && window.droppedCount > 0) {
+      const countNote = window.droppedByCount > 0 ? `，其中 ${String(window.droppedByCount)} 条是撞到条数上限` : ''
       this.log(
         `中期窗口：进 ${String(window.entries.length)} 条 / ${String(window.tokens)} token，` +
           `丢下 ${String(window.droppedCount)} 条 / ${String(window.droppedTokens)} token` +
-          `（表共 ${String(entries.length)} 条；预算 ${String(maxTokens)} token）`,
+          `（表共 ${String(entries.length)} 条；预算 ${String(maxTokens)} token / ${String(maxCount)} 条${countNote}）`,
       )
     }
     const now = new Date() // 只在缓存刷新时取一次，随后冻结在文本里
@@ -360,12 +377,53 @@ export class MemoryRuntime {
       now,
     })
     this.cache = { key, view }
+    // 与 cache **同时**写入 —— 见 windowCache 的说明：两处必须同源
+    this.windowCache = { key, window }
     return view
+  }
+
+  /**
+   * 当前的中期**窗口**选取结果（面板/诊断用；与 `renderView()` 同源）。
+   *
+   * 面板过去显示的是 `midStats()` 的**全表** `activeTokens`（真机 1,505k），
+   * 而真正进上下文的是窗口里那一段 —— 两者差着 15 倍时，用户会以为窗口没修好。
+   * 所以这个数字必须由**渲染器同一份**选取给出，不能另算一遍。
+   *
+   * 实现上刻意**不复制**选取逻辑：先确保 `renderView()` 已经把 `windowCache` 填成
+   * 当前 `(epoch, revision)` 的那一份（它自带缓存，重复调用是廉价的）。
+   */
+  midWindow(): MidWindowResult {
+    const key = `${String(this.epoch())}:${String(this.revision())}`
+    if (this.windowCache === undefined || this.windowCache.key !== key) this.renderView()
+    const cached = this.windowCache
+    if (cached === undefined || cached.key !== key) {
+      // `renderView()` 必然填 windowCache；走到这里说明两处的缓存键算法漂了。
+      // 宁可报错，也不返回一个可能骗人的数字（本仓纪律：不静默）。
+      throw new Error('midWindow()：窗口缓存没有随 renderView() 刷新（两处缓存键不一致？）')
+    }
+    return cached.window
   }
 
   /** L2 段的文本（用户可编辑，直接来自配置）。 */
   l2Text(): string {
     return this.config.l2IndexText
+  }
+
+  /**
+   * 投喂期的「工作模式」段文本（**没有在投喂就是严格的空串**）。
+   *
+   * 为什么单独一段而不是并进 L3：见 `prompt.ts` 的 `FEED_MODE_ORDER` 说明
+   * （核心是"不动 `renderView()` 的缓存契约"）。
+   *
+   * 为什么读库而不是读内存里的标志：投喂的四条入口分属**不同进程** ——
+   * CLI 与 gateway 后台那两条根本不在这个进程里，只有把状态落在
+   * `forlife_state` 上，模型那一侧才看得见（见 `feed-session.ts` 的模块头）。
+   *
+   * ⚠️ 空闲时必须返回**严格空串**：真机实测过宿主对空段是"整段跳过"（渲染字节不变），
+   * 但**只含空白的串会被原样插进提示词** —— 那会白白改掉稳定前缀。
+   */
+  feedModeText(): string {
+    return renderFeedModeText(this.db)
   }
 
   /** 写一条中期记忆（append 协议：表 + 修订号同事务）。 */
@@ -484,13 +542,7 @@ export class MemoryRuntime {
       const mid = searchMidFts(this.db, query, maxResults)
       for (const entry of mid) touchMidEntry(this.db, entry.id)
       if (mid.length > 0) {
-        return this.recallResult(
-          [],
-          maxPerTurn,
-          maxPerCycle,
-          maxResults,
-          `长期记忆无命中；中期记忆里有 ${String(mid.length)} 条相关，但它们已在当前上下文中，无需检索。`,
-        )
+        return this.recallResult([], maxPerTurn, maxPerCycle, maxResults, this.midFallbackNote(mid))
       }
       return this.recallResult(
         [],
@@ -501,6 +553,58 @@ export class MemoryRuntime {
       )
     }
     return this.recallResult(entries, maxPerTurn, maxPerCycle, maxResults)
+  }
+
+  /**
+   * "长期记忆无命中、但中期记忆里有"时，给模型的那句话。
+   *
+   * ## ★ 2026-10-09 修：以前这句是**静默的谎**
+   *
+   * 原文案（`runtime.ts:492`）是：
+   * 「长期记忆无命中；中期记忆里有 N 条相关，**但它们已在当前上下文中，无需检索**。」
+   *
+   * 在**有窗口之前**这话确实成立：`renderView()` 把 `listRenderableMidEntries()` 整张表
+   * 渲染进前缀，中期条目条条都在上下文里。窗口（`memory.midWindow.maxTokens`）落地之后，
+   * **窗口外的条目既不在上下文、正文也永不返回** —— 那句话就变成了一句
+   * "听起来很确定、实际是错的"断言：模型会据此认为"这条信息我已经有了"，
+   * 然后凭一个窗口里根本没有的印象作答。**假绿比报错更贵**（本仓的纪律）。
+   *
+   * ## 现在的判据与措辞
+   *
+   * 判据只有一条：命中**在不在窗口里**（`midWindow()` —— 与 `renderView()` 同源的那份选取）。
+   *  - **全在窗口内** ⇒ 原话仍然成立，照说。（`renderView()` 渲染的是 active 的 `summary`
+   *    与碎片的 `fragment_hint`，所以窗口内条目的**摘要/指针**确实在上下文里）；
+   *  - **有落在窗口外的** ⇒ **如实分述**：窗口内几条（那些无需检索）、
+   *    窗口外几条（**摘要与正文都不在你眼前，本次检索也取不回来**）。
+   *
+   * ## ⚠️ 刻意**不**承诺一条不存在的回填路径
+   *
+   * 用户给的措辞示例是"可用 X 回填全文"。本仓**现在没有**这个 X：
+   *  - `recall_full` 取的是**溢出工具结果**的全文（spill），不是中期条目；
+   *  - `recover(id)` 只处理**长期**冷层条目，且返回的是字数与状态，不含正文；
+   *  - `recall_longterm` 自己就是这里失败的那条路（长期库零命中）。
+   *
+   * 所以这里**只陈述事实、不给假承诺** —— 编一个"可以用 X 取回"会换来同一形状的第二次谎。
+   * 真要给一条回填路径，得先有"按 id 取中期条目正文"的工具（见交付报告里的待定项）。
+   */
+  private midFallbackNote(hits: readonly MidEntryRow[]): string {
+    const inWindow = new Set(this.midWindow().entries.map((entry) => entry.id))
+    const inside = hits.filter((entry) => inWindow.has(entry.id)).length
+    const outside = hits.length - inside
+    if (outside === 0) {
+      return `长期记忆无命中；中期记忆里有 ${String(hits.length)} 条相关，它们已在当前上下文中，无需检索。`
+    }
+    if (inside === 0) {
+      return (
+        `长期记忆无命中；中期记忆里有 ${String(hits.length)} 条相关，但它们**都已滑出当前上下文窗口**：` +
+        '摘要与正文都不在你眼前，本次检索也取不回来。不要把窗口外的内容当成「你记得」来作答。'
+      )
+    }
+    return (
+      `长期记忆无命中；中期记忆里有 ${String(hits.length)} 条相关：其中 ${String(inside)} 条在当前上下文（窗口内），无需检索；` +
+      `另有 ${String(outside)} 条**已经滑出当前上下文窗口** —— 摘要与正文都不在你眼前，本次检索也取不回来。` +
+      '不要把窗口外的内容当成「你记得」来作答。'
+    )
   }
 
   /**
@@ -794,24 +898,63 @@ export class MemoryRuntime {
     return bumpEpoch(this.db)
   }
 
-  /** 统计（面板与诊断用）。 */
+  /**
+   * 统计（面板与诊断用）。
+   *
+   * ## ★ 两套口径**都要有**，而且必须标清楚（2026-10-09）
+   *
+   * `activeCount` / `activeTokens` / `fragmentCount` / `fragmentTokens` 来自 `midStats()`
+   * —— 那是**全表**口径（表里有多少）。它**不能删**：压缩裁决的 `midTokens`
+   * （`tools.ts`）、碎片化规划 `planFragmentation()`、§5.3 的碎片占比看的都是全表。
+   *
+   * `window*` 是**窗口**口径（真正进系统提示词的那一段）。面板过去只显示全表，
+   * 于是真机 1,505k 的"活跃 token"看着像没修好 —— 而实际进上下文的只有窗口里那些。
+   * 两个数一起给，才不会互相冒充。
+   */
   stats(): {
     readonly epoch: number
     readonly revision: number
+    /** 全表口径：`status='active'` 的条目数（**不是**进上下文的条数）。 */
     readonly activeCount: number
+    /** 全表口径：碎片条目数。 */
     readonly fragmentCount: number
+    /** 全表口径：`status='active'` 的 token 之和。 */
     readonly activeTokens: number
+    /** 全表口径：碎片的 token 之和。 */
     readonly fragmentTokens: number
+    /** **窗口**口径：真正进上下文的条目数。 */
+    readonly windowEntries: number
+    /** **窗口**口径：真正进上下文的 token 之和。 */
+    readonly windowTokens: number
+    /** 被窗口丢掉的条目数（`windowDroppedByCount` 是其中撞到条数上限的那部分）。 */
+    readonly windowDroppedEntries: number
+    /** 被窗口丢掉的 token 之和。 */
+    readonly windowDroppedTokens: number
+    /** `windowDroppedEntries` 里**由条数上限造成**的条数（0 ⇒ 是 token 预算在生效）。 */
+    readonly windowDroppedByCount: number
+    /** 窗口的 token 预算（基线 `memory.midWindow.maxTokens`）。 */
+    readonly windowMaxTokens: number
+    /** 窗口的条数上限（基线 `memory.midWindow.maxCount`）。 */
+    readonly windowMaxCount: number
     readonly renderedTokens: number
     readonly renderedSha256: string
     readonly violations: readonly string[]
   } {
     const view = this.renderView()
     const mid = midStats(this.db)
+    // 与 renderView() 同源的那一份窗口选取（见 midWindow()）
+    const window = this.midWindow()
     return {
       epoch: this.epoch(),
       revision: this.revision(),
       ...mid,
+      windowEntries: window.entries.length,
+      windowTokens: window.tokens,
+      windowDroppedEntries: window.droppedCount,
+      windowDroppedTokens: window.droppedTokens,
+      windowDroppedByCount: window.droppedByCount,
+      windowMaxTokens: defaultFor<number>('memory.midWindow.maxTokens'),
+      windowMaxCount: defaultFor<number>('memory.midWindow.maxCount'),
       renderedTokens: view.tokenEstimate,
       renderedSha256: view.sha256,
       violations: view.violations,

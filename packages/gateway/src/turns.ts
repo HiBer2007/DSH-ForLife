@@ -160,8 +160,16 @@ export interface TurnRunnerOptions {
   readonly driver: TurnDriver
   /** 唤醒判定作用域解析（群/私聊各自的 scope）。 */
   readonly scopeOf: (conversation: ConversationRef) => string
-  /** 唤醒条件解析（由调用方按消息特征判断：@我 / @全体 / 拍一拍 / 普通消息）。 */
-  readonly conditionOf: (messages: readonly InboundMessage[]) => WakeRequest['condition']
+  /** 唤醒条件解析（由调用方按消息特征判断：@我 / @全体 / 拍一拍 / 普通消息 / 回复我）。 */
+  readonly conditionOf: (messages: readonly InboundMessage[], context: ConditionContext) => WakeRequest['condition']
+  /**
+   * 「这条 id 是不是我发的」判定（`reply_to_me` 要用）。
+   *
+   * 默认由 `TurnRunner` 从 `qq_outbox.platform_msg_id` 查（`selfMessageIdDetector`）；
+   * 测试可以注入一个集合替身。**不能省成 undefined 就当没有** ——
+   * 那样 `reply_to_me` 又会变成一条永远不触发的规则（这正是本次要修的问题）。
+   */
+  readonly isSelfMessageId?: (messageId: string) => boolean
   /** 日志。 */
   readonly log?: (message: string) => void
   /** 随机数（测试注入）。 */
@@ -215,10 +223,27 @@ export class TurnRunner {
   private readonly log: (message: string) => void
   /** 最近一批被过滤掉的噪音条数（诊断用）。 */
   private lastNoiseCount = 0
+  /**
+   * 条件判定上下文（**延迟建、只建一次**）。
+   *
+   * 为什么延迟：`selfMessageIdDetector` 要预编译一条 SQL；而 `isSelfMessageId`
+   * 可能被注入（测试），那种情况下根本不该碰库。
+   */
+  private conditionContextCache: ConditionContext | undefined
 
   constructor(options: TurnRunnerOptions) {
     this.options = options
     this.log = options.log ?? ((): void => {})
+  }
+
+  /** 取条件判定上下文（含"我发过哪些 id"的判定）。 */
+  private conditionContext(): ConditionContext {
+    if (this.conditionContextCache !== undefined) return this.conditionContextCache
+    const injected = this.options.isSelfMessageId
+    const context: ConditionContext =
+      injected !== undefined ? { isSelfMessageId: injected } : { isSelfMessageId: selfMessageIdDetector(this.options.db) }
+    this.conditionContextCache = context
+    return context
   }
 
   /**
@@ -291,7 +316,8 @@ export class TurnRunner {
     const effective = survivors
 
     const scope = this.options.scopeOf(first.conversation)
-    const condition = this.options.conditionOf(effective)
+    // ★ 条件解析要带上上下文：`reply_to_me` 必须知道"这条 id 是不是我发的"
+    const condition = this.options.conditionOf(effective, this.conditionContext())
     const key = conversationKey(first.conversation)
     const summary = effective.map((m) => `${m.senderName || m.senderId}: ${m.text}`).join(' / ')
 
@@ -489,10 +515,33 @@ function latestAt(messages: readonly InboundMessage[]): string | undefined {
 /**
  * 按消息特征判定唤醒条件（**条件互不派生**，这里只做"输入是什么"的映射）。
  *
+ * ## `reply_to_me` 的判据（★ 2026-10-09 补：这条以前**没有生产者**）
+ *
+ * 判据是：**这批消息里有哪一条，它的 `replyToMessageId` 指向我们自己发出去的消息**。
+ *
+ * 三个必须说清的点：
+ *  1. **"是不是我发的"要靠 `qq_outbox.platform_msg_id` 反查**。
+ *     NapCat 的 `reply` 段只给被引用消息的 `id`（`onebot.ts` 把 id 带出来，见 §P0-4），
+ *     **它不告诉我们那条是谁发的** —— 所以只能拿我们自己发出去的消息 id 去比。
+ *     一行的入站事件里没有任何字段能做这件事。
+ *  2. **只在群里会走到这一支**：私聊/临时会话的 `mentionedMe` 恒为 true
+ *     （`onebot.ts` 的"对方就是在找我说话"），所以那两个类型在前面就返回了。
+ *     这也正是想要的：私聊本身已经是最高优先的唤醒条件，不需要再分"是不是回复"。
+ *  3. **优先级排在 `@我` 之后、`@全体` 之前**：`@我` 是直接点名，
+ *     而"回复我"同样是**针对我**的（`scheduler.ts` 给它的优先级 60 也高于 `@全体` 的 40）；
+ *     `@全体` 只是"顺带包含我"，所以排在后面。
+ *
+ * 没有 `isSelfMessageId` 时（例如单测直接调、或只想知道"@没@我"）本函数**不产出**
+ * `reply_to_me` —— 与补这一条之前的行为一致，不会凭空多出一个条件。
+ *
  * @param messages - 本批消息。
+ * @param context - 判定上下文（`isSelfMessageId` 由 `TurnRunner` 从库里查）。
  * @returns 唤醒条件。
  */
-export function defaultConditionOf(messages: readonly InboundMessage[]): WakeRequest['condition'] {
+export function defaultConditionOf(
+  messages: readonly InboundMessage[],
+  context: ConditionContext = {},
+): WakeRequest['condition'] {
   const first = messages[0]
   if (first === undefined) return 'group_message_any'
   // 只要有一条 @我，就按 @我（最明确的信号优先）
@@ -501,11 +550,57 @@ export function defaultConditionOf(messages: readonly InboundMessage[]): WakeReq
     if (first.conversation.kind === 'group') return 'group_mention'
     return first.conversation.kind === 'temp' ? 'temp_message' : 'private_message'
   }
+  // ★ P0-4 的下半段：上游把 `reply.data.id` 带出来了，这里判"是不是在回我"
+  if (messages.some((m) => m.replyToMessageId !== undefined && context.isSelfMessageId?.(m.replyToMessageId) === true)) {
+    return 'reply_to_me'
+  }
   if (messages.some((m) => m.mentionedAll)) return 'group_mention_all'
   if (messages.some((m) => m.mediaKind === 'file')) return 'file_received'
   if (messages.some((m) => m.mediaKind !== undefined)) return 'media_received'
   if (first.conversation.kind === 'group') return 'group_message_any'
   return first.conversation.kind === 'temp' ? 'temp_message' : 'private_message'
+}
+
+/** `defaultConditionOf` 的判定上下文。 */
+export interface ConditionContext {
+  /**
+   * 这条消息 id 是不是**我们自己发出去**的（`reply_to_me` 的唯一依据）。
+   *
+   * 为什么做成回调而不是直接传 `db`：这一层是纯映射（可单测、无 IO），
+   * 而"我发过哪些 id"是一次库查询 —— 由调用方注入，测试就能用集合替身。
+   */
+  readonly isSelfMessageId?: (messageId: string) => boolean
+}
+
+/**
+ * 从出站队列反查"这条消息是不是我发的"。
+ *
+ * **为什么是 `qq_outbox` 而不是 `qq_inbox`**：入站表的 `is_self` 只在
+ * NapCat 上报 `message_sent` 时才为 1，而生产配置里 `reportSelfMessage: false`
+ * （NapCat 根本不发那个事件）⇒ 靠它判"我发的"永远是 false。
+ * `qq_outbox.platform_msg_id` 相反：那是**我们每一次真实发送**拿回来的 id
+ * （`confirmOutbound` 写入），是唯一稳定可靠的一份"我发过什么"的记录。
+ *
+ * 已知边界（如实写明）：**主人在别的设备上发的消息不在这个表里** ——
+ * 那种消息被引用时判不出"回我"。要覆盖它必须先打开 `reportSelfMessage`
+ * 并把 `message_sent` 的 id 也记进来（见报告的接口清单）。
+ *
+ * @param db - 数据库。
+ * @returns 判定函数（预编译语句只建一次）。
+ */
+export function selfMessageIdDetector(db: DatabaseSync): (messageId: string) => boolean {
+  // 预编译一次：这条路径在每个批次里都会问（`defaultConditionOf` 里每条带引用的消息一次）
+  const statement = db.prepare('SELECT 1 AS hit FROM qq_outbox WHERE platform_msg_id = ? LIMIT 1')
+  return (messageId: string): boolean => {
+    if (messageId === '') return false
+    try {
+      return statement.get(messageId) !== undefined
+    } catch {
+      // 查不动库（库坏了/表被删）时按"不是我发的"处理：
+      // 判定失败不能让整个轮次崩掉，代价只是退回普通消息条件（不会误唤醒）
+      return false
+    }
+  }
 }
 
 /** 默认的作用域解析。 */

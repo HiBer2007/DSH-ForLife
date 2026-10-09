@@ -6,11 +6,62 @@
 
 ---
 
-## 0. 我们已经用上的（基线）
+## 0. 我们已经用上的（**2026-10-09 按代码重新核验**）
 
-**动作**：`send_private_msg` `send_group_msg` `send_msg` `set_msg_emoji_like` `set_input_status` `get_login_info` `get_msg` `delete_msg` `mark_msg_as_read` `mark_group_msg_as_read` `mark_private_msg_as_read` `upload_group_file` `upload_private_file` `get_group_at_all_remain` `set_online_status` `set_diy_online_status` `set_self_longnick` `friend_poke` `group_poke` `send_poke` `get_status`（+ 计划中的 `get_friend_list` `get_group_member_list`）
+> ⚠️ **本节旧版本是失真的，不要再照抄。** 它写着"已经用上 21 个动作"，其中
+> `send_msg` `get_msg` `mark_msg_as_read` `mark_group_msg_as_read` `mark_private_msg_as_read`
+> `upload_group_file` `upload_private_file` `set_online_status` `set_diy_online_status`
+> `set_self_longnick` `friend_poke` `send_poke` `get_status`
+> —— **在生产源码里出现 0 次**（逐个 grep 验证，命令与结果见 §0.2）。
+> 那份清单其实是"**计划里要用**"，但写在"已经用上"的标题下，读起来就是现状 —— 这正是
+> `research/inbound-event-action-audit.md` 点名的那类"文档承诺 ≠ 代码事实"。
 
-**事件**：`message.private` `message.group` `notice.notify/input_status` `notice.notify/poke` `notice.group_msg_emoji_like` `meta_event.lifecycle` `meta_event.heartbeat`
+**动作（16 个有调用点，全部在 `packages/gateway/src/onebot.ts`）**：
+
+`send_group_msg` `send_private_msg` `send_group_forward_msg` / `send_private_forward_msg`（按会话类型分流）
+`set_msg_emoji_like` `set_input_status` `_send_group_notice` `delete_msg`
+`get_login_info` `get_forward_msg` `get_group_at_all_remain`
+`set_friend_add_request` `set_group_add_request` `get_friend_list` `get_group_list` `get_group_member_list`
+
+**事件（真正被解析成我们语义事件的）**：
+`message.private` / `message.group` / `message.temp`（临时会话）、`message_sent`（**代码在，生产配置 `reportSelfMessage:false` ⇒ NapCat 不发**）、
+`notice.friend_recall` / `notice.group_recall`、`notice.notify/poke`、`notice.group_increase` / `notice.group_decrease`、
+`request.friend` / `request.group`（归一了，但只落 `effects`，见 §0.3）、`meta_event.lifecycle/connect`（**`heartbeat` 仍被丢弃**）。
+
+### 0.1 核验命令（可复现）
+
+```bash
+# 有调用点的 action（注意：`send_group_forward_msg`/`send_private_forward_msg` 是变量传进去的，字面量扫描看不到）
+grep -rn "callAction" packages/ --include=*.ts | grep -v /test/
+# 某个 action 名到底在不在代码里（示例：那 11 个假的）
+grep -rn "'upload_group_file'" packages/
+```
+
+### 0.2 旧清单里"出现 0 次"的那些（逐条 grep，2026-10-09）
+
+| 旧清单写着"已用" | 代码里 | 备注 |
+| :--- | :--- | :--- |
+| `send_msg` `get_msg` `get_status` | **0 次** | `send_msg` 只在 `onebot.ts` 的模块头注释里出现过（**注释不是调用**） |
+| `mark_msg_as_read` / `mark_group_msg_as_read` / `mark_private_msg_as_read` | **0 次** | 红点没清 |
+| `upload_group_file` / `upload_private_file` | **0 次** | 出站发不出文件 |
+| `set_online_status` / `set_diy_online_status` / `set_self_longnick` | **0 次** | 自我表达类，尚未接 |
+| `friend_poke` / `send_poke` | **0 次** | 不能主动拍；`group_poke` 那 4 次命中是**唤醒条件名**，不是动作 |
+| `get_forward_msg` | ✅ **已接**（16 个之一） | 旧清单这条现在**成真了** |
+| `get_friend_list` / `get_group_member_list`（旧清单标"计划中"） | ✅ **已接** | 旧清单这条也成真了 |
+
+> `nc_get_user_status`（§1 表的 P0 项）在代码里只有 **1 次**命中：`packages/gateway/src/wake.ts`
+> 的 `peer_status_change` 登记说明（**文字**）—— 即"计划里有、代码里没有"。
+
+### 0.3 "文档承诺 ≠ 代码事实"：本次核验确认的三条
+
+| 承诺在哪 | 承诺内容 | 事实 | 现状 |
+| :--- | :--- | :--- | :--- |
+| `dsh-component/src/qq-tools.ts:99` | `read_pending` 的取回结果里带 `typing: true` | 输出 schema（`qq-tools.ts:322`）与 `pending_messages` 表**都没有 `typing`** | ❌ **仍未实现**（事件源 `notice/notify/input_status` 没解析；`qq-tools.ts` 不归本轮改动） |
+| `dsh-component/src/qq-tools.ts:96` | "发送前必须先调用 `read_pending`" | **没有代码强制**，只是提示词约束（`qq_reply` 不检查） | 🟡 与设计一致（不硬阻塞是刻意的，理由见 `backlog.ts` 模块头） |
+| `gateway/src/wake.ts` 的条件矩阵 | 面板上 15 个唤醒条件的开关/概率都能生效 | **7 个条件没有任何生产者**（面板上改了什么都不会发生，且不报错） | 🟡 **现已收敛到 4 个**，且缺口会被 `describeWakeProducerGaps()` **在启动日志里打出来**；登记表 `WAKE_CONDITION_PRODUCERS` 与守卫 `packages/gateway/test/wake-condition-producers-wiring.test.ts`（详见 §8） |
+
+> 三者的共同点：**都不报错**。开关点得下去、工具跑得通、面板有数据 —— 只是那件事永远不会发生。
+> 审计与现状见 `research/inbound-event-action-audit.md`。
 
 ---
 
@@ -116,3 +167,33 @@
 | d | `download_file` 是否支持 QQ 内部 CDN 的鉴权 URL（还是只支持公网 URL） |
 | e | `message_sent` 事件是否会**把机器人自己发的消息也回传**（可能与"回声"混淆，需去重） |
 | f | `get_online_clients` 能否可靠区分"主人手动登录"与"机器人进程登录" |
+
+---
+
+## 8. 唤醒条件 × 生产者现状（2026-10-09 核验，**这一节是"面板上的开关真的会生效吗"的唯一依据**）
+
+真源是代码里的登记表 `packages/gateway/src/wake.ts` 的 `WAKE_CONDITION_PRODUCERS`
+（`by: null` = **没有生产者**，必须写 `waitingOn` 说明卡在哪）；守卫在
+`packages/gateway/test/wake-condition-producers-wiring.test.ts`：
+它逐条核对"声称的生产者文件里真的有产出它的那一行"（**去注释后、语句位置**）。
+
+| 条件 | 生产者 | 现状 |
+| :--- | :--- | :--- |
+| `private_message` / `temp_message` / `group_message_any` | `turns.ts` `defaultConditionOf` | ✅ |
+| `group_mention` / `group_mention_all` / `group_poke` | 同上（`at` 段 / 拍一拍） | ✅ |
+| `media_received` / `file_received` | 同上（`mediaKind`） | ✅ |
+| **`reply_to_me`** | `turns.ts`（`reply.data.id` ⇒ 查 `qq_outbox.platform_msg_id`） | ✅ **2026-10-09 补**（此前永不触发） |
+| **`external_request`** | `wake-external-source.ts`（外部触发时过这道矩阵） | ✅ **2026-10-09 补**（此前无消费者） |
+| **`bot_offline`** | `wake-liveness.ts`（心跳断 / `online=false` / `bot_offline` 通知） | ✅ **2026-10-09 补**判据与状态机；⚠️ **心跳还没接进来**（见下） |
+| `peer_input_status` | — | ❌ 等 `onebot.ts` 解析 `notice/notify/input_status` |
+| `peer_status_change` | — | ❌ 等按人轮询 `nc_get_user_status`（§1 表那条 P0；默认关） |
+| `message_recalled` | — | ❌ 事件已归一（`InboundEvent{type:message_recalled}`），缺"接到唤醒判定"的那一行（`gateway.ts`） |
+| `self_message_sent` | — | ❌ 等 NapCat `reportSelfMessage: true` + `gateway.ts` 把 `isSelf` 消息送进条件判定 |
+
+**离线判据（`bot_offline`）一句话版**：**心跳是唯一"与有没有人说话无关"的证据**，所以
+判据 = ①心跳自带 `status.online=false`（确诊）②心跳停超 `max(3×间隔, 90s)`（连接假活）
+③`notice.bot_offline`（第二道保险）；**心跳还没接进来时如实报"判不了"**，
+**不许**拿"N 分钟没有消息"当离线（凌晨没人说话是正常的）。详见 `wake-liveness.ts` 模块头。
+
+> ⚠️ **这条现状会过期**：其它改动正在并行推进（`onebot.ts` 的心跳解析、`gateway.ts` 的事件路径）。
+> 判断某个条件今天能不能触发，**跑一次启动日志**看 `describeWakeProducerGaps()` 的输出最快。

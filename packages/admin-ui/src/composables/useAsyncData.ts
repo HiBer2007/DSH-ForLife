@@ -13,6 +13,7 @@ import { onScopeDispose, ref, shallowRef, type Ref } from 'vue'
 
 import { UnauthorizedError } from '../api/client.ts'
 import { Poller } from '../poll-schedule.ts'
+import { refreshActivity } from '../refresh-activity.ts'
 import { useAuth } from './useAuth.ts'
 
 export interface AsyncData<T> {
@@ -47,9 +48,22 @@ export function useAsyncData<T>(loader: () => Promise<T>, options: AsyncDataOpti
   let alive = true
   let seq = 0
 
+  // ── 上报给顶栏（`refresh-activity.ts`）────────────────────────────────────
+  //
+  // 顶栏的「刷新指示器 + 最后刷新时间」读的就是这两个事实（`loading` / 上次成功时间）。
+  // **刻意不新开一份状态**：`refreshActivity` 是**只读投影**，这里写进去的是
+  // 上面那两个 ref 的同一批值。
+  // 卸载时**必须注销**：留着的话顶栏会报一个已经不在屏幕上的数据源的新鲜度，
+  // 切页几次还会越攒越多。
+  const activityId = refreshActivity.register()
+  onScopeDispose(() => {
+    refreshActivity.unregister(activityId)
+  })
+
   async function refresh(): Promise<boolean> {
     const mine = ++seq
     loading.value = true
+    refreshActivity.setLoading(activityId, true)
     try {
       const next = await loader()
       // 只认最后一次请求的结果：连点两次刷新时，先发的晚到也不该覆盖后发的。
@@ -58,6 +72,7 @@ export function useAsyncData<T>(loader: () => Promise<T>, options: AsyncDataOpti
       data.value = next
       error.value = undefined
       updatedAt.value = Date.now()
+      refreshActivity.setSuccess(activityId, updatedAt.value)
       return true
     } catch (caught) {
       if (!alive || mine !== seq) return true
@@ -68,7 +83,10 @@ export function useAsyncData<T>(loader: () => Promise<T>, options: AsyncDataOpti
       error.value = caught instanceof Error ? caught.message : String(caught)
       return false
     } finally {
-      if (alive && mine === seq) loading.value = false
+      if (alive && mine === seq) {
+        loading.value = false
+        refreshActivity.setLoading(activityId, false)
+      }
     }
   }
 

@@ -71,9 +71,9 @@ test('★ 不认识的事件名 ⇒ 明确拒绝并列出白名单（不静默�
   assert.match(r.reason, /qq\.disconnected/)
 })
 
-test('白名单固定九个（测试与文档共用一份）', () => {
-  assert.equal(SYSTEM_EVENT_NAMES.length, 9)
-  for (const n of ['qq.disconnected', 'qq.reconnected', 'endpoint.unavailable', 'disk.high', 'migration.failed', 'compaction.failed', 'contract.mismatch', 'job.failed', 'budget.exceeded']) {
+test('白名单固定十个（测试与文档共用一份）', () => {
+  assert.equal(SYSTEM_EVENT_NAMES.length, 10)
+  for (const n of ['qq.disconnected', 'qq.reconnected', 'qq.silent', 'endpoint.unavailable', 'disk.high', 'migration.failed', 'compaction.failed', 'contract.mismatch', 'job.failed', 'budget.exceeded']) {
     assert.ok((SYSTEM_EVENT_NAMES as readonly string[]).includes(n), `缺 ${n}`)
   }
 })
@@ -96,6 +96,9 @@ test('isBadState：区分"坏消息"与"好消息"', () => {
   assert.equal(isBadState('disk.high', 'ok'), false)
   // reconnected 本身就是好消息 —— 不管状态叫什么
   assert.equal(isBadState('qq.reconnected', 'up'), false)
+  // ★ qq.silent 的坏状态是 `silent`（不是 `down`）：不显式判它会掉进默认分支被当好消息
+  assert.equal(isBadState('qq.silent', 'silent'), true)
+  assert.equal(isBadState('qq.silent', 'alive'), false)
 })
 
 test('payload 只放事实（它会被拼进提示词的"数据"段）', () => {

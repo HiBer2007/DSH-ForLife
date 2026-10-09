@@ -100,6 +100,60 @@ pwsh -NoProfile -File .runtime\fetch-deepseek-chat.ps1
 
 **⇒ 拿到 JSON 后接切段 + 投喂**，见 `docs/notes/feed-memory.md`。
 
+## ★ 投喂前必须先刷新（**这是机制，不是纪律**，2026-10-09 起）
+
+**血的教训**：用户让"清空重喂"，而手上那份导出是**当天早些时候**切的 281 段；
+投喂前拉了一次才发现源里**多了 6 条**（就在干活这段时间聊的）。
+**清空重喂是破坏性操作** —— 不查就**永久丢**那 6 条。
+
+所以喂食子系统里加了一道闸：**文件/目录输入必须声明"源怎么刷新"**，
+不声明直接打回；刷新没过 ⇒ **一条记忆都不写**（详见 `packages/gateway/src/feed-refresh.ts` 的模块头）。
+
+### 怎么用（CLI）
+
+```powershell
+# ① 每次投喂都先拉一次（推荐）：--refresh 后面是**命令行**，凭据仍在 .runtime 里
+node scripts/feed-memory.ts .runtime\chat-import\seg1-newer.json `
+  --refresh "pwsh -NoProfile -File .runtime\fetch-deepseek-chat.ps1" `
+  --source deepseek/seg1-newer --as experience
+
+# ② 或者配一次环境变量，之后用 --refresh default（命令不进命令行历史）
+$env:FORLIFE_FEED_REFRESH_COMMAND = "pwsh -NoProfile -File .runtime\fetch-deepseek-chat.ps1"
+node scripts/feed-memory.ts .runtime\chat-import\seg1-newer.json --refresh default --as experience
+
+# ③ 确定这份东西没有外部源（例如刚手写的资料）⇒ 显式声明，不假装刷新
+node scripts/feed-memory.ts docs\notes\feed-memory.md --no-refresh
+```
+
+投喂时**先跑刷新、再读文件**（顺序由守卫测试钉住）：
+刷新刚写出来的那份才会被看见 —— 顺序反了就又变成"用陈旧数据重喂"。
+
+### 脚本要配合的一行（**约定**）
+
+刷新命令按约定在输出里报一行**条数**（默认标记 `items=`），喂食子系统据此给出
+
+```
+↻ 源已刷新：旧 281 条 → 新 287 条（+6）；命令 fetch-deepseek-chat.ps1（3120 ms）
+```
+
+⇒ 请在 `.runtime/fetch-deepseek-chat.ps1` 末尾加一行（**示例，不含凭据**）：
+
+```powershell
+Write-Output "items=$($messages.Count)"
+```
+
+报不出来也能跑（子系统会如实说"脚本没报条数"），但**"多了几条"就看不出来了** ——
+而那正是这条机制存在的理由。也可以顺手报 `version=$($session.version)`（源自己的版本号）。
+
+**标记可配**：脚本想用自己的说法（例如 `条数=281`），改基线 `feed.refresh.itemsMarker` 即可。
+
+### ⚠️ 空结果会被**当失败**
+
+那个接口失败的方式是「安静地返回空数组 + HTTP 200」（文件 410 字节）。
+所以子系统把 **`items=0` 判成失败**，并在错误里点名 `cache_version` 那个坑
+（**要全量就传 0**；传会话当前 version 会拿回 0 条）。
+确实要用可疑/陈旧的那一份，得**显式**加 `allowStale`（结果里会标 `⚠`，并记进投喂会话）。
+
 ## 纪律（**血的教训**）
 
 1. **凭据只落在 `.runtime/`**（已 gitignore）。**绝不写进任何 tracked 文件** ——

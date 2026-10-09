@@ -22,6 +22,7 @@ import {
   parseExternalSpec,
   tokenMatches,
 } from '../src/wake-external-source.ts'
+import { seedWakeRules, setWakeRule } from '../src/wake.ts'
 
 const AT = new Date('2026-10-06T12:00:00.000Z')
 
@@ -173,6 +174,52 @@ test('成功触发 ⇒ 标记为"到点"（与其它三类同一条通道）', (
     assert.equal(out.ok, true)
     assert.equal(getWakeTrigger(s.db, a.id)?.next_fire_at, AT.toISOString())
     assert.equal(out.triggerId, a.id)
+  } finally {
+    s.close()
+  }
+})
+
+/**
+ * ★ 2026-10-09 补：唤醒矩阵里的 `external_request` 一行**真的**决定放不放行。
+ *
+ * 以前它不是"没生效"，而是**没有任何消费者** —— 面板上把它关掉、概率调到 0，
+ * 外部触发照样把触发器标成"到点"，而且不报错。这一条守的就是那件事。
+ */
+test('★ 过唤醒矩阵：`external_request` 关掉 ⇒ 拒绝触发，且不标记"到点"', () => {
+  const s = setup()
+  try {
+    seedWakeRules(s.db)
+    setWakeRule(s.db, '*', 'external_request', { enabled: false }, 'admin')
+    const a = mkExternal(s.db, { title: 'CI 挂了' })
+
+    const out = s.source.fire(a.id, a.token)
+    assert.equal(out.ok, false)
+    assert.match(out.reason, /唤醒矩阵拦下/)
+    assert.match(out.reason, /external_request/)
+    assert.equal(getWakeTrigger(s.db, a.id)?.next_fire_at, null, '被拦下就不该"到点"（否则引擎照样会唤醒）')
+
+    // 留痕：面板与排障要能回答"这次外部触发为什么没叫醒它"
+    const events = s.db
+      .prepare("SELECT condition, decision, reason FROM wake_events WHERE condition = 'external_request' ORDER BY rowid DESC")
+      .all() as { condition: string; decision: string; reason: string }[]
+    assert.equal(events.length, 1)
+    assert.equal(events[0]?.decision, 'skip')
+    assert.equal(events[0]?.reason, 'disabled')
+  } finally {
+    s.close()
+  }
+})
+
+test('★ 概率也是真的：`external_request` 概率 0 ⇒ 同效（面板上那个数字真的生效）', () => {
+  const s = setup()
+  try {
+    seedWakeRules(s.db)
+    setWakeRule(s.db, '*', 'external_request', { probability: 0 }, 'admin')
+    const a = mkExternal(s.db)
+    const out = s.source.fire(a.id, a.token)
+    assert.equal(out.ok, false)
+    assert.match(out.reason, /唤醒矩阵拦下/)
+    assert.equal(getWakeTrigger(s.db, a.id)?.next_fire_at, null)
   } finally {
     s.close()
   }

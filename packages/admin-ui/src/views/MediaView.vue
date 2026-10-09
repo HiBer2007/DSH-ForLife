@@ -20,16 +20,36 @@ import StatCard from '../components/StatCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useAsyncData } from '../composables/useAsyncData.ts'
 import { formatNumber, formatRelative } from '../utils/format.ts'
+import { mediaKindLabel, translateSegmentTokens } from '../utils/message-labels.ts'
 
 const state = useAsyncData<MediaOverview>(() => api.get<MediaOverview>('/media'))
 
-/** 入站媒体表。 */
+/**
+ * 入站媒体表。
+ *
+ * 「类型」列**必须走标签表**：以前只有 `image` / `file` 两个分支，
+ * 于是 `record` / `video` 把英文枚举名直接显示给用户（同一页的统计卡却写着中文）。
+ */
 const inboundColumns: TableColumn<Record<string, unknown>>[] = [
   { key: 'at', label: '时间', secondary: true, value: (row) => formatRelative(String(row['at'])) },
-  { key: 'mediaKind', label: '类型', primary: true, value: (row) => (row['mediaKind'] === 'image' ? '图片' : row['mediaKind'] === 'file' ? '文件' : String(row['mediaKind'])) },
+  {
+    key: 'mediaKind',
+    label: '类型',
+    primary: true,
+    value: (row) =>
+      mediaKindLabel(row['mediaKind']) ?? (typeof row['mediaKind'] === 'string' ? row['mediaKind'] : '—'),
+  },
   { key: 'senderName', label: '发送者', value: (row) => String(row['senderName'] ?? '—') },
   { key: 'conversationKey', label: '会话', mono: true },
-  { key: 'text', label: '附带文本', value: (row) => (String(row['text']) === '' ? '（无）' : String(row['text'])) },
+  {
+    key: 'text',
+    label: '附带文本',
+    // 正文里的 `[未解析:face]` 这类占位符也要翻中文（与 ConversationsView 同一份标签表）
+    value: (row) => {
+      const body = translateSegmentTokens(typeof row['text'] === 'string' ? row['text'].trim() : '')
+      return body === '' ? '（无）' : body
+    },
+  },
 ]
 
 /** 把"动态表"的列名转成表格列定义（值原样显示，未知类型转字符串）。 */

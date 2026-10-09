@@ -132,15 +132,19 @@ export type { PortService } from './port-service.ts'
 export { buildTcpRoute, caddyTcpRouteId, tcpServerName, TCP_SERVER_NAME } from './caddy-tcp.ts'
 export type { TcpRouteInput } from './caddy-tcp.ts'
 
-// ── 手动喂食记忆资料（四条入口共用的唯一核心）────────────────────────
+// ── 手动喂食记忆资料（投喂子系统 + 唯一写入核心）──────────────────────
 // CLI（scripts/feed-memory.ts）、DSH 面板接口（/api/forlife/feed）、
-// 后台接口（/api/admin/feed）与模型工具（feed_memory）都只调 `feedMemory`。
-// 它**不自己实现**分块/去重/删除：分块只做朴素段落切，去重复用既有 FTS 检索 + 同一份
-// 近似判据，删除指向既有的长期记忆管理（见 feed.ts 模块头与 §2.19）。
+// 后台接口（/api/admin/feed）与模型工具（feed_memory）都走 `feedInput`（子系统：
+// 输入形态/附件决策/切分/分批/批间让出/会话记账），它**每一批**调一次 `feedMemory`。
+// 它**不自己实现**分块/去重/删除：分块只做朴素段落切 + 单条天花板，
+// 去重复用既有 FTS 检索 + 同一份近似判据，删除指向既有的长期记忆管理
+// （见 feed.ts / feed-batch.ts 的模块头与 §2.19）。
 export {
   FEED_DELETE_HINT,
   FEED_KINDS,
   FEED_SCOPE_PREFIX,
+  archiveFeedLeftovers,
+  deriveFeedSource,
   deriveFeedSummary,
   feedIdFor,
   feedMemory,
@@ -150,8 +154,106 @@ export {
   splitIntoFeedChunks,
 } from './feed.ts'
 export type { FeedAction, FeedChunkResult, FeedItem, FeedKind, FeedOptions, FeedResult } from './feed.ts'
+export { firstFeedResult, feedInput } from './feed-batch.ts'
+export type { FeedProgress, FeedRequest, FeedRunResult, FeedSkip, FeedUnitResult } from './feed-batch.ts'
+export { refineFeedChunk, streamFeedChunks, withPieceSuffix } from './feed-chunk.ts'
+export type { FeedPiece } from './feed-chunk.ts'
+export { FEED_FRAME_PLACEHOLDERS, feedDigestNote, feedKindLabel, feedModeText, renderFeedFrame } from './feed-frame.ts'
+export { FEED_READ_CHUNK_CHARS, FEED_SKIP_DIRS, FEED_TEXT_EXTENSIONS, FeedBinaryError, listFeedFiles, readFeedFilePieces, sourceOfFeedFile } from './feed-ingest.ts'
+export { FEED_SESSION_KEY, advanceFeedSession, beginFeedSession, endFeedSession, readFeedSession, sessionRefreshOf } from './feed-session.ts'
+export type { FeedSession, FeedSessionRefresh } from './feed-session.ts'
+// ── 「投喂前更新」（源刷新）────────────────────────────────────────────
+// 任何入口（工具 / HTTP / CLI）在写入之前都必须经过这道闸（闸门在 `feedInput()` 里）；
+// 命令与凭据由**部署**给（环境变量 `FORLIFE_FEED_REFRESH_COMMAND`），**不进仓库**。
+export {
+  configuredRefreshCommand,
+  feedSourceLedgerKey,
+  parseRefreshMarkers,
+  readFeedSourceState,
+  resolveFeedRefresh,
+  runFeedRefresh,
+  splitCommandLine,
+  writeFeedSourceState,
+} from './feed-refresh.ts'
+export type { FeedRefreshOutcome, FeedRefreshSpec, FeedSourceState } from './feed-refresh.ts'
 
 // ── 工作区沙箱（PLAN 阶段 7）──────────────────────────────────────────
 // 插件侧登记监视程序时也要用：路径校验必须在**两边都做**（两边都能被绕过）。
 export { isInside, resolveInWorkspace } from './workspace.ts'
 export type { WorkspaceCheck, WorkspaceOptions } from './workspace.ts'
+
+// ── 合并转发（任务①）────────────────────────────────────────────────
+// 「收」与「发」共用同一份结构知识（NapCat 实读，见 forward.ts 的模块头）。
+export {
+  buildForwardNodes,
+  buildForwardNodesFromIds,
+  extractForwardMessages,
+  forwardPlaceholder,
+  parseForwardMessages,
+} from './forward.ts'
+export type { ForwardNodeInput, ParsedForward } from './forward.ts'
+
+// ── 离线积压（任务②）────────────────────────────────────────────────
+// ★ `pending_backlog` 这一组参数没有进 `wake.ts` 的 `WAKE_CONDITIONS`
+//   （那个文件属于另一个在跑的改动），而是用同一张 `wake_rules` 表注册。
+//   理由与"该怎么并回去"写在 backlog.ts 的注释里。
+export {
+  BACKLOG_WAKE_CONDITION,
+  backlogNotice,
+  countUnread,
+  decideBacklogWake,
+  listBacklogWakeRule,
+  readBacklog,
+  renderBacklogNotice,
+  seedBacklogWakeRule,
+} from './backlog.ts'
+export type { BacklogNotice, BacklogReadResult, BacklogScopeSummary, BacklogWakeDecision, BacklogWakeRule } from './backlog.ts'
+
+// ── 两个方向的限制（任务②d）─────────────────────────────────────────
+export { backlogReadQuota, consumeBacklogRead, currentTurnId, decideSendQuota, deliverPacing } from './limits.ts'
+export type { BacklogReadQuota, SendQuotaDecision } from './limits.ts'
+
+// ── 好友/群请求（任务③）─────────────────────────────────────────────
+// 复用 `effects` 表（**不新建表**）：见 requests.ts 的模块头。
+export { listPendingRequests, markRequestHandled, recordInboundRequest, renderRequestNotice, requestNotice } from './requests.ts'
+export type { InboundRequest, PendingRequest, RequestKind, RequestNotice } from './requests.ts'
+
+// ── 跨进程只读查询（工具进程 ↔ 网关进程）─────────────────────────────
+export { PROBE_ACTIONS, clearProbeResult, isProbeAction, probeStateKey, readProbeResult, runProbe, writeProbeResult } from './probe.ts'
+export type { ProbeAction, ProbeResult } from './probe.ts'
+
+// ── 入站媒体：图片 → 视觉描述（P1-1）/ 语音 → 转写（P1-2）/ 文件 → 真取信息（P2-b）
+//    ★ `VisionBridge` **搬到了这里**：它原来在 dsh-component，而全仓只被自己的测试引用
+//    （"写好了零调用"的标本）。图片描述真正该发生的位置是"入站消息刚要交给模型"，
+//    那一步在**网关进程**里 —— 而网关不能反向依赖 DSH 组件（依赖方向 dsh-component → gateway）。
+export { VisionBridge, describeSourceMark, placeholderText } from './vision-bridge.ts'
+export type { VisionBridgeHost, VisionBridgeOptions, VisionBridgeResult, VisionDescriber } from './vision-bridge.ts'
+export { attachmentPathFor, createAttachmentReader, createHttpVisionDescriber, sniffImageMime, writeAttachment } from './vision-describer.ts'
+export type { AttachmentReader, VisionEndpoint, VisionFetchLike } from './vision-describer.ts'
+export { createVisionFromEnv } from './vision-wiring.ts'
+export type { VisionWiring } from './vision-wiring.ts'
+export {
+  FILE_PLACEHOLDER,
+  IMAGE_PLACEHOLDER,
+  VOICE_PLACEHOLDER,
+  createImageDownloader,
+  decideLookAtImage,
+  defaultAttachmentRoot,
+  resolveMediaBatch,
+  skippedImagePlaceholder,
+  splicePlaceholders,
+} from './media-resolve.ts'
+export type {
+  BinaryFetchLike,
+  ImageFetchOutcome,
+  ImageScreenDecision,
+  ImageVisionPort,
+  MediaResolveOptions,
+  MediaResolveResult,
+  MediaResolveStats,
+  MediaTransport,
+} from './media-resolve.ts'
+
+// ── 「对方正在输入」的瞬时状态（P1-4 事件 → `read_pending` 的 `typing`）
+//    为什么不用新表/新列：它是**几秒就过期**的信号，混进待办队列会让"还剩 N 条"失真。
+export { TYPING_STATE_PREFIX, isPeerTyping, recordTyping, typingConversations, typingStateKey } from './typing-state.ts'

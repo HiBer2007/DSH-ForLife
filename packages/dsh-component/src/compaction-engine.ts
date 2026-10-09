@@ -334,9 +334,17 @@ export function applyCompactionDecision(
  *
  * ⚠️ 比例只是**因子**，真正决定触发点的是 `contextWindow × ratio`（宿主 `resolveCompactSpec`），
  * 而 `contextWindow` 来自 adapter 模型声明 —— 四个 profile 给 `deepseek-v4.1-flash`
- * 写的是 `262144`，所以当前生效阈值约 **157k**，不是"60% of 1M = 600k"。
- * 要等效 600k 得把 profile 的 `contextWindow` 声明成 `1000000`（比例不能 > 1，宿主会拒）。
- * 那是另一处改动（不在本次口径内），**本次未改** —— 记在 `deviations.ts` 的偏离说明里，另行提出。
+ * 原写的是 `262144`（那是 `dsh-llm-pi-ai` 的**通用兜底默认值**，不是这个模型的事实），
+ * 于是生效阈值曾经只有约 **157k**，不是"60% of 1M = 600k"。
+ *
+ * ★ 2026-10-09：**分母已经改掉了** —— 四个 profile 的 `deepseek-v4.1-flash`
+ * 现在声明 `contextWindow: 1000000`（用户裁定 ①），所以 `0.6 × 1M = 600k` 才真的成立。
+ * 这条断言在 `test/compaction-threshold.test.ts`（"生效触发点 = 600k"那一条）里机器守着 ——
+ * 它**必须**同时读 profile 的那个数，否则谁把分母改回去都不会有人发现。
+ *
+ * ⚠️ 其余三个模型（`deepseek-v4-pro` / `glm-5.3` / `glm-5.3-flash`）的窗口值**故意没动**：
+ * 本仓没有第一手依据，而"声明得比真实值大"会让压缩永不触发（上下文直接溢出）——
+ * 那是更坏的方向。等用户定值后再补断言。
  */
 const AUTO_TRIGGER_RATIO = defaultFor<number>('compaction.autoTriggerRatio')
 

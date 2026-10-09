@@ -58,12 +58,33 @@ function formatTime(at: number | undefined): string {
 
   <!-- 正常 -->
   <template v-else>
-    <div v-if="loading" class="refreshing" aria-live="polite">
+    <!--
+      ★ 2026-10-09 修（用户报的"顶部冒出一个刷新元素、一闪而过、界面跳动"）：
+
+      **根因就是这个 `v-if`**。它以前写的是 `<div v-if="loading" class="refreshing">` ——
+      轮询每来一次（总览 `/overview` 15 秒、`/series` 60 秒）这个 div 就**进入/离开文档流**，
+      把下面所有内容整体顶下去 `高度 + margin-bottom`（约 30px），请求回来又弹回去。
+      界面上就是"顶部闪一下、整页抖一下"；页面上有两个 AsyncSection 时抖两次。
+
+      **修法不是删掉它**（用户要的是"别跳"，不是"别显示"）：
+      元素**永远留在文档流里**并占住固定高度，只用 `visibility` 切换可见性 ——
+      `visibility: hidden` 的元素**照样占位**，所以有无提示时布局完全一致，一次重排都没有。
+      （`display: none` / `v-if` 都会撤掉占位，正是要避免的。）
+    -->
+    <div class="refresh-slot" :data-active="loading" aria-hidden="true">
       <span class="dot" />
       <span class="muted">正在刷新…</span>
     </div>
+    <!--
+      读屏用的实时状态：**内容在变**才会被播报（`role="status"` = polite live region）。
+      上面那个可见的提示只是装饰，所以整块 `aria-hidden`，免得同一句话被念两遍。
+      `visually-hidden` 是 `position: absolute` 的 1×1 元素 ⇒ 不参与文档流，也就不破坏这里的"不跳"。
+    -->
+    <span class="visually-hidden" role="status">{{ loading ? '正在刷新…' : '' }}</span>
     <slot />
-    <p v-if="updatedAt !== undefined" class="stamp muted">{{ formatTime(updatedAt) }}</p>
+    <p class="stamp muted" :data-visible="updatedAt !== undefined">
+      {{ updatedAt === undefined ? '' : formatTime(updatedAt) }}
+    </p>
   </template>
 </template>
 
@@ -127,18 +148,38 @@ function formatTime(at: number | undefined): string {
   font-size: var(--t-sm);
 }
 
-.refreshing {
+/*
+ * ── 刷新提示的**固定占位**（2026-10-09 修"面板刷新时跳动"）──────────────────
+ *
+ * 这个元素**始终参与布局**，只有可见性在变。要点两条，缺一不可：
+ *  ① `visibility: hidden`（**不是** `display: none`、更不是 `v-if`）——
+ *     前者照样占位，后两者会把位子一起撤掉 ⇒ 下面的内容整体上移/下移；
+ *  ② 高度**写死**（16px = 一行 12px 文字 + 一点余量，由内部的 `line-height: 1` 保证
+ *     内容不会把它撑高）—— 只要高度随内容变，就还是一次重排。
+ *
+ * 于是"正在刷新…"出现/消失时，下面所有卡片的位置**一个像素都不动**。
+ */
+.refresh-slot {
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  height: 16px;
   margin-bottom: var(--s-3);
   font-size: var(--t-xs);
+  line-height: 1;
+  visibility: hidden;
+}
+.refresh-slot[data-active='true'] {
+  visibility: visible;
 }
 .dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--c-brand);
+}
+/* 动画只在"真的在刷新"时挂上：不可见时没必要让时钟一直转 */
+.refresh-slot[data-active='true'] .dot {
   animation: pulse 1s ease-in-out infinite alternate;
 }
 @keyframes pulse {
@@ -150,9 +191,19 @@ function formatTime(at: number | undefined): string {
   }
 }
 
+/*
+ * 底部那行"最后更新于…"同理：它以前是 `v-if="updatedAt !== undefined"`，
+ * 首次成功时凭空多出一行，页面高度会跳一次。现在**永远占一行**，用可见性切换。
+ */
 .stamp {
+  min-height: calc(var(--t-xs) * var(--lh-tight));
   margin-top: var(--s-3);
   font-size: var(--t-xs);
   text-align: right;
+  font-variant-numeric: tabular-nums;
+  visibility: hidden;
+}
+.stamp[data-visible='true'] {
+  visibility: visible;
 }
 </style>

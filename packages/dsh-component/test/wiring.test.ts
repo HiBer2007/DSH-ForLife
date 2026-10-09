@@ -18,7 +18,18 @@ import { test } from 'node:test'
 import { activeRuntimes, apply, resolveDshHome } from '../src/index.ts'
 import { resolveConfig } from '../src/config.ts'
 import { CLOCK_TOOL_NAMES } from '../src/clock-tools.ts'
-import { L2_NAME, L3_NAME, L2_ORDER, L3_ORDER, P1_NAME, P2_NAME } from '../src/prompt.ts'
+import {
+  FEED_MODE_NAME,
+  FEED_MODE_ORDER,
+  L2_NAME,
+  L3_NAME,
+  L2_ORDER,
+  L3_ORDER,
+  P1_NAME,
+  P2_NAME,
+  PROACTIVITY_NAME,
+  PROACTIVITY_ORDER,
+} from '../src/prompt.ts'
 import { MEMORY_TOOL_NAMES } from '../src/tools.ts'
 import * as panelPlugin from '../src/panel-plugin.ts'
 
@@ -95,7 +106,7 @@ function quiet<T>(fn: () => T): T {
   }
 }
 
-test('接线：完整宿主下注册四个提示段 + 记忆与时间工具', async () => {
+test('接线：完整宿主下注册全部提示段 + 记忆与时间工具', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'forlife-wire-'))
   try {
     const base = activeRuntimes().length
@@ -123,18 +134,38 @@ test('接线：完整宿主下注册四个提示段 + 记忆与时间工具', as
       )
     }
 
-    // 现在有四段：P1/P2 可编辑人设与风格（100/110）+ L2/L3 记忆（120/130）
-    assert.deepEqual(
-      recorded.sections.map((s) => s.name).sort(),
-      [L2_NAME, L3_NAME, P1_NAME, P2_NAME].sort(),
-      '必须注册四段：P1 系统提示词 / P2 回答风格 / L2 记忆手册 / L3 中期记忆',
-    )
-    // 顺序契约（缓存命中的关键）：最稳的在前，变得最勤的记忆在最后
+    // 段必须**包含**这几个（而**不是**"数量恰好相等"）。
+    //
+    // ★ 2026-10-09 改：原来是 `deepEqual(..., [P1, P2, L2, L3].sort())` —— 那是
+    // "按集合断言"，加一个段（投喂期的 `forlife:feed-mode`）就会红，而且**红得像别人的锅**。
+    // 本文件下面那行注释已经写明同一个坑踩过三次（工具那次改成了"断言必须包含"），
+    // 段这边当时漏了 ⇒ 这次一并改成同一种判据。
+    const sectionNames = recorded.sections.map((s) => s.name)
+    for (const required of [P1_NAME, P2_NAME, PROACTIVITY_NAME, L2_NAME, L3_NAME, FEED_MODE_NAME]) {
+      assert.ok(sectionNames.includes(required), `必须注册段 ${required}（实际：${sectionNames.join(' / ')}）`)
+    }
+    assert.equal(new Set(sectionNames).size, sectionNames.length, '同一个段名不许注册两次')
+    // 顺序契约（缓存命中的关键）：最稳的在前，变得最勤的记忆在最后；投喂段排在 L3 之后
     assert.equal(recorded.sections.find((s) => s.name === P1_NAME)?.order, 100, 'P1 在最前')
     assert.equal(recorded.sections.find((s) => s.name === P2_NAME)?.order, 110)
+    assert.equal(
+      recorded.sections.find((s) => s.name === PROACTIVITY_NAME)?.order,
+      PROACTIVITY_ORDER,
+      '「主动性」段必须排在 P2 之后、L2 之前（它跟着工具面变，比人设/语气更常变、比记忆稳）',
+    )
+    assert.ok(
+      PROACTIVITY_ORDER > 110 && PROACTIVITY_ORDER < L2_ORDER,
+      '「主动性」段必须落在这条缝里（115）：>110 是因为它比语气更常变，<120 是因为它比记忆稳',
+    )
     assert.equal(recorded.sections.find((s) => s.name === L2_NAME)?.order, L2_ORDER)
     assert.equal(recorded.sections.find((s) => s.name === L3_NAME)?.order, L3_ORDER)
+    assert.equal(
+      recorded.sections.find((s) => s.name === FEED_MODE_NAME)?.order,
+      FEED_MODE_ORDER,
+      '投喂期的「工作模式」段必须排在 L3 之后（它只在投喂期非空，排后面作废的后缀最短）',
+    )
     assert.ok(L2_ORDER > 110 && L3_ORDER > L2_ORDER, '记忆段必须排在可编辑人设之后（记忆变得最勤）')
+    assert.ok(FEED_MODE_ORDER > L3_ORDER && FEED_MODE_ORDER <= 499, '投喂段要在 L3 之后、且仍在稳定前缀区间内')
 
     // 断言"必须包含"而不是"数量相等"：这已经是我们第三次踩同一个坑了
     // （每加一个工具就要改一次测试 ⇒ 改多了人就会闭眼改 ⇒ 断言失去意义）。

@@ -7,11 +7,33 @@
 
 | # | 问题 | **用户裁定** |
 | :-- | :--- | :--- |
-| **1** | profile 的 `contextWindow` 是 262144，导致"60% = 600k"拿不到（实际 ≈157k） | **改** —— 改成 **1000000** |
-| **2** | 窗口取序：只按 `window_offset` 会**每次压缩后丢掉最新记忆**（offset 按 epoch 分桶，最小的反而最新） | **确认** 用 **`(compaction_epoch, window_offset)` DESC** |
-| **3** | `runtime.ts:492` 那句"已在当前上下文中，无需检索"现在是**静默的谎**（窗口外条目其实够不着） | **修** |
-| **4** | 面板"活跃 token"仍是**全表** 1505k，且不暴露"窗口丢弃多少" | **改**（改成窗口口径 + 暴露丢弃数） |
-| **5** | 要不要"防呆条数上限" | **加** |
+| **1** | profile 的 `contextWindow` 是 262144，导致"60% = 600k"拿不到（实际 ≈157k） | **改** —— 改成 **1000000** ✅已落实 |
+| **2** | 窗口取序：只按 `window_offset` 会**每次压缩后丢掉最新记忆**（offset 按 epoch 分桶，最小的反而最新） | **确认** 用 **`(compaction_epoch, window_offset)` DESC** ✅**已核实**（见下） |
+| **3** | `runtime.ts:492` 那句"已在当前上下文中，无需检索"现在是**静默的谎**（窗口外条目其实够不着） | **修** ✅已落实 |
+| **4** | 面板"活跃 token"仍是**全表** 1505k，且不暴露"窗口丢弃多少" | **改**（改成窗口口径 + 暴露丢弃数）✅已落实 |
+| **5** | 要不要"防呆条数上限" | **加** ✅已落实（`memory.midWindow.maxCount` = 2000） |
+
+### ★ A 组落实记录（2026-10-09 晚）
+
+| # | 落到哪里 | 机器守卫 |
+| :-- | :--- | :--- |
+| **1** | 四个 profile 的 **全部四个模型**都改成 `contextWindow: 1000000`（`profiles/{forlife,forlife-headless,forlife-qq,forlife-web}/cordis.patch.yml`）：`deepseek-v4.1-flash`（用户点名）、`deepseek-v4-pro`、`glm-5.3`、`glm-5.3-flash`。<br>★ 2026-10-09 补：用户二次裁定「**查阅文档确认，把所有值都补上**」—— 后三个原来的 `262144` / `204800` / `204800` 都**不是模型事实**（分别是 pi-ai 的通用兜底与第一次登记时的臆测值），真值来源与逐模型核对表见 `docs/notes/dsh-provider-config.md`。<br>`deepseek-official` 接入点下的 `deepseek-flash` / `deepseek-v4-pro` **profile 里一个字都不用填**：`dsh-llm-deepseek` 自带的目录与兜底都是 `1e6` | `packages/dsh-component/test/compaction-threshold.test.ts` 的「生效触发点 = 600k」（读 profile 真值算 `contextWindow × ratio`）＋「**每个**模型都显式声明了窗口，且等于登记的真值」（含模型集合比对） |
+| **2** | **未改代码，只核实**：`packages/memory-core/src/window.ts` 的 `newerFirst()` —— epoch 不等时比 epoch（DESC），相等时比 `window_offset`（DESC），末位用 id 兜底。<br>**结论：与用户确认的 `(compaction_epoch, window_offset)` DESC 完全一致** | `packages/memory-core/test/window.test.ts` 的「epoch 分桶的坑」；`mid-window-wiring.test.ts` 的「压缩之后新记忆仍在窗口里」 |
+| **3** | `runtime.ts` 新增 `midFallbackNote()`：命中**全在窗口内**才照说原话；有窗口外的就**分述条数**并如实说"摘要与正文都不在你眼前，本次检索也取不回来"。<br>⚠️ **没有**承诺"可用 X 回填全文" —— 本仓**没有**这个 X（`recall_full` 取的是溢出工具结果、`recover` 只处理长期冷层），编一个就是第二次谎 | `packages/dsh-component/test/recall-mid-note.test.ts`（真库行为 3 条 + 源码守卫 3 条） |
+| **4** | `gateway/src/admin/overview.ts` 的 `buildOverview()` 新增 7 个窗口口径字段（`windowTokens` / `windowEntries` / `windowDroppedTokens` / `windowDroppedEntries` / `windowDroppedByCount` / `windowMaxTokens` / `windowMaxCount`）；<br>`admin-ui` 的「活跃 token」卡改读 `windowTokens`，新增「窗口丢弃」卡；**全表口径全部保留**（挪进副标题，标清楚是"全表"）；<br>内嵌面板（`dsh-component/client/index.js`）同步 | `packages/gateway/test/overview-window-wiring.test.ts`（真库 4 条 + 源码守卫 6 条 + 两端一致 2 条） |
+| **5** | 新基线键 `memory.midWindow.maxCount = 2000`；`selectMidWindow()` 加**条数**约束（与 token 预算**取小**），并新增 `droppedByCount` 如实报"是哪个约束在生效" | `packages/memory-core/test/window.test.ts`（条数上限 4 条）；`mid-window-wiring.test.ts` 的「条数上限真的被喂进窗口函数」 |
+
+> **为什么要写这张表**：A 组五条里有三条（1/3/4）的失效形态都是**静默的** ——
+> 分母写错时 `fidelity.test.ts` 全绿、"已在当前上下文中"是句读起来很顺的话、
+> 面板上永远有个数字。所以每条都配了机器守卫，而不是只改完就算。
+
+## A′. 同一批的三个小缺陷（2026-10-09 二次裁定）
+
+| # | 问题 | **用户裁定** | 落到哪里 | 机器守卫 |
+| :-- | :--- | :--- | :--- | :--- |
+| **16** | 四个 profile 里另外三个模型的 `contextWindow` 是抄来的（`262144` 是 pi-ai 的**通用兜底**、`204800` 是本仓第一次登记时的臆测），没人查过真值 | **改** ——「查阅文档确认，**把所有值都补上**」 | 四个 profile 的 `deepseek-v4-pro` / `glm-5.3` / `glm-5.3-flash` → `1000000`；逐模型来源表见 `docs/notes/dsh-provider-config.md` | `compaction-threshold.test.ts` 的「每个模型都显式声明了窗口，且等于登记的真值」 |
+| **17** | `buildOverview()` 的 `...(context.dsh …)` 被展开进了 **`time` 对象里**，而 `Overview` 声明在**顶层** ⇒ `overview.dsh` 永远 `undefined` ⇒ 面板永远"DSH 状态未知"（**而"DSH 挂了时面板看起来一切正常"正是这个字段唯一要报的事**）；探针照跑、开销照付、结果没人读。前端（`admin-ui`）更是**连类型都没有、一帧都没渲染过** | **修** | `packages/gateway/src/admin/overview.ts`（挪到顶层）；`admin-ui/src/api/types.ts` 新增 `DshStatus` + `Overview.dsh?`；`OverviewView.vue` 新增「DSH 后端」卡（第一排第一位，四态：未知 / 未配置 / 连不上 / 在线） | `packages/gateway/test/overview-dsh-wiring.test.ts`（真库 2 条 + 源码位置守卫 3 条 + 两端一致 2 条） |
+| **18** | 面板刷新时**顶部冒出一个"正在刷新…"、一闪而过但整页跳动**；顶栏也没有刷新指示器与最后刷新时间 | **修 + 加**：「调整刷新，在顶部菜单栏增加一个刷新指示器和最后刷新时间」 | 根因是 `AsyncSection.vue` 的 `<div v-if="loading" class="refreshing">` **进/出文档流**（约 30px）；改成**永远占位 + 只切 `visibility`**（高度写死），底部时间戳同样处理。顶栏新增指示器（转 + 变色，**不改尺寸**）+ 最后刷新时间（相对时间自己走，`min-width` 定宽 + `tabular-nums`）；状态**只有 `useAsyncData` 一个真源**，经 `refresh-activity.ts`（纯聚合，不碰 vue）投影给外壳 | `packages/admin-ui/test/refresh-activity.test.ts`（纯策略 9 条 + 模板/CSS 接线守卫 7 条） |
 
 ## B. 喂食入口（子代理 B 的裁定）
 

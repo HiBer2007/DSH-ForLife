@@ -167,6 +167,38 @@ test('★★ 守卫：预算读基线 `memory.midWindow.maxTokens`，不许写�
   )
 })
 
+test('★★ 守卫：条数上限（`memory.midWindow.maxCount`）**真的被喂进**窗口函数', () => {
+  const body = renderViewBody()
+  assert.ok(
+    body.some((line) => line.includes("defaultFor<number>('memory.midWindow.maxCount')")),
+    '条数上限必须从基线读（`memory.midWindow.maxCount`）—— 写死数字的话基线改了它不会跟着改',
+  )
+  // ★ 关键的一半：**读出来还不够，必须传进去**。
+  //   只读不传 = 防呆闸根本没接上，而源码里"看得见这个键"，守卫会假绿。
+  const joined = body.join('\n')
+  const call = /selectMidWindow\(\s*entries\s*,\s*\{([^}]*)\}/.exec(joined)
+  assert.ok(call !== null, '找不到 `selectMidWindow(entries, { … })` 这个调用点（形状变了？守卫要跟着改）')
+  const args = call[1] ?? ''
+  assert.ok(args.includes('maxTokens'), 'token 预算要传进 `selectMidWindow()`')
+  assert.ok(args.includes('maxCount'), '条数上限也要传进去 —— 只读不传等于防呆闸没接上')
+})
+
+test('★ 守卫：`midWindow()` 与 `renderView()` **同源**（面板口径不许另选一次窗口）', () => {
+  const joined = renderViewBody().join('\n')
+  // renderView 必须把选出来的窗口缓存起来，midWindow() 才有同源的那一份可读。
+  // 若有人把 `this.windowCache = …` 删掉，面板就会退回"自己另算一遍" —— 那正是"面板数字与生效值不一致"的老毛病。
+  assert.ok(
+    joined.includes('this.windowCache ='),
+    '`renderView()` 必须把窗口选取结果缓存下来（`this.windowCache = …`），否则 `midWindow()` 拿不到同源的那一份',
+  )
+  const source = stripComments(read('../src/runtime.ts'))
+  assert.ok(source.includes('midWindow(): MidWindowResult {'), '找不到 `midWindow()` 方法（面板取窗口口径的唯一入口）')
+  assert.ok(
+    source.includes('this.renderView()'),
+    '`midWindow()` 必须经 `renderView()` 取窗口（只有一处选取逻辑，两处口径才不会漂）',
+  )
+})
+
 // ════════════════════════════════════════════════════════════════════════════
 // ② 行为：真库 + 真 `renderView()`
 // ════════════════════════════════════════════════════════════════════════════

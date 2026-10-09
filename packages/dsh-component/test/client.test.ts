@@ -392,7 +392,12 @@ test('渲染内容：指标、指纹、条目表都画出来', () => {
       revision: 42,
       activeCount: 2,
       fragmentCount: 1,
+      // ★ 2026-10-09（用户裁定 ④）：面板的「活跃 token」显示的是**窗口**口径，
+      // `activeTokens`（全表）保留在它旁边 —— 两个数都要能看见，否则用户又会以为窗口没生效。
       activeTokens: 20,
+      windowTokens: 15,
+      windowDroppedTokens: 5,
+      windowDroppedEntries: 4,
       fragmentTokens: 8,
       renderedTokens: 90,
       renderedSha256: 'abc123',
@@ -411,6 +416,11 @@ test('渲染内容：指标、指纹、条目表都画出来', () => {
     '修订号', '42',
     '活跃条目', '2',
     '碎片', '1',
+    // 窗口口径与全表口径**同时**在面板上，而且标签要说清哪个是哪个
+    '活跃 token（窗口）', '15',
+    '窗口丢弃 token', '5',
+    '窗口外条数', '4',
+    '全表 token', '20',
     '渲染 token', '90',
     'abc123',
     '用户养了一只叫团子的猫',

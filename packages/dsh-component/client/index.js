@@ -190,7 +190,14 @@ window.__ModuleLoader__.load({
             metric('修订号', state.revision),
             metric('活跃条目', state.activeCount),
             metric('碎片', state.fragmentCount),
-            metric('活跃 token', state.activeTokens),
+            // ★ 2026-10-09（用户裁定 ④）：这里是**窗口口径** —— 真正进系统提示词的量。
+            // 原先读 `state.activeTokens`（**全表** SUM），真机上那个数是 1,505k，
+            // 而窗口只放进去一小段：两个数差十几倍时，面板在无声地让人以为窗口没生效。
+            // 全表那个数**没删**，就排在后面（诊断口径要留着）。
+            metric('活跃 token（窗口）', state.windowTokens),
+            metric('窗口丢弃 token', state.windowDroppedTokens),
+            metric('窗口外条数', state.windowDroppedEntries),
+            metric('全表 token', state.activeTokens),
             metric('碎片 token', state.fragmentTokens),
             metric('渲染 token', state.renderedTokens),
           ]),

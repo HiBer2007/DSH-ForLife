@@ -16,10 +16,22 @@ export interface PanelSnapshot {
   readonly state?: {
     readonly epoch?: number
     readonly revision?: number
+    /** **全表**口径：active 条目数（不等于进上下文的条数）。 */
     readonly activeCount?: number
     readonly fragmentCount?: number
+    /** **全表**口径：active 的 token 之和（诊断用；真机曾达 1,505k）。 */
     readonly activeTokens?: number
     readonly fragmentTokens?: number
+    /** **窗口**口径：真正进系统提示词的条数。 */
+    readonly windowEntries?: number
+    /** **窗口**口径：真正进系统提示词的 token 之和 —— 面板显示的是它。 */
+    readonly windowTokens?: number
+    /** 被窗口丢掉的条目数。 */
+    readonly windowDroppedEntries?: number
+    /** 被窗口丢掉的 token 之和。 */
+    readonly windowDroppedTokens?: number
+    /** 其中由**条数上限**造成的条数（0 ⇒ token 预算在生效）。 */
+    readonly windowDroppedByCount?: number
     readonly renderedTokens?: number
     readonly renderedSha256?: string
     readonly violations?: readonly string[]

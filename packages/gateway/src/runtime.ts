@@ -28,10 +28,12 @@ import { FLAG_QQ_TAKEOVER, getFlag, moveFileWithVerify } from '@forlife/store'
 
 import { FakeTurnDriver, HeadlessTurnDriver, type FakeScript } from './driver.ts'
 import { Gateway, type GatewayState } from './gateway.ts'
+import { defaultAttachmentRoot } from './media-resolve.ts'
 import { createOneBotTransport, type OneBotTransport } from './onebot.ts'
 import { enqueueOutbound } from './outbox.ts'
 import { conversationKey, parseConversationKey } from './transport.ts'
 import { defaultConditionOf, defaultScopeOf, TurnRunner, type TurnDriver } from './turns.ts'
+import { createVisionFromEnv } from './vision-wiring.ts'
 
 /** 运行时选项。 */
 export interface GatewayRuntimeOptions {
@@ -204,22 +206,47 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     path: options.onebot.path,
     ...(options.onebot.accessToken === undefined ? {} : { accessToken: options.onebot.accessToken }),
     log,
-    // QQ 掉线/恢复 → 系统事件源（**边沿检测在里面**，所以重连不会重复唤醒）
-    ...(wake.systemSource === undefined
-      ? {}
-      : {
-          onConnectionState: (connected: boolean, detail?: string) => {
-            // 断线与恢复用**独立的事件名** —— 它们是两件不同的事，
-            // 用户可能只想被其中一件叫醒
-            // **用 observeConnection**（盯一个状态量）—— 用 observe 传两个事件名的话，
-            // qq.disconnected 那一侧永远看不到"恢复"，**第二次断线不会被唤醒**
-            const outcome = wake.systemSource!.observeConnection(connected, detail)
-            // **诊断日志**（真机排查用）：回调有没有被调用、边沿判定结果是什么。
-            // 没有它的话，"QQ 端断开"记了但触发器没动时，完全看不出卡在哪一步。
-            log(`[诊断] 连接回调 connected=${String(connected)} → changed=${String(outcome.changed)} triggered=${String(outcome.triggered.length)}｜${outcome.reason.slice(0, 90)}`)
-            if (outcome.triggered.length > 0) log(`QQ 状态变化已触发 ${String(outcome.triggered.length)} 条唤醒`)
-          },
-        }),
+    // QQ 掉线/恢复 → 系统事件源 + **存活判据**（**边沿检测在里面**，所以重连不会重复唤醒）
+    onConnectionState: (connected: boolean, detail?: string) => {
+      // ① ★ 存活判据也要知道 WS 通不通。
+      //
+      // 不喂它的话，一次**真的**断线会走两条路：连接回调报 `qq.disconnected`，
+      // 90 秒后心跳超时再报一次 `qq.silent` —— 同一件事把模型叫醒两次。
+      // 喂了之后"WS 断"就归连接路径，"WS 通但 QQ 死了"才归存活判据（见 wake-liveness.ts）。
+      wake.livenessMonitor?.observeTransport(connected, detail)
+      const source = wake.systemSource
+      if (source === undefined) return
+      // ② 断线与恢复用**独立的事件名** —— 它们是两件不同的事，
+      // 用户可能只想被其中一件叫醒
+      // **用 observeConnection**（盯一个状态量）—— 用 observe 传两个事件名的话，
+      // qq.disconnected 那一侧永远看不到"恢复"，**第二次断线不会被唤醒**
+      const outcome = source.observeConnection(connected, detail)
+      // **诊断日志**（真机排查用）：回调有没有被调用、边沿判定结果是什么。
+      // 没有它的话，"QQ 端断开"记了但触发器没动时，完全看不出卡在哪一步。
+      log(`[诊断] 连接回调 connected=${String(connected)} → changed=${String(outcome.changed)} triggered=${String(outcome.triggered.length)}｜${outcome.reason.slice(0, 90)}`)
+      if (outcome.triggered.length > 0) log(`QQ 状态变化已触发 ${String(outcome.triggered.length)} 条唤醒`)
+    },
+    // ★★ P1-3 的后半截：**心跳必须喂给存活判据**。
+    //
+    //   `onebot.ts` 现在把 `meta_event.heartbeat` 的 `status.online` / `good` / `interval`
+    //   原样交出来（**不落库**：30 秒一条 = 2880 行/天，而且会淹掉真正的报告）。
+    //   判据侧只认"心跳沉默"这一条证据（`max(3×interval, 90s)`），
+    //   而**从不采用"N 分钟无任何消息"** —— 凌晨没人说话是正常的，那会每夜误报一次
+    //   （代价是一次真实模型调用 + 模型开始怀疑一个不存在的故障）。
+    //
+    //   ⚠️ 这条链是"35 小时假活"事故的唯一解药：WS 一直 ESTABLISHED、
+    //   而 QQ 早已被静默踢下线时，只有心跳能说话。
+    onHeartbeat: (heartbeat) => {
+      const verdict = wake.livenessMonitor?.observeHeartbeat(heartbeat)
+      if (verdict !== undefined && verdict.state !== 'alive') {
+        log(`[诊断] 心跳存活判定：${verdict.state}（${verdict.evidence}）｜${verdict.reason.slice(0, 120)}`)
+      }
+    },
+    // ★ 第二个独立证据：协议端明确说"掉线了"（NapCat 的 `notice_type: bot_offline`）。
+    onBotOffline: (reason, at) => {
+      const verdict = wake.livenessMonitor?.observeBotOffline(reason, at)
+      log(`[诊断] 协议端报告掉线：${reason}${verdict === undefined ? '' : `（判定 ${verdict.state}）`}`)
+    },
   })
 
   let driver: TurnDriver
@@ -251,6 +278,12 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     ...(options.random === undefined ? {} : { random: options.random }),
   })
 
+  // ★ P1-1：视觉桥接（图片 → 文字）。**没配就明确说没启用**，而不是静默少个功能 ——
+  //   "为什么她发的截图模型看不见"必须能在一行启动日志里回答。
+  const attachmentRoot = defaultAttachmentRoot(process.env)
+  const visionWiring = createVisionFromEnv({ db: options.db, storageRoot: attachmentRoot, log })
+  log(`[gateway] ${visionWiring.note}`)
+
   const gateway = new Gateway({
     db: options.db,
     transport,
@@ -258,6 +291,9 @@ export function createGatewayRuntime(options: GatewayRuntimeOptions): RunningGat
     log,
     // 接管开关每次入站都从库里读 ⇒ 面板一拨就生效，不用重启服务
     takeover: () => getFlag(options.db, FLAG_QQ_TAKEOVER),
+    // ★ P1-1：图片/语音/文件的取回都挂在网关这条链上（位置见 gateway.ts 的 resolveMedia）
+    imageStorageRoot: attachmentRoot,
+    ...(visionWiring.vision === undefined ? {} : { imageVision: visionWiring.vision }),
     ...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
     ...(options.outboxPollMs === undefined ? {} : { outboxPollMs: options.outboxPollMs }),
   })

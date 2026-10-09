@@ -36,6 +36,8 @@ import { createWakeEngine, type WakeEngine, type WakeDispatcher } from './wake-e
 import { buildWakePrompt } from './wake-prompt.ts'
 import { createSystemWakeSource, type SystemWakeSource } from './wake-system-source.ts'
 import { createWatchSource, type WatchSource } from './wake-watch-source.ts'
+import { createLivenessMonitor, startLivenessWatch, type LivenessMonitor, type LivenessWatch } from './wake-liveness.ts'
+import { describeWakeProducerGaps } from './wake.ts'
 
 /** 装配配置。 */
 export interface WakeRuntimeOptions {
@@ -77,6 +79,21 @@ export interface WakeRuntime {
   readonly systemSource: SystemWakeSource | undefined
   /** 监视源（未配工作区时为 undefined）。 */
   readonly watchSource: WatchSource | undefined
+  /**
+   * ★ QQ 存活监视循环（**唤醒条件 `bot_offline` 的唯一生产者**）。
+   *
+   * 引擎未启用时它也是 undefined —— 那时"检测到离线"没有任何出口，
+   * 假装在监视只会让人以为有人在看（与 `engine` 同一条纪律）。
+   */
+  readonly liveness: LivenessWatch | undefined
+  /**
+   * 存活判据本体：**连接状态与心跳要喂给它**
+   * （`observeTransport(connected)` / `observeHeartbeat({ online, intervalMs })`）。
+   *
+   * 不喂也不会崩 —— 它会如实报「判不了：一次心跳都没收到」，
+   * 而不是拿"这段时间没人说话"当离线证据（安静时段那是正常的）。
+   */
+  readonly livenessMonitor: LivenessMonitor | undefined
   /** 引擎禁用原因（界面要显示它）。 */
   readonly disabledReason: string | undefined
   /** 监视源禁用原因 —— **与引擎的原因分开**（它们可能一个启用一个没启用）。 */
@@ -142,6 +159,8 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
       engine: undefined,
       systemSource: undefined,
       watchSource,
+      liveness: undefined,
+      livenessMonitor: undefined,
       disabledReason: `唤醒引擎未启用：FORLIFE_WAKE_BRIDGE_SECRET ${secretCheck.reason}` ,
       watchDisabledReason,
       stop: () => {},
@@ -157,6 +176,8 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
       engine: undefined,
       systemSource: undefined,
       watchSource,
+      liveness: undefined,
+      livenessMonitor: undefined,
       disabledReason: `唤醒引擎未启用：缺少环境变量 ${missing.join('、')}（需要 DSH 侧挂上唤醒桥）`,
       watchDisabledReason,
       stop: () => {},
@@ -286,14 +307,49 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
 
   log(`唤醒引擎已启用：桥 ${config.bridgeUrl}，tick ${String(config.tickMs)}ms`)
 
+  // ★ 把"配了也不会发生"的条件打出来（`wake.ts` 的生产者登记表）。
+  //
+  // 为什么必须在启动时说：那些条件的开关/概率在面板上**照样能点**，
+  // 而它们没有生产者时**不抛异常、不留痕** —— 用户会以为配好了。
+  // 这一行让它在启动第一眼就可见（而不是等一次入站事件审计才发现）。
+  const gaps = describeWakeProducerGaps()
+  if (gaps !== undefined) log(gaps)
+
+  // ── ★ QQ 存活监视（"什么算离线"的判据与状态机）──────────────────────────
+  //
+  // 为什么装配在这一层：它是唤醒条件 `bot_offline` 的**唯一生产者**，
+  // 而这一层已经拿着三样必需的东西 —— 库（唤醒矩阵 + 时间线）、`system` 事件源
+  // （上报出口）、以及一套已经在用的定时器装配方式。
+  //
+  // ⚠️ 心跳目前**还没人喂**（`onebot.ts` 丢弃 `meta_event`，P1-3 在修）：
+  // 那时它每一轮都如实报「判不了：一次心跳都没收到」，日志里能直接看出
+  // 「我们为什么检测不到假活」—— 而不是显示成"一切正常"。
+  const livenessMonitor = createLivenessMonitor({ log })
+  const liveness = startLivenessWatch({
+    db,
+    monitor: livenessMonitor,
+    log,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.setIntervalImpl === undefined ? {} : { setIntervalImpl: options.setIntervalImpl }),
+    ...(options.clearIntervalImpl === undefined ? {} : { clearIntervalImpl: options.clearIntervalImpl }),
+    report: (state, detail) => {
+      // 去重交给事件源（边沿检测在它内部）；这里只如实报当前状态。
+      // `alive` 也照报：不报恢复的话，模型会一直以为它是坏的。
+      systemSource.observe('qq.silent', 'onebot11', state, detail)
+    },
+  })
+
   return {
     engine,
     systemSource,
     watchSource,
+    liveness,
+    livenessMonitor,
     disabledReason: undefined,
     watchDisabledReason,
     stop: () => {
       engine.stop()
+      liveness.stop()
       for (const h of handles) clearIntervalFn(h)
     },
   }

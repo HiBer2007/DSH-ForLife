@@ -12,7 +12,8 @@
  * @module forlife-memory/api
  */
 import {
-  feedMemory,
+  feedInput,
+  firstFeedResult,
   isFeedKind,
   listAdminChat,
   listOutbound,
@@ -1027,9 +1028,9 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
 
     // ── 手动喂食记忆资料（PLAN 之外，用户 2026-10-07 要求）──────────────
     //
-    // ★ 与 CLI / 后台接口 / 模型工具**共用** `feedMemory`（@forlife/gateway）：
-    // 这里只做"解析请求体 → 调用 → 回结果"。分块/去重/删除的机制**不在这里**，
-    // 它们属于记忆系统本身（见 `packages/gateway/src/feed.ts` 模块头）。
+    // ★ 与 CLI / 后台接口 / 模型工具**共用** `feedInput`（@forlife/gateway 的投喂子系统）：
+    // 这里只做"解析请求体 → 调用 → 回结果"。切分/分批/去重/删除的机制**不在这里**，
+    // 它们属于记忆系统本身（见 `packages/gateway/src/feed.ts` 与 `feed-batch.ts` 的模块头）。
     //
     // 与后台那条（`POST /api/admin/feed`）**不是两条管道**：两个入口分别挂在
     // 两个进程上（DSH Web UI 的面板接口 / gateway 的管理后台），各有各的鉴权
@@ -1064,13 +1065,16 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
           })
           const source = typeof body.source === 'string' && body.source.trim() !== '' ? body.source.trim() : undefined
 
-          const result = feedMemory(runtime.db, {
-            items,
+          const run = await feedInput(runtime.db, {
             as: body.as,
+            items,
             ...(source === undefined ? {} : { source }),
             ...(body.dryRun === true ? { dryRun: true } : {}),
           })
-          if (!result.ok) return json({ ok: false, error: result.error ?? '喂食失败' }, 400)
+          const result = firstFeedResult(run)
+          if (result === undefined || !result.ok) {
+            return json({ ok: false, error: run.error ?? result?.error ?? '喂食失败' }, 400)
+          }
 
           // 铁律 1：喂食**直接改模型记得什么** ⇒ 记一笔后台动作，等合并报告告知模型
           //（与改提示词、改唤醒规则同一条既有管线）。

@@ -51,6 +51,19 @@
  * 也就是说窗口是"记忆内容的预算"，不是"渲染字节的硬上限"——
  * 差值有界（每行几 token），比"按渲染文本回算"更容易解释与断言。
  *
+ * ## ★ 为什么 token 预算之外还要一道**条数**上限（2026-10-09 加）
+ *
+ * token 记账对**超短条目几乎不设防**：`token_count` 只有 1 的条目，
+ * 10 万条也才 10 万 token —— token 预算一分没超，渲染出来却是 **10 万行**，
+ * 每行的 `[M<序号>] ` 标记 + 换行本身就把前缀撑爆（而这不是"记忆多"，是写入侧失控）。
+ *
+ * 所以两个约束是**取小**关系，谁先到就按谁停：
+ *  - `maxTokens` 管"内容有多少"（正常情况下的主约束）；
+ *  - `maxCount` 管"条目有多少"（防呆：挡的是"条数爆炸但每条都极短"这种畸形表）。
+ *
+ * 两个预算是**并列**的，不互相折算；哪个生效由 `droppedByCount` 如实报出来
+ * （面板要能看出是 token 在管还是条数在管）。
+ *
  * @module @forlife/memory-core/window
  */
 import type { MidEntryRow } from '@forlife/store'
@@ -64,6 +77,13 @@ export interface MidWindowOptions {
    * 全表正是这次要修的故障形态（1.5M token 进前缀、唤醒即爆上下文）。
    */
   readonly maxTokens: number
+  /**
+   * 窗口的**条数**上限（读自基线 `memory.midWindow.maxCount`，同样不写死数字）。
+   *
+   * 与 `maxTokens` 同一条纪律：`<= 0`（含 NaN）⇒ **空窗口**，不退回全表。
+   * 为什么需要它、以及为什么是"取小"而不是折算，见模块头的 ★ 一节。
+   */
+  readonly maxCount: number
 }
 
 /** 窗口选取结果。 */
@@ -76,6 +96,14 @@ export interface MidWindowResult {
   readonly droppedTokens: number
   /** 进窗口条目的 token 之和（表口径，见模块头）。 */
   readonly tokens: number
+  /**
+   * `droppedCount` 里**由条数上限造成**的那部分（0 ⇒ 这次是 token 预算在生效）。
+   *
+   * 为什么要单独报：两个约束的"症状"完全不同 ——
+   * token 到顶是正常的容量管理，条数到顶是**写入侧的畸形信号**。
+   * 混成一个数字的话，面板上看见"丢了很多条"根本分不清该不该管。
+   */
+  readonly droppedByCount: number
 }
 
 /** 写入序比较：epoch 优先（只增），同 epoch 内比 `window_offset`（同 epoch 内 = max+1）。 */
@@ -91,18 +119,19 @@ function newerFirst(a: MidEntryRow, b: MidEntryRow): number {
  * 选取中期记忆窗口（纯函数：不改输入、不读时钟、不碰数据库）。
  *
  * 算法就是"从最新往回装，装不下就停"：
- * 按写入序（新→旧）逐条试装，`已用 + 本条 > maxTokens` 时**立即停**
+ * 按写入序（新→旧）逐条试装，**任一个**预算不够时**立即停**
  * （不是跳过这条再试更旧的 —— 那样窗口会变成"预算内最老的若干条"，与"最新优先"相反）。
  *
  * 边界语义（都有用例钉着）：
  *  - 空表 ⇒ 空窗口；
  *  - `已用 + 本条 === maxTokens` ⇒ **装进去**（判据是"超过"才停，不是"达到"）；
+ *  - `已装条数 === maxCount` ⇒ 停（条数到顶，与 token 无关；`droppedByCount` 记这笔账）；
  *  - **单条自身超预算 ⇒ 窗口为空**：刻意不做"至少留一条"的例外 ——
  *    那会让一条无界的条目把窗口炸掉，而"单条超预算"本身是写入方的 bug
  *    （PLAN §5.3 的四层长度限制该在写入时拦住它）。
  *
  * @param entries - 候选条目（调用方已按 `compaction_epoch`/`status` 过滤，通常是 `listRenderableMidEntries()`）。
- * @param options - 预算。
+ * @param options - 两个预算（见 `MidWindowOptions`，都从基线读）。
  * @returns 进窗口的条目（保持输入顺序）与丢弃统计。
  */
 export function selectMidWindow(
@@ -110,13 +139,24 @@ export function selectMidWindow(
   options: MidWindowOptions,
 ): MidWindowResult {
   const maxTokens = Math.floor(options.maxTokens)
+  const maxCount = Math.floor(options.maxCount)
   const totalTokens = entries.reduce((sum, entry) => sum + entry.token_count, 0)
   if (entries.length === 0) {
-    return { entries: [], droppedCount: 0, droppedTokens: 0, tokens: 0 }
+    return { entries: [], droppedCount: 0, droppedTokens: 0, tokens: 0, droppedByCount: 0 }
   }
-  // 预算不可用 ⇒ 空窗口（见 MidWindowOptions 的说明：不退回全表）
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
-    return { entries: [], droppedCount: entries.length, droppedTokens: totalTokens, tokens: 0 }
+  // 预算不可用 ⇒ 空窗口（见 MidWindowOptions 的说明：不退回全表）。
+  // 条数上限不可用时把"全丢"记在条数账上，否则记在 token 账上 ——
+  // 面板/日志要能看出是哪一个约束把窗口清空的（否则只会看到"丢光了"而不知为什么）。
+  const countUsable = Number.isFinite(maxCount) && maxCount > 0
+  const tokenUsable = Number.isFinite(maxTokens) && maxTokens > 0
+  if (!countUsable || !tokenUsable) {
+    return {
+      entries: [],
+      droppedCount: entries.length,
+      droppedTokens: totalTokens,
+      tokens: 0,
+      droppedByCount: countUsable ? 0 : entries.length,
+    }
   }
 
   // 排序只作用于**副本**：输入数组可能是调用方持有的缓存，改它的顺序会连带改别处的渲染字节
@@ -124,7 +164,13 @@ export function selectMidWindow(
 
   const keepIds = new Set<string>()
   let tokens = 0
+  let droppedByCount = 0
   for (const entry of newestFirst) {
+    // 条数先判（见模块头 ★：token 记账对超短条目不设防，条数才是那道防呆闸）
+    if (keepIds.size >= maxCount) {
+      droppedByCount = entries.length - keepIds.size
+      break
+    }
     if (tokens + entry.token_count > maxTokens) break
     tokens += entry.token_count
     keepIds.add(entry.id)
@@ -137,5 +183,6 @@ export function selectMidWindow(
     droppedCount: entries.length - kept.length,
     droppedTokens: totalTokens - tokens,
     tokens,
+    droppedByCount,
   }
 }

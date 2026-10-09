@@ -22,7 +22,8 @@ import z from '@deepseek-ai/schemastery'
 
 import { createDriver, type TurnDriver } from '@forlife/gateway'
 import { defaultConditionOf, defaultScopeOf, TurnRunner } from '@forlife/gateway'
-import { readPending, seedWakeRules } from '@forlife/gateway'
+import { backlogNotice, renderBacklogNotice, seedBacklogWakeRule, seedWakeRules } from '@forlife/gateway'
+import { createVisionFromEnv, defaultAttachmentRoot } from '@forlife/gateway'
 import { lastTimeReading, recordTimeDrift, recordTimeReading } from '@forlife/store'
 
 import { activeRuntimes, whenRuntimeReady, type MemoryRuntime } from './index.ts'
@@ -119,6 +120,11 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
 
       // 播种唤醒规则（幂等；保证"零配置也按文档工作"）
       seedWakeRules(runtime.db)
+      // ★ 离线积压那一组是**单独的一组参数**（用户明确要求），
+      //   它不在 `WAKE_CONDITIONS` 里（那个文件本轮属于另一个改动，见 backlog.ts 的说明），
+      //   所以这里要单独播种 —— 不播种的话 `wake_rules` 里没有它的行，
+      //   最小间隔等设置会在第一次被修改时被硬编码兜底覆盖掉。
+      seedBacklogWakeRule(runtime.db)
 
       const driver: TurnDriver = createDriver({
         kind: resolved.driver,
@@ -128,6 +134,16 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
         },
         longConnection: { endpoint: `http://${resolved.host}:${String(resolved.port)}/turn` },
       })
+
+      // ★ P1-1：视觉桥接。**与生产路径同一份装配逻辑**（`createVisionFromEnv`），
+      //   免得"本地能看图、线上看不见"这种最难查的漂移。
+      const attachmentRoot = defaultAttachmentRoot(process.env)
+      const visionWiring = createVisionFromEnv({
+        db: runtime.db,
+        storageRoot: attachmentRoot,
+        log: (message) => console.log(`[forlife] 视觉｜${message}`),
+      })
+      console.log(`[forlife] ${visionWiring.note}`)
 
       transport = new OneBotTransport({
         port: resolved.port,
@@ -197,10 +213,21 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
           idleThresholdMs: defaultFor<number>('clock.idleThresholdMs'),
         },
         unreadSummaryOf: (scope) => {
-          // 唤醒时带上"你错过了什么"（只读不标记已读：标记留给模型自己read_pending时做）
-          const items = readPending(runtime.db, { scope, limit: 5, markRead: false })
-          if (items.length === 0) return undefined
-          return items.map((i) => `${i.senderName ?? ''}：${i.summary}`).join('\n')
+          // ★ 任务②(a)：**只告诉模型"有 N 条没读"，不把正文塞进上下文。**
+          //
+          // 旧行为是 `readPending(db, {scope, limit: 5, markRead: false})` 然后把
+          // 5 条摘要拼起来塞进提示词 —— 两个问题：
+          //  ① 积压 300 条时那 5 条既不完整、又白占窗口；
+          //  ② 模型看不到"还有多少"，无法判断该不该现在处理。
+          // 这与本项目刚修过的**中期记忆窗口**是同一条原则：
+          // 不要一次把大量外部内容塞进活跃上下文 —— 先给索引，让它自己去取。
+          //
+          // `scope` 参数在这里**刻意不用**：积压是全局现象，
+          // 只报当前会话那一条会让"另外 3 个群还堆着 120 条"彻底不可见。
+          void scope
+          const notice = backlogNotice(runtime.db)
+          if (notice.unread === 0) return undefined
+          return renderBacklogNotice(notice)
         },
         log: (message) => console.log(`[forlife] 轮次｜${message}`),
       })
@@ -210,6 +237,17 @@ export function apply(ctx: { effect: (callback: () => () => void) => void; logge
         transport,
         runner,
         debounceMs: resolved.debounceMs,
+        // ★ P0-2 + 任务②：**把系统监督循环接上**。
+        //
+        //   `reports.ts` 那套（铁律 1：后台任何影响模型的操作都要报告）写好了、
+        //   单测全绿，但**生产路径零调用** ⇒ 好友申请 / 群邀请 / 被撤回 / 被踢
+        //   这些"记进 effects 就再没人看"的事件**永远到不了模型**。
+        //   这一行就是那条链路的唯一开关 —— 没有它，上面所有东西都还是死的。
+        supervisor: { enabled: true },
+        // ★ P1-1：图片理解。与生产路径（`gateway/src/runtime.ts`）**同一份装配逻辑**
+        //   （`createVisionFromEnv`）—— 两处各写一遍必然漂移。
+        imageStorageRoot: attachmentRoot,
+        ...(visionWiring.vision === undefined ? {} : { imageVision: visionWiring.vision }),
         log: (message) => console.log(`[forlife] 网关｜${message}`),
       })
       gateway.start()

@@ -24,8 +24,11 @@
  *
  * ⚠️ 还有一类它同样看不见：**分母**。`compaction.autoTriggerRatio` 是比例，
  * 真正决定触发点的是 `contextWindow × ratio`（宿主 `resolveCompactSpec`），
- * 而 `contextWindow` 来自 adapter 模型声明（四个 profile 里写的是 `262144`）。
+ * 而 `contextWindow` 来自 adapter 模型声明（四个 profile 里原本写的是 `262144`）。
  * 比例改对了、分母不对，生效阈值照样不是想要的数 —— 见下面那条偏离的 ⚠️ 说明。
+ * ★ 2026-10-09：分母已按用户裁定 ① 改成 `1000000`，`0.6 × 1M = 600k` 现在真的成立；
+ * 机器守卫在 `packages/dsh-component/test/compaction-threshold.test.ts`
+ * （"生效触发点 = 600k"那条，它读的是 profile 里的真值）。
  *
  * @module @forlife/contracts/deviations
  */
@@ -80,11 +83,15 @@ export const DEVIATIONS: readonly Deviation[] = [
       '`reservedCompletionTokens` 与 `headroomTokens=65536`），但把单次请求的峰值上下文压下来。' +
       '代价如实写明：**压缩来得更晚** ⇒ 压缩那一次的"前缀缓存失效"成本更高（§10.4），' +
       'T13 的"未命中约每 5–8 轮一次"在长会话里会更稀疏。' +
-      '⚠️ **本偏离只改了比例，没改分母**：宿主算的是 `contextWindow × ratio`，' +
-      '而四个 profile 给 `deepseek-v4.1-flash` 声明的是 `contextWindow: 262144` ⇒ ' +
-      '当前生效阈值约 **0.6 × 262144 ≈ 157k**，不是 600k。要真的等效 600k，' +
-      'profile 的 `contextWindow` 必须声明成 `1000000`（比例本身不能 > 1，宿主 `assertRatio` 会拒）——' +
-      '那是**另一处改动**（不在本次口径内），本次未改，已单独提出。',
+      '⚠️ **本偏离只改比例，分母是另一处**：宿主算的是 `contextWindow × ratio`，' +
+      '而四个 profile 给 `deepseek-v4.1-flash` 原本声明的是 `contextWindow: 262144`' +
+      '（那是 `dsh-llm-pi-ai` 的**通用兜底默认值**，不是这个模型的事实）⇒ ' +
+      '当时生效阈值约 **0.6 × 262144 ≈ 157k**，不是 600k。' +
+      '★ 2026-10-09：**分母已按用户裁定 ① 改成 `1000000`**（四个 profile 都改了），' +
+      '所以现在 `0.6 × 1M = 600k` 真的成立 —— 本条偏离从此是"比例 + 分母"两处一起生效的。' +
+      '守卫：`dsh-component/test/compaction-threshold.test.ts` 的"生效触发点 = 600k"一条' +
+      '（它读 profile 里的真值，把分母改回去会立刻变红）。' +
+      '比例本身不能 > 1（宿主 `assertRatio` 会拒），所以拿 600k 只能靠把分母声明成 1M。',
     approvedBy:
       '用户 2026-10-09 明确口径：「a。改成阈值百分之60把，等效600k，因为现在模型总上下文空间是1M」。' +
       '消费点：`dsh-component/src/compaction-engine.ts` 的 `AUTO_TRIGGER_RATIO`（插件缺省喂给宿主 ' +
@@ -191,8 +198,9 @@ export const RULE_DEVIATIONS: readonly RuleDeviation[] = [
       '`repository.ts:210-220` 与 `runtime.ts:415-421` 都记录了当时的推理。反过来，要让「新条目落在新 epoch」成立，' +
       '就只能先推进 epoch 再写条目。代价如实写明：① §2.2 的字面被违背 —— **不做 epoch 过滤**，' +
       '渲染源是跨压缩累积的全部历史（"当前窗口"= 表里的相关行，而不是"当前 epoch 的条目"）；' +
-      '⚠️ 2026-10-09 起**注入窗口**另有 token 预算（基线 `memory.midWindow.maxTokens`，' +
-      '`runtime.renderView()` 从最新往回取、只渲染一段），但 §5.3 那套"中期区独立预算"' +
+      '⚠️ 2026-10-09 起**注入窗口**另有**两个**预算（基线 `memory.midWindow.maxTokens` 与 ' +
+      '`memory.midWindow.maxCount`，`runtime.renderView()` 从最新往回取、只渲染一段），' +
+      '但 §5.3 那套"中期区独立预算"' +
       '（`fragment.activeBudgetRatioMin/Max`）仍按**全表**算（`midStats` 不过滤）—— 两件事别混为一谈；' +
       '② `window_offset` 仍按 epoch 分桶（`repository.ts:169` 的 `max(window_offset)` 限定在当前 epoch），' +
       '压缩后新条目从 offset 0 重新开始，渲染时**排在旧条目之前**，「追加到 L3 尾部」的次序保证因此不成立' +

@@ -110,6 +110,98 @@ export interface WakeDecisionOptions {
 
 /** 从保真度基线取默认规则（保证与文档一比一）。 */
 /**
+ * ★ 唤醒条件的**生产者登记表** —— 回答"面板上这条规则真的会触发吗"。
+ *
+ * ## 为什么必须有一张机器可读的表（而不是写在注释里）
+ *
+ * 2026-10-09 的入站事件审计发现：**15 个唤醒条件里有 7 个没有任何生产者**
+ * （`turns.ts` 的 `defaultConditionOf` 是唯一的产出点）。后果是面板上改那些规则的
+ * 开关/概率**什么都不会发生，而且不报错** —— 用户以为配好了，其实永远不会触发。
+ *
+ * 这类缺陷在行为层看不出来（不抛异常、不留痕、面板照样能点），所以只能靠**登记 + 守卫**：
+ *  1. 本表把每个条件的生产者写成**仓库相对路径**；`null` = 没有，且**必须**写 `waitingOn`
+ *     说清卡在哪、等什么；
+ *  2. `wake-runtime.ts` 启用时把缺口打进日志（`describeWakeProducerGaps()`）——
+ *     让"配了不会发生"从"事后审计才发现"变成"启动第一眼就能看到"；
+ *  3. `gateway/test/wake-condition-producers-wiring.test.ts` 逐条核对：
+ *     声称的生产者文件里**真的有产出它的那一行**（去注释、语句位置）。
+ *
+ * ⇒ 以后再加一个条件，要么接上生产者，要么在表里写明卡在哪 —— **不能两不选**。
+ */
+export interface WakeConditionProducer {
+  /** 产出它的模块（仓库相对 `packages/` 的路径，或 `turns.ts` 这样的文件名）；`null` = 当前没有生产者。 */
+  readonly by: string | null
+  /** 没有生产者时**必须**写清"卡在哪、等什么"（否则这张表会变成新的谎话）。 */
+  readonly waitingOn?: string
+  /** 一句话说明它靠什么信号产出。 */
+  readonly note: string
+}
+
+/** 条件 → 生产者（见类型注释里的三条纪律）。 */
+export const WAKE_CONDITION_PRODUCERS: Readonly<Record<WakeCondition, WakeConditionProducer>> = {
+  private_message: { by: 'turns.ts', note: '私聊消息（`defaultConditionOf` 的兜底分支）' },
+  temp_message: { by: 'turns.ts', note: '临时会话（`kind = temp`）' },
+  group_message_any: { by: 'turns.ts', note: '群里既没 @ 也没拍一拍时的兜底（默认关闭）' },
+  group_mention: { by: 'turns.ts', note: '`at` 段命中自己的 QQ 号' },
+  group_mention_all: { by: 'turns.ts', note: '`at` 段的 `qq = all`' },
+  group_poke: { by: 'turns.ts', note: '`notice/notify/poke` 合成的拍一拍消息' },
+  reply_to_me: {
+    by: 'turns.ts',
+    note: '`reply` 段的 `data.id` 能在 `qq_outbox.platform_msg_id` 里查到 ⇒ 这条在回我（★ 2026-10-09 补）',
+  },
+  media_received: { by: 'turns.ts', note: '`image` / `record` / `video` 段（`mediaKind` 非空）' },
+  file_received: { by: 'turns.ts', note: '`file` 段（`mediaKind = file`，比 media_received 更具体）' },
+  external_request: {
+    by: 'wake-external-source.ts',
+    note: '外部系统带令牌触发时过这道矩阵（★ 2026-10-09 补：此前它没有消费者）',
+  },
+  bot_offline: {
+    by: 'wake-liveness.ts',
+    note: '心跳断/心跳 online=false/bot_offline 通知 ⇒ 存活判据判定离线后过这道矩阵（★ 2026-10-09 补）',
+  },
+  peer_input_status: {
+    by: null,
+    waitingOn: 'onebot.ts 需要把 `notice_type: notify / sub_type: input_status` 归一成事件（P1-3）',
+    note: '对方正在输入 —— 只有 C2C 有',
+  },
+  peer_status_change: {
+    by: null,
+    waitingOn: '需要按人轮询 `nc_get_user_status`（EXECUTION_PLAN §2.17.4 的 `person_status` 工具）；默认关',
+    note: '对方在线状态变化 —— NapCat **没有**这个事件，只能主动查',
+  },
+  message_recalled: {
+    by: null,
+    waitingOn: 'gateway.ts 的事件路径：事件已归一（`InboundEvent{type:message_recalled}`），目前只落 `effects`',
+    note: '撤回 —— 事件源已经有，缺的是把它接到唤醒判定上的那一行',
+  },
+  self_message_sent: {
+    by: null,
+    waitingOn: 'NapCat `reportSelfMessage: false`（生产配置不发）+ gateway.ts 把 `isSelf` 消息送进条件判定',
+    note: '主人自己在别处发的消息 —— 基线里是"仅记录"（概率 0）',
+  },
+}
+
+/** 当前**没有生产者**的条件（启动日志、面板与报告共用这一份事实）。 */
+export function wakeConditionsWithoutProducer(): readonly WakeCondition[] {
+  return WAKE_CONDITIONS.filter((condition) => WAKE_CONDITION_PRODUCERS[condition].by === null)
+}
+
+/**
+ * 把"配了也不会发生"的条件渲染成一句人话。
+ *
+ * 没有缺口时返回 `undefined`（而不是"全部正常"那种噪音日志）——
+ * 日志里只该有需要人知道的事。
+ */
+export function describeWakeProducerGaps(): string | undefined {
+  const gaps = wakeConditionsWithoutProducer()
+  if (gaps.length === 0) return undefined
+  const detail = gaps
+    .map((condition) => `${condition}（等：${WAKE_CONDITION_PRODUCERS[condition].waitingOn ?? '未写明'}）`)
+    .join('；')
+  return `⚠ 以下唤醒条件**当前没有生产者**，面板上改它们的开关/概率不会发生任何事：${detail}`
+}
+
+/**
  * 唤醒条件的**会话类型分组**（面板按它展示，人才能一眼看出"不同会话等级不同"）。
  *
  * 为什么要在这里（而不是面板里）定义：这是 **QQ 语义**，不是展示偏好 ——

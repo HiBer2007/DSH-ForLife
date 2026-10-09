@@ -3,10 +3,22 @@
  *
  * ## 它只是入口，不是管道
  *
- * 真正的写入只有一条路：`@forlife/gateway` 的 `feedMemory()`（与面板接口、
- * 后台接口、模型工具是**同一个函数**）。这里只做三件事：
- * 读文件 / 解析参数 / 把结果打印成人话。分块、去重、增量更新、归档全部在核心那一侧，
+ * 真正的写入只有一条路：`@forlife/gateway` 的 `feedInput()`（**投喂子系统**：
+ * 输入形态与附件决策 → 系统切分 → 分批投入 → 批间让出控制权 → 会话记账），
+ * 它与面板接口、后台接口、模型工具是**同一个函数**；
+ * 而它**每一批**都调 `feedMemory()`（唯一写入核心，走真实沉降路径）。
+ *
+ * 这里只做三件事：读参数 / 把进度打印成人话 / 把结果汇总成退出码。
+ * 切分、分批、去重、增量更新、归档全部在核心那一侧 ——
  * 它们本来就是记忆系统自己的能力（理由见 `packages/gateway/src/feed.ts` 的模块头）。
+ *
+ * ## ★ 它现在能接住"任意大"（2026-10-09 用户要求）
+ *
+ * 以前是"一个文件一口气喂进去"，一个 100 MB、没有空行的导出会被当成**一条**记忆写进去。
+ * 现在文件是**流式**读的（内存里是有界的块 + 一个切分窗口），切分由系统做：
+ * 太长的段落按句子边界切开，一批一批投入，**批与批之间让出控制权**
+ * （间隔见基线 `feed.batchIntervalMs`）—— 让压缩/沉降与别的进程有机会动，
+ * 而不是把整份东西一次灌进中期记忆。
  *
  * ## 可以直接复制的用法
  *
@@ -39,19 +51,25 @@
  *
  * @module scripts/feed-memory
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { feedMemory, isFeedKind, resolveFeedDbPath, type FeedKind, type FeedItem, type FeedResult } from '../packages/gateway/src/feed.ts'
+import {
+  feedInput,
+  isFeedKind,
+  resolveFeedDbPath,
+  splitCommandLine,
+  type FeedKind,
+  type FeedProgress,
+  type FeedRefreshSpec,
+  type FeedResult,
+  type FeedRunResult,
+} from '../packages/gateway/src/index.ts'
+// 目录扫描与来源命名的**唯一实现在子系统那一侧**（这里只是给老调用方留个名字，
+// 免得"脚本自己又长出一份扫描规则" —— 那份规则曾经就在这里，现在搬走了）
+export { listFeedFiles as collectFiles, sourceOfFeedFile as sourceOfFile } from '../packages/gateway/src/feed-ingest.ts'
 import { openDatabase } from '../packages/store/src/index.ts'
-
-/** 目录扫描认识的后缀（其余文件**静默跳过** —— 别把二进制读进来当记忆）。 */
-const TEXT_EXTENSIONS = ['.md', '.txt']
-
-/** 目录扫描跳过的目录名（它们不属于"资料"）。 */
-const SKIP_DIRS = new Set(['node_modules', '.git', '.runtime', 'dist'])
 
 /** 用法（`--help` 与参数错误都打印它）。 */
 const USAGE = [
@@ -64,10 +82,18 @@ const USAGE = [
   '  --source <名字>             来源标记（同一来源 = 同一份东西，重导会更新它）',
   '                              只能与**单个**文件或 --text 一起用',
   '  --text <文本>               直接喂一段文本（与位置参数二选一）',
+  '  --refresh "<命令>"          ★ 投喂前先跑这条命令把源拉新（成功之后才喂）；',
+  '                              命令与凭据不进仓库 —— 也可以用环境变量',
+  '                              FORLIFE_FEED_REFRESH_COMMAND 配一次（--refresh default 用它）',
+  '  --refresh-output            把刷新命令的 stdout 当作要喂的内容（不留中间文件）',
+  '  --no-refresh                ★ 显式声明"这份文件没有外部源"（例如刚手写的资料）',
+  '                              文件/目录**必须**二选一：--refresh 或 --no-refresh',
   '  --dry-run                   只算不写：报出会发生什么，一行都不落库',
   '  --db <路径>                 指定数据库（默认 FORLIFE_DB → DSH_HOME → 仓库内 .runtime/dsh）',
-  '  --verbose                   逐段打印明细',
+  '  --verbose                   逐段打印明细 + 每一批的进度',
   '  --help                      打印这份说明',
+  '',
+  '大文件/大目录会自动切分并分批投入（批间让出控制权），不需要你先切好。',
 ].join('\n')
 
 /** 解析后的参数。 */
@@ -80,6 +106,10 @@ interface CliOptions {
   readonly db?: string
   readonly verbose: boolean
   readonly help: boolean
+  /** 源刷新的声明（见 `--refresh` / `--no-refresh`）。 */
+  readonly refresh?: FeedRefreshSpec
+  /** 用刷新命令的 stdout 当内容（`--refresh-output`）。 */
+  readonly refreshOutput: boolean
 }
 
 /**
@@ -102,6 +132,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   let db: string | undefined
   let verbose = false
   let help = false
+  let refreshLine: string | undefined
+  let noRefresh = false
+  let refreshOutput = false
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string
@@ -128,6 +161,15 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       case '--text':
         text = next()
         break
+      case '--refresh':
+        refreshLine = next()
+        break
+      case '--refresh-output':
+        refreshOutput = true
+        break
+      case '--no-refresh':
+        noRefresh = true
+        break
       case '--db':
         db = next()
         break
@@ -144,10 +186,45 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   }
 
   if (text !== undefined && paths.length > 0) throw new Error('--text 与文件/目录路径不能同时给（一批一批喂）')
+  if (refreshLine !== undefined && noRefresh) throw new Error('--refresh 与 --no-refresh 只能给一个（源要么有、要么没有）')
+  if (refreshOutput && refreshLine === undefined) throw new Error('--refresh-output 必须与 --refresh 一起用（没刷新就没有输出）')
+  if (refreshOutput && text !== undefined) throw new Error('--refresh-output 与 --text 冲突：内容只能有一个来源')
+  if (refreshOutput && paths.length > 0) throw new Error('--refresh-output 与文件/目录冲突：内容只能有一个来源')
+  if (refreshLine !== undefined && text !== undefined) {
+    // `--text` 的内容是**直接给的**，没有源可刷（要用刷新结果当内容就加 --refresh-output）
+    throw new Error('--refresh 与 --text 冲突：--text 的内容是直接给的；要用刷新结果当内容请加 --refresh-output')
+  }
   if (source !== undefined && paths.length > 1) {
     // 同一个来源 = 同一份东西 ⇒ 两个文件共用一个来源会互相覆盖（第 0 段更新第 0 段）
     throw new Error('--source 只能配**单个**文件：同一个来源是"同一份东西"，多个文件共用它会互相覆盖')
   }
+
+  // 源刷新的声明（**文件/目录必须二选一**；不给就由子系统打回，这里先给出更贴 CLI 的说法）
+  let refresh: FeedRefreshSpec | undefined
+  if (noRefresh) {
+    refresh = { kind: 'none', reason: '命令行显式声明：这是本地资料，没有外部源（--no-refresh）' }
+  } else if (refreshLine !== undefined) {
+    if (refreshLine.trim() === '' || refreshLine.trim() === 'default') {
+      // 用部署配置的命令（环境变量 FORLIFE_FEED_REFRESH_COMMAND 优先）
+      refresh = { kind: 'default', ...(refreshOutput ? { useOutputAsText: true } : {}) }
+    } else {
+      const { command, args } = splitCommandLine(refreshLine)
+      if (command === '') throw new Error('--refresh 的命令是空的')
+      refresh = {
+        kind: 'command',
+        command,
+        ...(args.length === 0 ? {} : { args }),
+        ...(refreshOutput ? { useOutputAsText: true } : {}),
+      }
+    }
+  } else if (paths.length > 0 && text === undefined) {
+    throw new Error(
+      '文件/目录必须说明源怎么刷新：--refresh "<命令>"（先拉新再喂），' +
+        '或 --no-refresh（显式声明它没有外部源，例如刚手写的资料）。' +
+        '为什么必须：文件是某个源的快照，用陈旧数据重喂是**破坏性**的（清空重喂会永久丢掉源里新增的内容）',
+    )
+  }
+
   return {
     paths,
     ...(text === undefined ? {} : { text }),
@@ -157,37 +234,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     ...(db === undefined ? {} : { db }),
     verbose,
     help,
+    ...(refresh === undefined ? {} : { refresh }),
+    refreshOutput,
   }
-}
-
-/** 递归收集资料文件（跳过 `SKIP_DIRS` 与不认识的后缀）。 */
-export function collectFiles(target: string): readonly string[] {
-  const absolute = resolve(target)
-  const stats = statSync(absolute)
-  if (stats.isFile()) return [absolute]
-  const out: string[] = []
-  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue
-      out.push(...collectFiles(join(absolute, entry.name)))
-      continue
-    }
-    if (entry.isFile() && TEXT_EXTENSIONS.includes(extname(entry.name).toLowerCase())) out.push(join(absolute, entry.name))
-  }
-  return out.sort()
-}
-
-/**
- * 来源名：相对当前目录的路径、一律用正斜杠。
- *
- * 为什么用相对路径而不是绝对路径：来源是"同一份东西"的身份标识。
- * 用绝对路径的话，换机器、换 checkout 目录、甚至换个盘符，都会让"重导"变成"新喂一份"。
- * 为什么统一正斜杠：Windows 与容器里同一个文件要能得到**同一个**来源名。
- */
-export function sourceOfFile(file: string, cwd: string = process.cwd()): string {
-  const rel = relative(cwd, file)
-  const chosen = rel === '' || rel.startsWith('..') || isAbsolute(rel) ? file : rel
-  return chosen.replace(/\\/g, '/')
 }
 
 /**
@@ -211,6 +260,8 @@ function summarize(result: FeedResult): string {
   if (result.unchanged > 0) parts.push(`未改动 ${String(result.unchanged)}`)
   if (!result.dryRun && result.archived > 0) parts.push(`归档 ${String(result.archived)}`)
   parts.push(`${String(result.tokens)} token`)
+  // 批数只在**真的分了批**时报：1 批是常态，报出来只是噪音
+  if ((result.batches ?? 1) > 1) parts.push(`${String(result.batches)} 批`)
   return parts.join(' / ')
 }
 
@@ -221,19 +272,30 @@ function detailLines(result: FeedResult): string[] {
     .map((detail) => `    · ${detail.index < 0 ? '上一版' : `第 ${String(detail.index + 1)} 段`} → ${detail.action}：${detail.reason}`)
 }
 
+/** 一批的进度行（只有 `--verbose` 才逐批打：几百批刷屏没人看得下去）。 */
+function progressLine(progress: FeedProgress): string {
+  return (
+    `    … 第 ${String(progress.batches)} 批：本批 ${String(progress.batchChunks)} 段，` +
+    `累计 ${String(progress.chunks)} 段 / ${String(progress.tokens)} token`
+  )
+}
+
 /**
  * 主流程。
+ *
+ * ⚠️ 它是 `async` 的（2026-10-09 起）：投喂子系统要**流式**读文件、并在批与批之间
+ * `await` 让出控制权 —— "一气呵成地同步写完"正是它要修掉的毛病。
  *
  * @param argv - 命令行参数。
  * @returns 进程退出码（0 = 全部成功，1 = 有失败）。
  */
-export function main(argv: readonly string[]): number {
+export async function main(argv: readonly string[]): Promise<number> {
   let options: CliOptions
   try {
     options = parseArgs(argv)
   } catch (error) {
-    console.error(`参数错误：${error instanceof Error ? error.message : String(error)}\n`)
-    console.error(USAGE)
+    console.error(`参数错误：${error instanceof Error ? error.message : String(error)}`)
+    console.error(`\n${USAGE}`)
     return 1
   }
   if (options.help) {
@@ -285,72 +347,72 @@ export function main(argv: readonly string[]): number {
     return 1
   }
 
-  /** 一批（一个文件 / 一段文本）的喂食。 */
-  const feedOne = (label: string, items: readonly FeedItem[], source: string | undefined): boolean => {
-    let result: FeedResult
-    try {
-      result = feedMemory(opened.db, {
-        items,
-        as: options.as,
-        ...(source === undefined ? {} : { source }),
-        ...(options.dryRun ? { dryRun: true } : {}),
-      })
-    } catch (error) {
-      // 意外错误（库损坏之类）：如实说，并且**继续喂下一批** —— 半途而废更难收拾
-      console.error(`✗ ${label}：${error instanceof Error ? error.message : String(error)}`)
-      return false
-    }
-    if (!result.ok) {
-      console.error(`✗ ${label}：${result.error ?? '喂食失败'}`)
-      return false
-    }
-    console.log(`${options.dryRun ? '· ' : '✓ '}${label} → ${summarize(result)}（来源 ${result.source}）`)
-    if (options.verbose) {
-      for (const line of detailLines(result)) console.log(line)
-    } else {
-      const notable = detailLines(result)
-      if (notable.length > 0) console.log(`    （${String(notable.length)} 段没有直接写入，加 --verbose 看明细）`)
-    }
-    return true
-  }
-
-  let ok = true
+  const showProgress = options.verbose
+  let run: FeedRunResult
   try {
-    if (options.text !== undefined) {
-      ok = feedOne(`--text（${String(options.text.length)} 字）`, [{ content: options.text }], options.source)
-    } else {
-      for (const target of options.paths) {
-        let files: readonly string[]
-        try {
-          files = collectFiles(target)
-        } catch (error) {
-          console.error(`✗ ${target}：${error instanceof Error ? error.message : String(error)}`)
-          ok = false
-          continue
+    run = await feedInput(opened.db, {
+      as: options.as,
+      ...(options.text === undefined ? {} : { text: options.text }),
+      ...(options.paths.length === 0 ? {} : { paths: options.paths }),
+      ...(options.source === undefined ? {} : { source: options.source }),
+      ...(options.dryRun ? { dryRun: true } : {}),
+      // ★ 投喂前更新：刷新是**子系统里的前置步骤**（这里只是把声明传下去，
+      //   脚本自己不跑命令 —— 谁都能绕过的"约定"等于没有）
+      ...(options.refresh === undefined ? {} : { refresh: options.refresh }),
+      // 进度：`--verbose` 逐批打印；否则"分了批"时打一行原地刷新的进度
+      //（让人知道它真的在分段投入，而不是卡住了）
+      onProgress: (progress) => {
+        if (showProgress) console.log(progressLine(progress))
+        else if (progress.batches > 1) {
+          process.stdout.write(`\r    … 已投入 ${String(progress.chunks)} 段（第 ${String(progress.batches)} 批）`)
         }
-        if (files.length === 0) {
-          console.error(`✗ ${target}：没找到 .md / .txt 文件`)
-          ok = false
-          continue
-        }
-        for (const file of files) {
-          const label = sourceOfFile(file)
-          let content: string
-          try {
-            content = readFileSync(file, 'utf8')
-          } catch (error) {
-            console.error(`✗ ${label}：读不到文件（${error instanceof Error ? error.message : String(error)}）`)
-            ok = false
-            continue
-          }
-          // 来源：单个文件且显式给了 --source 就用它，否则用相对路径
-          const source = options.source ?? label
-          if (!feedOne(label, [{ content }], source)) ok = false
-        }
-      }
-    }
+      },
+    })
+  } catch (error) {
+    // 意外错误（库损坏之类）：如实说，并且**不再往下走** —— 半途而废更难收拾
+    console.error(`✗ ${error instanceof Error ? error.message : String(error)}`)
+    opened.close()
+    return 1
   } finally {
     opened.close()
+  }
+  if (!showProgress && run.units.some((unit) => (unit.result.batches ?? 1) > 1)) process.stdout.write('\n')
+
+  let ok = run.ok
+  // ★ 源刷新那两行：先打（它在"喂了什么"之前发生），而且**失败时这就是唯一的解释**
+  if (run.refresh !== undefined) {
+    const line = `${run.refresh.ok ? (run.refresh.stale === true ? '⚠ ' : '↻ ') : '✗ '}${run.refresh.note}`
+    if (run.refresh.ok) console.log(line)
+    else console.error(line)
+    if (run.refresh.version !== undefined) console.log(`  源版本：${run.refresh.version}`)
+  }
+  for (const skipped of run.skipped) console.error(`✗ ${skipped.label}：${skipped.reason}`)
+  for (const unit of run.units) {
+    const result = unit.result
+    if (!result.ok) {
+      console.error(`✗ ${unit.label}：${result.error ?? '喂食失败'}`)
+      ok = false
+      continue
+    }
+    console.log(`${options.dryRun ? '· ' : '✓ '}${unit.label} → ${summarize(result)}（来源 ${result.source}）`)
+    const notable = detailLines(result)
+    if (options.verbose) {
+      for (const line of notable) console.log(line)
+    } else if (notable.length > 0) {
+      console.log(`    （${String(notable.length)} 段没有直接写入，加 --verbose 看明细）`)
+    }
+  }
+  if (run.units.length === 0) {
+    console.error(`✗ ${run.error ?? '没有可喂的内容'}`)
+    ok = false
+  } else if (run.ok !== true && run.error !== undefined) {
+    console.error(`✗ ${run.error}`)
+    ok = false
+  }
+  if (run.units.length > 0) {
+    // 投喂期的模式说明（与提示段/工具返回**同一份措辞**）：CLI 这一侧也要让人看到
+    // "现在在消化记忆"，而不是以为刚才那堆东西是"刚刚发生的事"
+    console.log(`  ${run.note}`)
   }
 
   if (!ok) {
@@ -374,5 +436,5 @@ const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
 
 if (invokedDirectly) {
-  process.exit(main(process.argv.slice(2)))
+  process.exit(await main(process.argv.slice(2)))
 }

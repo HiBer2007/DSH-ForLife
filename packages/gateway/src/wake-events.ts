@@ -38,6 +38,16 @@
 export const SYSTEM_EVENT_NAMES = [
   'qq.disconnected',
   'qq.reconnected',
+  /**
+   * ★ **QQ 静默离线**（"假活"）：反向 WS 还连着，但 QQ 侧已经不发事件了
+   * （心跳断了，或心跳自带 `online=false`）。
+   *
+   * 为什么**不复用** `qq.disconnected`：那一个是"连接断了"（连接回调立刻知道），
+   * 这一个是"连接好着、QQ 死了"（只有心跳能看出来）。两件事的**发现时间**
+   * 与**能采取的行动**都不同，所以事件名也要分开 —— 否则想只想被其中一件叫醒的人做不到。
+   * 判据与状态机在 `wake-liveness.ts`。
+   */
+  'qq.silent',
   'endpoint.unavailable',
   'disk.high',
   'migration.failed',
@@ -124,6 +134,9 @@ export function createSystemEventGate(): SystemEventGate {
 export function isBadState(name: string, state: string): boolean {
   // 这些事件的"坏"状态名是 `down` / `true` / `high`
   if (name === 'disk.high') return state === 'high' || state === 'true'
+  // `qq.silent` 的坏状态是 `silent`（另一个取值是 `alive`）——
+  // 不显式处理的话它会掉进默认分支被判成"好消息"，于是告警措辞与去重都会错
+  if (name === 'qq.silent') return state === 'silent'
   if (name === 'qq.reconnected') return false // 它本身就是好消息
   return state === 'down' || state === 'true'
 }
@@ -157,6 +170,8 @@ export function describeSystemEvent(name: string, state: string): string {
       return 'QQ 连接断了 —— 在它恢复之前你发不出消息，也收不到消息。'
     case 'qq.reconnected':
       return 'QQ 连接恢复了 —— 之前因为断线没做成的事现在可以做了。'
+    case 'qq.silent':
+      return 'QQ 静默离线了 —— 反向 WS 还连着，但 QQ 侧已经不收不发，在这之前你发不出消息。'
     case 'endpoint.unavailable':
       return '推理端点不可用 —— 你现在可能没法正常调用模型。'
     case 'disk.high':

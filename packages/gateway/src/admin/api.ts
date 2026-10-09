@@ -60,8 +60,10 @@ import { createDshStatusProbe } from '../dsh-status.ts'
 import { probeAllEndpoints } from '../endpoint-health.ts'
 import { createExternalWakeSource } from '../wake-external-source.ts'
 import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
-// 手动喂食记忆资料：**四条入口共用的唯一核心**（CLI / 面板接口 / 模型工具 / 这里）
-import { feedMemory, isFeedKind, type FeedItem } from '../feed.ts'
+// 手动喂食记忆资料：**投喂子系统的唯一入口**（CLI / 面板接口 / 模型工具 / 这里都走它；
+// 它内部每一批调一次 `feedMemory` —— 不存在第二条写入路）
+import { firstFeedResult, feedInput } from '../feed-batch.ts'
+import { isFeedKind, type FeedItem } from '../feed.ts'
 import { recordAdminAction } from '../reports.ts'
 import { backupNow } from './storage-write.ts'
 import { setState } from '@forlife/store'
@@ -1182,8 +1184,9 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
 
       // ── 手动喂食记忆资料（后台「喂食记忆」页）──────────────────────
       //
-      // ★ 与 CLI / 面板接口 / 模型工具**共用** `feedMemory`：这里只做
-      // "鉴权 → 解析请求体 → 调用 → 记审计"，一行记忆逻辑都不重复。
+      // ★ 与 CLI / 面板接口 / 模型工具**共用** `feedInput`（@forlife/gateway 的投喂子系统）：
+      // 这里只做"鉴权 → 解析请求体 → 调用 → 记审计"，一行记忆/切分逻辑都不重复。
+      // 子系统会自己切分、自己分批、批间让出控制权（大输入不再被"一口气灌进去"）。
       // 校验失败一律 400（带原因），不是 500 —— 抛异常会变成"服务器内部错误"，
       // 用户看不出是自己传错了还是系统坏了。
       if (route === '/feed' && method === 'POST') {
@@ -1212,13 +1215,17 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         })
         const source = typeof body['source'] === 'string' && body['source'].trim() !== '' ? body['source'].trim() : undefined
 
-        const result = feedMemory(db, {
-          items,
+        const run = await feedInput(db, {
           as,
+          items,
           ...(source === undefined ? {} : { source }),
           ...(body['dryRun'] === true ? { dryRun: true } : {}),
         })
-        if (!result.ok) { json(res, 400, { error: result.error ?? '喂食失败' }); return true }
+        const result = firstFeedResult(run)
+        if (result === undefined || !result.ok) {
+          json(res, 400, { error: run.error ?? result?.error ?? '喂食失败' })
+          return true
+        }
         audit(db, {
           action: 'api',
           ok: true,
