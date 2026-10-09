@@ -681,3 +681,57 @@ assert.equal(dshUrlFromEnv({ FORLIFE_WAKE_BRIDGE_URL: 'http://127.0.0.1:3080/for
 **风险**：改网络拓扑会影响 gateway 与 caddy 之间既有的连通方式
 （gateway 的 8081 是 Caddy 反代的目标）—— **改之前必须先把"caddy 怎么找到 gateway"读清楚**，
 否则会把面板一起弄断。**所以这条仍然是"先读清再动"。**
+
+
+### ★★ §15 三次补充：「共享 netns」假设**被推翻**，真相比它简单得多
+
+实测（`docker inspect` 的 `NetworkSettings.Networks`）：
+
+```
+forlife-dsh-1        forlife_edge + forlife_internal
+forlife-gateway-1    forlife_edge + forlife_internal     ← ★ 与 dsh 同在两个网络
+forlife-caddy-1      forlife_edge
+forlife-qq-1         forlife_edge + forlife_internal
+```
+
+```
+gateway 监听：0.0.0.0:8081 ／ 0.0.0.0:3010
+caddy.ts:306   upstreamHost = input.upstreamHost ?? '127.0.0.1'   ← 默认可覆盖
+```
+
+⇒ **dsh 与 gateway 本来就同网** ⇒ **不需要共享网络命名空间**（我上一条的假设**错了**，而
+且是"往复杂处猜"—— 这已经是本次会话第 6 次）。够不着的**唯一**原因是：
+**DSH 只绑了 `127.0.0.1`**，没绑容器网卡。caddy 也不是靠 `127.0.0.1` 找 gateway 的
+（它靠传入的 `upstreamHost` 覆盖默认值）。
+
+### 所以 D7 的修法收敛成一条，而且不碰网络拓扑
+
+1. 让 **DSH 绑到容器网卡**（`0.0.0.0:3080`，是 DSH 自己的启动参数/配置 —— **要先读它的 CLI**）
+2. `dsh` 与 `gateway` **两个**服务都补上：
+   - `FORLIFE_DSH_URL=http://dsh:3080`
+   - `FORLIFE_WAKE_BRIDGE_URL=http://dsh:3080/forlife/wake`
+   - `FORLIFE_WAKE_BRIDGE_SECRET=<一个共享密钥>`（真值只进 VM 的 `deploy/.env`）
+3. **判据**：日志里"唤醒桥端点未挂载"消失 + 面板「DSH 后端」卡从"未配置"变成**可达**
+4. 全程点名服务 + `--no-deps` + 比对 QQ 容器 ID
+
+**不违反 Caddy 那条硬规则**：那条规则反对的是**用公网域名反代 DSH 的 web UI**
+（它的 `/api` 有 Host/Origin 信任栅栏、cookie 是 host-only + SameSite=Strict）。
+绑到 docker 内网**不发布端口、也不加任何公网路由** ⇒ 仍然只有容器之间能到。
+
+### ⚠️ 但有一个**真实的暴露面扩大**，必须写明
+
+`edge` 网络里还有 **caddy**，`internal` 与 `edge` 里还有 **qq**。
+把 DSH 的 web UI 绑到容器网卡之后，**这些容器就都能访问 DSH 的 admin API**了
+（现在只有它自己）。QQ 容器是被外部输入驱动的那一个 ——
+**它一旦被拿下，就能直接调 DSH 的管理接口**。
+
+⇒ 所以这一步在**安全上是净负**，换来的是"面板能看见 DSH 状态 + HTTP 唤醒链路可用"。
+**这个取舍该由用户拍板**，不该我替他定。
+
+### 备选（不想扩大暴露面的话）
+
+- **D-1**：只开唤醒桥需要的那个**路径/端口**（若 DSH 支持把某条路由绑到独立端口）——
+  需要先读 DSH 的 CLI 能力
+- **D-2**：接受现状，把面板文案改成如实说明（见上文选项 C）——
+  代价是放弃"DSH 挂了能一眼看出"这个设计初衷
+- **D-3**：给 DSH 的 web UI 加一层**只认 gateway 的鉴权**（若有）—— 同样要先读 DSH 能力
