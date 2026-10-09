@@ -138,6 +138,6 @@
 #   拿包名当 id 去定位会**静默丢弃整段 patch**（只在 `--dump-config` 时打一行警告）。
 - id: agent-default-model
   config:
-    provider: opencode-go
-    model: deepseek-v4.1-flash
+    provider: deepseek-official
+    model: deepseek-flash
     reasoningEffort: high
