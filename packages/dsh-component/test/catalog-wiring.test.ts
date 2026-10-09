@@ -81,3 +81,11 @@ test('★ 取数层与探针都不得吞掉异常后**静默** —— 必须有�
     )
   }
 })
+
+test('★ 模型路由（installModelRouter）在启动路径上被真的调用', () => {
+  const src = code('src/index.ts')
+  assert.match(src, /import\s*\{[^}]*\binstallModelRouter\b[^}]*\}/, 'installModelRouter 没有 import')
+  assert.match(src, /^\s*const\s+\w+\s*=\s*installModelRouter\(\s*ctx/m, 'installModelRouter 没有被真的调用')
+  assert.match(src, /modelRouter\.mode/, '模型路由的结果没被用（等于白调）')
+  assert.match(src, /modelRouter\.dispose\(\)/, '模型路由没有挂 dispose —— 插件卸载时会漏监听器')
+})

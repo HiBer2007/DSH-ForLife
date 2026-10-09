@@ -28,6 +28,7 @@ import { seedDefaultPrompts } from './prompt-store.ts'
 import { seedDefaultRoutes, seedDeepSeekFallback, seedOpenCodeGoRoutes } from './route-seed.ts'
 import { probeLlm } from './llm-probe.ts'
 import { fetchHostCatalog } from './llm-host.ts'
+import { installModelRouter } from './model-router.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
@@ -629,6 +630,16 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     if (seeded.length > 0) always(`已播种内置提示词：${seeded.join(', ')}`)
     disposers.push(registerPromptSections(systemPrompt, runtime, config.promptVariables))
     disposers.push(registerMemorySections(systemPrompt, runtime))
+
+    // ★★ 2026-10-08 中介层第 ③' 块：**把路由接进调用链**。
+    //   订阅 host 的 agent/created · agent/pre-step · agent/turn-stopping。
+    //   ★ 默认 **off**：不能让一个没验证过的接线在用户不知情时开始改模型。
+    //   先跑 `FORLIFE_ROUTER_MODE=observe`（**只打日志不改**）确认钩子真的响、载荷对得上，再开 `apply`。
+    const modelRouter = installModelRouter(ctx as never, { log: always })
+    disposers.push(() => { modelRouter.dispose() })
+    if (modelRouter.mode === 'off') {
+      log('模型路由：未启用（设 FORLIFE_ROUTER_MODE=observe 可先观察）')
+    }
     log('已注册提示段 forlife:p1-system(100) / forlife:p2-style(110) / forlife:l2-index(120) / forlife:l3-mid(130)')
   } else if (config.registerPromptSections) {
     always('⚠️ 未找到 systemPrompt 服务：记忆区不会进入系统提示词（只写库不生效）。')
