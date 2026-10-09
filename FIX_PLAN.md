@@ -938,3 +938,60 @@ feed.ts:695        const appended = appendMidEntry(db, { … })   ← 每个"段
 用户已明确选 **C-②**（交给模型），并补了目标语义：
 **「让模型以为在回想过去的记忆」** ⇒ 那轮输入的框架是"你在回想过去"，
 不是"这是份文档，请处理"。这与既有的 `forlife:feed-mode` 是同一件事，要一起对齐。
+
+
+---
+
+## 18. ★★★ 三个决定已拍板（2026-10-09）+ P0-b 首次尝试的翻车记录
+
+### 用户裁定（**不要再问**）
+
+| | 决定 | 值 |
+|---|---|---|
+| **A** | 沉降分母 `activeBudget` | **新增独立键，500k** —— 不复用 `memory.midWindow.maxTokens`（那是**注入窗口**；`deviations.ts:201` 警告过"别混为一谈"） |
+| **B** | 人格 | **B-② 从提示词拿掉 persona，让记忆承担身份** —— 不再断言"你是谁" |
+| **C** | 喂食 | **C-② 交给模型**（目标语义：**让模型以为在回想过去的记忆**） |
+| **D** | 唤醒桥 | **D-B 写代码自建监听端口**，绕开 DSH 的 webServer |
+
+**A 的已知代价（用户知情并接受）**：中期 active 会沉到 **≈425k（85%×500k）** 为止，
+而其中只有 `midWindow.maxTokens`（100k）看得见 ⇒ **差额约 325k 落在窗口外**。
+这是**被接受的取舍**，不是漏洞 —— 记录在此，免得日后被当成 bug 重查。
+
+### P0-b 首次尝试：**翻车并已干净回滚**
+
+**做了什么**：四处替换（①基线加 `memory.midBudgetTokens=500000`；②候选选择从
+"单一时间前置过滤"改成"占比/定时二者或"；③早退原因说清是哪条没成立；④触发原因并进 notes）。
+
+**怎么翻的**：`runtime.ts` 那三处替换我用 **PowerShell 双引号字符串**拼的，
+而里面含**反引号模板字面量**与 `${...}` —— PowerShell 把 `` ` `` 当转义、把 `${}` 当变量。
+结果是 TS 报 `TS1127/TS1110 Invalid character`（`runtime.ts:1672`、`:1718`）。
+
+**回滚**：`git checkout -- packages/dsh-component/src/runtime.ts` 与 `plan-baseline.json`。
+工作区 **0 处未提交改动**，`tsc` **exit 0**，`mid/long` **未被触碰**（全程只改源码、没碰库）。
+
+**★ 教训（这是本会话第 5 次栽在反引号/CRLF 这一族上）**：
+**改含模板字面量的 TS，必须用 `edit` 工具（字面文本），绝不用 PowerShell 拼字符串。**
+`$newEarly`/`$newNotes` 那两个双引号串是全部错误的来源 —— 单引号 here-string 的那两处
+（基线 JSON）反而没事。
+
+### P0-b 落地时的形状（设计已定，下一轮照着写）
+
+```ts
+// PLAN.MD:119 —— 「中期占比、访问频率、定时」★三者或★
+const allActive   = this.listEntries({ status: ['active'] })
+const settleStats = this.stats()                       // 注意：原代码在下面还有一次 this.stats()
+const midBudget   = defaultFor<number>('memory.midBudgetTokens')   // 500000
+const ratioMin    = defaultFor<number>('fragment.activeBudgetRatioMin')  // 0.8
+const midRatio    = midBudget > 0 ? settleStats.activeTokens / midBudget : 0
+const byTimer     = allActive.filter((e) => (e.last_accessed_at ?? e.created_at) < cutoff)
+const byRatio     = midRatio >= ratioMin ? allActive : []   // 占比成立 ⇒ 不受年龄限制
+// 占比 ⊇ 定时 ⇒ 并集即"占比成立时取全表"；统一按最久未访问排序
+// fired[] 记下是哪一条触发的，最后 notes: [`触发条件：…`, ...plan.notes]
+```
+
+⚠️ **「访问频率」仍未实现** —— 它需要一个我没读到的定义（按 `access_count`？
+还是"从未被访问过"？）。按纪律**不猜**，在 notes 里如实写明"这一条尚未实现"。
+
+**验证判据（现成）**：部署后看那一行日志 ——
+`沉降一轮：没有要动的…` 应变成 `沉降一轮：碎片化 N 条、淘汰 M 条｜触发条件：中期占比 311.0% ≥ 80%（预算 500000 token）；…`
+`1555127 / 500000 = 311%` ⇒ **占比条件必然触发**，所以这一行一定会变。
