@@ -116,6 +116,12 @@ services:
       #   值仍只放 deploy/.env（引用名在此）。
       #   它给 L2/L3/scorer 当**跨 provider 的兜底**（见 seedDeepSeekFallback）。
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+
+      # ── 模型路由（中介层）─────────────────────────────────────────────
+      # off（默认）| observe（**只打日志、不改模型**）| apply（真改）
+      # ★ 先跑 observe 确认钩子真的响（agent/created · agent/pre-step · agent/turn-stopping），
+      #   再开 apply。默认 off —— 不让没验证过的接线擅自改模型。
+      FORLIFE_ROUTER_MODE: ${FORLIFE_ROUTER_MODE:-observe}
     volumes:
       - forlife-data:/data # db / vectors / attachments / workspace / models
       - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
