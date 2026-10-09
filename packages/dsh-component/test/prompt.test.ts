@@ -114,7 +114,16 @@ test('播种：首次启动写入内置默认值，且来自保真度基线', ()
     const p1 = activePrompt(runtime.db, 'p1-system')
     assert.ok(p1 !== undefined)
     assert.equal(p1.text, `${defaultFor<string>('prompt.p1Default').trim()}\n`, '播种的必须是基线里的默认值（规范化后）')
-    assert.ok(p1.text.includes('{{persona_name}}'), '默认 P1 里应当有变量（证明变量机制是主线而不是装饰）')
+    // ★ 2026-10-09（用户裁定 **B-②**）：原来这里断言的是 `{{persona_name}}`。
+    //   用户明确要求「**人格名字是由记忆决定的，而不是提示词预设的**」——
+    //   所以 persona 断言已从 P1 里拿掉，身份改由**记忆**承担。
+    //   断言本身**保留**（变量机制仍然是主线，不是装饰），换成 P1 里仍在用的 `{{language}}`。
+    //   ⚠️ 两处必须一起改：只改基线不改这里 ⇒ 这条红；只改这里不改基线 ⇒ 白改。
+    assert.ok(p1.text.includes('{{language}}'), '默认 P1 里应当有变量（证明变量机制是主线而不是装饰）')
+    assert.ok(
+      !p1.text.includes('{{persona_name}}'),
+      '**persona 断言必须已移除** —— 身份由记忆承担，不由提示词预设（用户裁定 B-②）',
+    )
     assert.ok(p1.sha256 === hashPromptText(p1.text), '哈希必须是规范化文本的哈希')
     assert.ok(p1.tokenCount > 0)
   } finally {
@@ -166,8 +175,13 @@ test('热生效：改 P2 → 下一轮装配就是新内容；变量被宿主插
   const h = await makeHarness('hot', { persona_name: '小满', owner_name: '老板', language: '中文' })
   try {
     const first = await h.render()
-    assert.ok(first.includes('小满'), '宿主必须把 {{persona_name}} 换成配置里的值（否则变量机制没通）')
-    assert.ok(first.includes('中文'), '{{language}} 也要插值')
+    // ★ 2026-10-09（用户裁定 **B-②**）：原来这里断言 `first.includes('小满')` ——
+    //   靠默认 P1 里的 `{{persona_name}}` 来证明「变量机制是通的」。
+    //   现在 persona 断言已从 P1 移除（**身份由记忆承担，不由提示词预设**），
+    //   所以改成**反向断言**；而「变量机制是通的」这层意思由下一行的
+    //   `{{language}}` 与下面 `{{owner_name}}` 那一段继续覆盖 —— 断言没被削弱。
+    assert.ok(!first.includes('小满'), 'B-② 之后 P1 不该再插值出人格名字（身份由记忆承担）')
+    assert.ok(first.includes('中文'), '{{language}} 也要插值（现在它是 P1 里唯一的稳定变量）')
     assert.ok(!first.includes('{{'), `装配结果里不该残留未替换的变量：${first.slice(0, 200)}`)
 
     // owner_name 不在默认 P1 里 —— 单独验证"注册表覆盖白名单里的全部稳定变量"：
