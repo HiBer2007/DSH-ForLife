@@ -2038,9 +2038,31 @@ export function startSettleTimer(target: SettleTimerTarget, options: SettleTimer
   const tick = (): SettleOutcome => {
     try {
       const result = target.settle(limit === undefined ? {} : { limit })
-      if (result.fragmented > 0 || result.archived > 0) {
-        log(`沉降一轮：碎片化 ${String(result.fragmented)} 条、淘汰 ${String(result.archived)} 条｜${result.notes.join('；')}`)
-      }
+      // ★★ 每一轮都要留痕 —— **包括"什么都没做"的那一轮**。
+      //
+      // 原实现是 `if (result.fragmented > 0 || result.archived > 0) { log(...) }`，
+      // 于是「跑了但没候选」与「循环根本没挂上」在日志里**完全一样**。
+      //
+      // 2026-10-09 真机就是这么被误导的：库里有 **11,114 条**中期记忆、
+      // `long_memory_entries` 却恒为 **0**，而日志一片安静 ——
+      // 从日志上看不出这个循环在不在跑、跑了有没有候选、还是候选被门槛挡住了。
+      //
+      // 而 `settle()` 其实**每一轮都产出了原因**：
+      // `runtime.ts:1582` 返回 `notes: ['没有满足沉降条件的活跃条目']`。
+      // 只是被那个 `if` 丢掉了 —— **有话说却不说，比没话说更糟**：
+      // 它让"门槛定错了"看起来和"功能没实现"一模一样。
+      //
+      // 维护循环的第一职责是**能证明自己活着**。所以：
+      //  - 做了事 ⇒ 正常 log（带条数）
+      //  - 没做事 ⇒ 也 log（带**为什么**没做事，即 notes 原话）
+      const didSomething = result.fragmented > 0 || result.archived > 0
+      // notes 为空时如实说"它没给出原因"，不编一句看起来正常的废话
+      const detail = result.notes.length === 0 ? '（它没给出原因）' : result.notes.join('；')
+      log(
+        didSomething
+          ? `沉降一轮：碎片化 ${String(result.fragmented)} 条、淘汰 ${String(result.archived)} 条｜${detail}`
+          : `沉降一轮：没有要动的（碎片化 0 / 淘汰 0）｜${detail}`,
+      )
       return result
     } catch (error) {
       // **绝不让一轮失败杀死循环**（下一轮照跑），但**要让人看见** ——

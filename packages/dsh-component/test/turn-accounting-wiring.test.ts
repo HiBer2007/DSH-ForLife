@@ -469,6 +469,77 @@ test('★★ 沉降循环：到点**真的调 `settle()`**，且一轮跑完再�
   assert.equal(timers.length, scheduled, '停表之后不再排下一轮')
 })
 
+/**
+ * ★★ 回归守卫：**"跑了但没候选"必须留下痕迹**。
+ *
+ * ## 2026-10-09 真机事故
+ *
+ * 库里有 **11,114 条**中期记忆，`long_memory_entries` 却恒为 **0**，
+ * 而沉降循环的日志**一片安静** —— 从日志上完全分不出这三种情况：
+ *   ① 循环根本没挂上　② 挂了但没候选　③ 候选被门槛挡住了
+ *
+ * 根因：原实现只在 `fragmented > 0 || archived > 0` 时才 `log(...)`，
+ * 而 `settle()` **每一轮都产出了原因**（`runtime.ts:1582` 的 `notes`）——
+ * **有话说却不说**，于是"门槛定错了"看起来和"功能没实现"一模一样。
+ *
+ * 维护循环的第一职责是**能证明自己活着**。这条盯的就是"沉默"本身，
+ * 不是"行为对不对"。
+ */
+test('★★ 回归：沉降一轮没候选也必须留痕（沉默 = 分不清"没做事"和"没挂上"）', () => {
+  const target: SettleTimerTarget = {
+    settle: () => ({ fragmented: 0, archived: 0, notes: ['没有满足沉降条件的活跃条目'] }),
+  }
+  const timers: (() => void)[] = []
+  const logs: string[] = []
+  startSettleTimer(target, {
+    log: (m) => logs.push(m),
+    always: () => {},
+    env: {},
+    intervalMs: 1000,
+    setTimeoutImpl: (fn) => {
+      timers.push(fn)
+      return { unref: () => {} }
+    },
+    clearTimeoutImpl: () => {},
+  })
+
+  timers[0]?.()
+
+  const round = logs.find((m) => m.includes('沉降一轮'))
+  assert.ok(round !== undefined, '**没有候选也必须打一行** —— 否则"没做事"和"没挂上"在日志里长得一样')
+  assert.match(round, /没有要动的/, '要说清这一轮什么都没动')
+  assert.match(
+    round,
+    /没有满足沉降条件的活跃条目/,
+    '**必须带上 settle() 给的原因** —— 那才是排查的入口（它直接指向门槛配置）',
+  )
+})
+
+test('★★ 回归：notes 为空时如实说"它没给出原因"，不编一句看起来正常的废话', () => {
+  const target: SettleTimerTarget = {
+    settle: () => ({ fragmented: 0, archived: 0, notes: [] }),
+  }
+  const timers: (() => void)[] = []
+  const logs: string[] = []
+  startSettleTimer(target, {
+    log: (m) => logs.push(m),
+    always: () => {},
+    env: {},
+    intervalMs: 1000,
+    setTimeoutImpl: (fn) => {
+      timers.push(fn)
+      return { unref: () => {} }
+    },
+    clearTimeoutImpl: () => {},
+  })
+  timers[0]?.()
+  assert.match(
+    logs.find((m) => m.includes('沉降一轮')) ?? '',
+    /它没给出原因/,
+    '没有原因就如实说没有 —— 不能填一句听起来正常的废话',
+  )
+})
+
 test('★★ 沉降循环：一轮抛异常**不能杀死循环**（下一轮照排），但必须让人看见', () => {
   let attempts = 0
   const target: SettleTimerTarget = {
