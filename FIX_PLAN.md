@@ -769,3 +769,56 @@ caddy.ts:306   upstreamHost = input.upstreamHost ?? '127.0.0.1'   ← 默认可�
 
 ⚠️ 前提仍然是**决定 A**（分母）：`fragment.activeBudgetRatioMin/Max` 那套要拿谁当分母。
 分母没定，`byRatio` 就写不出来，这一行也不会变。
+
+
+### ★★ §15 四次补充：D7 的未知量拿到了（DSH 的 CLI 开关）—— **可以动手了**
+
+用户已授权打通（决定 D）。gating fact 已读到，不是猜的：
+
+```
+Usage: dsh --profile web [options]
+  --host <host>                  bind host
+  --port <port>                  listen port; pass 0 to let the OS pick a free one
+  --trusted-host <authority...>  extra authority the /api browser-trust fence
+                                 accepts (host or host:port; repeatable)
+```
+
+而线上容器的命令是（`docker inspect` 读出来的）：
+
+```
+dsh --profile forlife-web --no-open
+```
+
+**没有 `--host`** ⇒ 默认绑回环 ⇒ **这就是 gateway 够不着的根因**，与之前实测的
+`127.0.0.1:3080 LISTEN` 完全吻合。
+
+### 改动（三处，都很小）
+
+1. **`deploy/docker-compose.yml` 的 dsh 命令**：加 `--host 0.0.0.0`
+   （端口 3080 不变；**不给它加 `ports:` 映射** ⇒ 仍然只在 docker 网络内可达，
+   不对外发布）
+2. **`--trusted-host`**：`/api` 有一道 **browser-trust fence**（按 Host/Origin 校验）。
+   gateway 用 `http://dsh:3080` 调用时，Host 是 `dsh:3080` ⇒ **大概率需要
+   `--trusted-host dsh:3080`**。
+   ⚠️ 这条**没有验证过**（没读过 fence 的实现）⇒ 实测时若报 403/拒答，就是它。
+   原则：**只加必需的那一个 authority，不要图省事加一堆**（加得越多，栅栏越松）。
+3. **`dsh` 与 `gateway` 两个服务**都补：
+   - `FORLIFE_DSH_URL=http://dsh:3080`
+   - `FORLIFE_WAKE_BRIDGE_URL=http://dsh:3080/forlife/wake`
+   - `FORLIFE_WAKE_BRIDGE_SECRET=<共享密钥>`
+     ⇒ **真值只进 VM 的 `deploy/.env`**（仓库只留变量名，符合既有纪律）
+
+### 判据（都可观察）
+
+- **判据 A**：`docker logs forlife-dsh-1` 里**不再出现**"未配置 `FORLIFE_WAKE_BRIDGE_SECRET`：
+  唤醒桥端点未挂载"
+- **判据 B**：面板「DSH 后端」卡从"未配置"（`reachable: undefined`）变成**可达**
+  —— 这是 `dsh-status.ts` 那个探针**第一次真的在探**
+- **判据 C**：`forlife-qq-1` 的容器 ID 前后一致（**全程点名服务 + `--no-deps`**）
+
+### 关于用户对安全面的判断
+
+用户明确表示：caddy 与 qq 容器、尤其 QQ **没有外部执行安全隐患**，可以打通。
+⇒ 按用户判断执行，不再重复讨论这一点。
+（`--host 0.0.0.0` 且**不发布端口** ⇒ 仍然只有 docker 网络内可达；
+若日后想收紧，可加一条只放 dsh+gateway 的专用网络 —— 记为可选加固，**不在本次范围**。）
