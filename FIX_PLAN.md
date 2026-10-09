@@ -521,3 +521,57 @@ P1-b 的靶心锁定到 `feed.ts:283 splitIntoFeedChunks` 之后，暴露出一�
    `[forlife] LLM 探针：… current=<provider>/<model>` 那一行**真的变了**，
    而不是看配置文件写对了。
 4. **改了会写/删记忆的路径，分母与阈值没读清之前不许猜。**
+
+
+---
+
+## 15. D7 —— 面板「DSH 后端状态 = 未配置」（用户问过，此前只活在对话里，没有归宿）
+
+### 用户原话
+
+> 此外大盘显示 **DSH 后端状态为未配置！？**
+
+### 根因：**它在如实回答，不是 bug**
+
+`gateway/src/dsh-status.ts:64-78`：
+
+```ts
+export function dshUrlFromEnv(env) {
+  const explicit = env['FORLIFE_DSH_URL']
+  if (explicit !== undefined && explicit.trim() !== '') return explicit.trim()
+  // 唤醒桥的地址里就含 DSH 的 host:port —— 从它推导，省一个配置项
+  const bridge = env['FORLIFE_WAKE_BRIDGE_URL']
+  ...
+  return undefined            // ← 两个都没有 ⇒ undefined
+}
+```
+
+而线上**两个变量在 `dsh` 与 `gateway` 容器里都没有**（实测 `printenv` 结果为空）
+⇒ `reachable: undefined` ⇒ 面板按设计显示"未配置"（`dsh-status.ts:22-26` 特意区分
+`undefined`（没配）与 `false`（配了连不上），理由是"合成一个 false 的话，
+用户会去查一个根本没配的东西"—— **那正是现在该做的：去配它**）。
+
+### ★ 但它还连带一个**功能缺口**，不只是显示问题
+
+`FORLIFE_WAKE_BRIDGE_SECRET` 同样没配 ⇒ 启动日志里有：
+
+> `⚠️ 未配置 FORLIFE_WAKE_BRIDGE_SECRET：唤醒桥端点未挂载`
+
+⇒ **gateway → DSH 的那条 HTTP 唤醒路径根本没挂上**，唤醒只能走库里的
+`wake_requests` 队列（由 DSH 侧的 poller 取）。**这不是显示问题，是少了一条路。**
+
+### 修法（判据都是可观察的）
+
+1. 在 `deploy/docker-compose*.yml` 里给 `dsh` / `gateway` 两个服务补上
+   `FORLIFE_DSH_URL`、`FORLIFE_WAKE_BRIDGE_URL`、`FORLIFE_WAKE_BRIDGE_SECRET`
+   （具体值要从 DSH web 的监听端口与容器名推出来，**先读再填，别猜**）
+2. **判据 A**：重启后 `docker logs forlife-dsh-1` 里**不再**出现"唤醒桥端点未挂载"
+3. **判据 B**：面板「DSH 后端」卡从"未配置"变成**可达**（或至少从 `undefined` 变成
+   明确的 `true`/`false` —— 后者也说明探针真的在探了）
+4. 全程**点名服务 + `--no-deps`**，并 `docker inspect` 比对 QQ 容器 ID
+
+### 状态
+
+**未开工。** 它不依赖决策 A/B/C，但需要先把"DSH web 到底监听在哪"读清楚
+（`forlife-web` 这个 profile 名就暗示它是个 web 服务，但端口与路径我没读过）——
+按这个仓库的纪律，**没读清之前不许填**。
