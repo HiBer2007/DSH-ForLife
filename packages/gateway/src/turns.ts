@@ -126,6 +126,17 @@ export function buildTurnPrompt(
       if (message.mentionedAll) flags.push('@全体')
       if (message.isPoke) flags.push('拍一拍')
       if (message.mediaKind !== undefined) flags.push(message.mediaKind)
+      // ★ 2026-10-09：`sender.role` 之前**抽出来就丢了** ——
+      //   `onebot.ts:729` 抽它、`transport.ts:94` 承载它，**全仓再无第二个消费者**。
+      //   群里「群主说话」和「路人说话」的分量不一样（群主的通知往往就是要你做事，
+      //   路人的话可能只是闲聊），模型看不到这个区别就只能一视同仁。
+      //
+      //   只在 **群主 / 管理员** 时标出来：`member` 是绝大多数，
+      //   每条都标「（成员）」纯属刷屏，反而把 @我 / 拍一拍这些真信号埋掉。
+      //   实测 `sender.role` 只有群消息有（`onebot.ts:726` 的注释），私聊拿不到 ⇒ 自然为空。
+      const roleLabel =
+        message.senderRole === 'owner' ? '群主' : message.senderRole === 'admin' ? '管理员' : undefined
+      if (roleLabel !== undefined) flags.push(roleLabel)
       const suffix = flags.length === 0 ? '' : `（${flags.join('、')}）`
       lines.push(`- [${message.at}] ${message.senderName || message.senderId}${suffix}：${message.text}`)
     }

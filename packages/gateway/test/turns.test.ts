@@ -78,6 +78,34 @@ test('提示词：每条消息都带会话标签（多会话单窗口的前提�
   assert.ok(prompt.includes('conversation 参数必填'), '要提醒模型回复时必须指路')
 })
 
+/**
+ * ★ 2026-10-09：`sender.role` 之前**抽出来就丢了**。
+ *
+ * `onebot.ts:729` 抽它、`transport.ts:94` 承载它，**全仓再无第二个消费者** ——
+ * 解析完就扔进垃圾桶，模型永远看不到"说话的是群主还是路人"。
+ * 而这两者的分量不一样：群主的通知往往就是要你做事，路人的话可能只是闲聊。
+ *
+ * 这类缺陷在行为层**完全看不出来**（不抛异常、不留痕、单测全绿），
+ * 只有"拿真载荷过一遍提示词再断言"才抓得住。
+ */
+test('★ 群主 / 管理员要标进提示词（sender.role 不能解析完就丢）', () => {
+  const prompt = buildTurnPrompt(
+    [
+      inbound({ text: '明天记得交表', chatId: '88888', kind: 'group', senderRole: 'owner' }),
+      inbound({ text: '收到', chatId: '88888', kind: 'group', senderRole: 'admin' }),
+      inbound({ text: '路过看看', chatId: '88888', kind: 'group', senderRole: 'member' }),
+      inbound({ text: '私聊的', chatId: '10001', kind: 'private' }),
+    ],
+    { now: new Date('2026-10-05T12:00:00.000Z') },
+  )
+  assert.ok(prompt.includes('群主'), '群主必须标出来')
+  assert.ok(prompt.includes('管理员'), '管理员必须标出来')
+  assert.ok(
+    !prompt.includes('（成员）'),
+    '普通成员**不要**标 —— member 是绝大多数，每条都标会把 @我 / 拍一拍那些真信号埋掉',
+  )
+})
+
 test('条件映射：@我 / @全体 / 拍一拍 / 普通消息 各归各的（不派生）', () => {
   assert.equal(defaultConditionOf([inbound({ text: 'x', chatId: '1', kind: 'group', mentionedMe: true })]), 'group_mention')
   assert.equal(defaultConditionOf([inbound({ text: 'x', chatId: '1', kind: 'group', mentionedAll: true })]), 'group_mention_all')
