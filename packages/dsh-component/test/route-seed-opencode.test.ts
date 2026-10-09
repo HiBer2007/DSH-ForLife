@@ -93,10 +93,10 @@ test('免费模型过期后：不进库，且原因里说明排除了几个', ()
     assert.equal(result.seeded, true)
 
     const models = (opened.db.prepare('SELECT model FROM model_routes').all() as { model: string }[]).map((row) => row.model)
-    assert.ok(!models.includes('space-bunny-free'), '过期免费模型绝不能进库')
-    assert.ok(!models.includes('longcat-2.5-preview-free'))
+    assert.ok(!models.includes('space-bunny-free'), '幽灵模型（上游已下架）绝不能进库')
+    assert.ok(!models.includes('longcat-2.5-preview-free'), '过期免费模型绝不能进库')
     assert.ok(models.includes('deepseek-v4.1-flash'), '付费模型不受复核期影响')
-    assert.match(result.reason, /2 个免费模型因超出复核期被排除/)
+    assert.match(result.reason, /1 个免费模型因超出复核期被排除/)
   } finally {
     opened.db.close()
   }

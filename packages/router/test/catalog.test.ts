@@ -26,7 +26,7 @@ test('标记：本地自部署的几种写法都认得出', () => {
 
 test('★ 标记：窄 —— 不许把普通模型误标成 local', () => {
   // 这几个都**不该**被判成 local（含 l/o 之类字母组合，但不是本地推理的信号）
-  const cases = ['glm-5.3-flash', 'deepseek-v4.1-flash', 'mimo-v2.6-flash', 'space-bunny-free', 'longcat-2.5-preview-free']
+  const cases = ['glm-5.3-flash', 'deepseek-v4.1-flash', 'mimo-v2.6-flash', 'kimi-k3', 'longcat-2.5-preview-free']
   for (const model of cases) {
     assert.ok(
       !marksOf({ provider: 'opencode-go', model }).includes('local'),
@@ -36,7 +36,7 @@ test('★ 标记：窄 —— 不许把普通模型误标成 local', () => {
 })
 
 test('标记：free 只认作为一个词出现的 free', () => {
-  assert.ok(marksOf({ provider: 'p', model: 'space-bunny-free' }).includes('free'))
+  assert.ok(marksOf({ provider: 'p', model: 'longcat-2.5-preview-free' }).includes('free'))
   assert.ok(marksOf({ provider: 'p', model: 'free-tier' }).includes('free'))
   // 「freedom」不该算
   assert.ok(!marksOf({ provider: 'p', model: 'freedom-7b' }).includes('free'))

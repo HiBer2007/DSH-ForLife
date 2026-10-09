@@ -28,24 +28,42 @@ const IN_WINDOW = new Date('2026-10-08T00:00:00Z')
 /** 复核期外（免费模型应被禁用）。 */
 const EXPIRED = new Date('2026-11-01T00:00:00Z')
 
-test('清单只包含被授权的 5 个模型（能用 ≠ 允许用）', () => {
+test('清单只包含被授权的 4 个模型（能用 ≠ 允许用）', () => {
   const ids = OPENCODE_GO_MODELS.map((model) => model.id).sort()
   assert.deepEqual(ids, [
     'deepseek-v4.1-flash',
     'glm-5.3-flash',
     'longcat-2.5-preview-free',
     'mimo-v2.6-flash',
-    'space-bunny-free',
   ])
   // Go 的模型列表里有几十个，清单外的必须被判不可用
   assert.equal(isModelUsable('kimi-k3', IN_WINDOW).usable, false)
   assert.match(isModelUsable('kimi-k3', IN_WINDOW).reason, /不在授权清单/)
 })
 
-test('免费模型：复核期内可用，过期即禁用（fail-closed）', () => {
-  assert.equal(isModelUsable('space-bunny-free', IN_WINDOW).usable, true)
+/**
+ * ★ 幽灵模型回归：**上游已下架的 id 不能留在授权清单里**。
+ *
+ * 2026-10-09 实测 `GET https://opencode.ai/zen/go/v1/models` 返回 45 个模型，
+ * 其中只有 `space-bunny`（**没有** `space-bunny-free`）。
+ *
+ * 而清单里写着 `space-bunny-free`、还给它排了 L1 rank 3 的兜底位 ——
+ * 那等于**承诺一个不存在的模型**：前面三级全抖动时，兜底自己会 404，
+ * 而且失败原因看起来像"网络问题"，很难联想到"这个模型根本不存在"。
+ *
+ * 复核期机制（`free.recheckDays`）挡不住这种情况：它只看**时间**，
+ * 不看模型还在不在。所以这里用一条硬断言把它钉死。
+ */
+test('幽灵模型：上游已下架的 id 绝不能留在授权清单里', () => {
+  const ids = OPENCODE_GO_MODELS.map((model) => model.id)
+  assert.ok(!ids.includes('space-bunny-free'), 'space-bunny-free 上游已不存在（改名成 space-bunny）')
+  assert.ok(!ids.includes('space-bunny'), '价格未核实的模型不得进授权清单（改名后是否仍免费未知）')
+})
 
-  const expired = isModelUsable('space-bunny-free', EXPIRED)
+test('免费模型：复核期内可用，过期即禁用（fail-closed）', () => {
+  assert.equal(isModelUsable('longcat-2.5-preview-free', IN_WINDOW).usable, true)
+
+  const expired = isModelUsable('longcat-2.5-preview-free', EXPIRED)
   assert.equal(expired.usable, false, '免费状态过期后必须不可用')
   assert.match(expired.reason, /未复核/, '原因要说清是"未复核"而不是"模型不存在"')
 
@@ -54,12 +72,12 @@ test('免费模型：复核期内可用，过期即禁用（fail-closed）', () 
 })
 
 test('过期后可用清单与路由计划都自动收缩', () => {
-  assert.equal(usableModels(IN_WINDOW).length, 5, '复核期内 5 个都能用')
+  assert.equal(usableModels(IN_WINDOW).length, 4, '复核期内 4 个都能用')
   assert.equal(usableModels(EXPIRED).length, 3, '过期后只剩 3 个付费模型')
 
   const plan = planOpenCodeGoRoutes(EXPIRED)
   const models = plan.map((row) => row.model)
-  assert.ok(!models.includes('space-bunny-free'), '不可用的模型**绝不能进计划**（写进库就等于承诺可用）')
+  assert.ok(!models.includes('longcat-2.5-preview-free'), '不可用的模型**绝不能进计划**（写进库就等于承诺可用）')
   assert.ok(models.includes('deepseek-v4.1-flash'))
 })
 

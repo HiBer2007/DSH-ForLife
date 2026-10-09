@@ -96,13 +96,6 @@ export const OPENCODE_GO_MODELS: readonly OpenCodeModel[] = [
     note: '便宜且额度高（$60）：给评分器与降级链第二候选',
   },
   {
-    id: 'space-bunny-free',
-    label: 'Space Bunny Free',
-    protocol: 'chat',
-    free: { verifiedAt: '2026-10-06', recheckDays: 7 },
-    note: '限时免费（文档原文 limited time）：只做最后兜底，**到期未复核即禁用**',
-  },
-  {
     id: 'longcat-2.5-preview-free',
     label: 'LongCat 2.5 Preview Free',
     protocol: 'chat',
@@ -225,7 +218,11 @@ export function planOpenCodeGoRoutes(now: Date = new Date()): readonly OpenCodeR
   add('L1', 0, 'deepseek-v4.1-flash', 'low', '闲聊与简单问答：快且强，优先用')
   add('L1', 1, 'mimo-v2.6-flash', 'low', '降级候选：更便宜')
   add('L1', 2, 'glm-5.3-flash', 'low', '降级候选：额度高，抖动时顶上')
-  add('L1', 3, 'space-bunny-free', 'low', '最后兜底：限时免费，随时可能消失')
+  // ⚠ 2026-10-09：这里原本是 `space-bunny-free`。实测上游模型清单（45 个）里
+  //   **没有** `space-bunny-free`，只有 `space-bunny` —— 免费档被撤了。
+  //   继续留着它，等于给 L1 的降级链末端挂一个必然 404 的模型。
+  //   兜底位改由仍在清单里的免费模型承担（复核期一到会被自动踢出计划）。
+  add('L1', 3, 'longcat-2.5-preview-free', 'low', '最后兜底：限时免费，随时可能消失')
 
   add('L2', 0, 'deepseek-v4.1-flash', 'high', '一般任务：授权清单里综合最强')
   add('L2', 1, 'glm-5.3-flash', 'high', '降级候选')

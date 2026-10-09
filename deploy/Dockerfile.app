@@ -119,6 +119,16 @@ RUN npm i -g @deepseek-ai/dsh@0.1.7-rc.2
 COPY --from=build /build/package.json /build/pnpm-lock.yaml /build/pnpm-workspace.yaml ./
 COPY --from=build /build/packages ./packages
 
+# ★ 2026-10-09：`scripts/` 原来**没进镜像** —— 于是 `scripts/feed-memory.ts`
+#   （投喂记忆的命令行入口）在容器里根本不存在。
+#
+#   而它是"把历史记忆灌进生产库"唯一**不依赖面板口令**的入口：
+#     - admin API 的 `POST /feed` 要口令（scrypt 哈希，没人能反推）；
+#     - 从宿主直接跑又不行（宿主没有 node_modules，`@forlife/*` 解析不到）。
+#   ⇒ 结果就是"投喂"这件事在容器里**没有可用的入口**，只能手工拼。
+#   少拷一个目录，废掉一条路 —— 所以顺手一起带进来。
+COPY --from=build /build/scripts ./scripts
+
 # ★ **profiles 必须带进来**（2026-10-07 真机部署时发现的缺陷：原来没拷）。
 #
 # 两件事都依赖它：

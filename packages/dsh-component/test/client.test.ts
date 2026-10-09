@@ -24,7 +24,11 @@ let captured: { id: string; factory: (require: (id: string) => unknown) => unkno
   },
 }
 
-await import('../client/index.js')
+// ⚠ 必须拿到**只属于本文件的模块实例**：`panel-render.test.ts` 也 import 这个文件，
+//   而 `pnpm test` 用 `--experimental-test-isolation=none`（所有测试共用一个进程）
+//   ⇒ ESM 只求值一次，后加载的文件只会拿到缓存、`captured` 永远 undefined。
+//   带上只属于本文件的 query ⇒ 各拿一份实例。
+await import('../client/index.js?owner=client')
 
 /** 假 React：只提供面板用到的那几个。 */
 function fakeReact(): { React: unknown; jsxCalls: { type: string; props: unknown }[] } {

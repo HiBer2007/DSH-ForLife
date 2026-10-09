@@ -112,11 +112,55 @@ function notifyProbe(options: EndpointHealthOptions, endpointName: string, ok: b
   }
 }
 
+/**
+ * ★ 目录漂移：清单里声明、但上游**已经不认**的模型。
+ *
+ * ## 为什么必须有这个检查
+ *
+ * 2026-10-09 实测发现：`packages/contracts/src/opencode-go.ts` 的授权清单里写着
+ * `space-bunny-free`，L1 降级链的最后一档还指着它 —— 而上游
+ * `GET https://opencode.ai/zen/go/v1/models` 返回的 45 个模型里**没有这个 id**，
+ * 只有 `space-bunny`（免费档被撤了）。
+ *
+ * 复核期机制（`free.recheckDays`）**挡不住这种情况**：它只看时间，
+ * 不看模型还在不在。于是清单会一路烂下去，直到某天降级链真的走到那一档，
+ * 报回来一个看起来像网络故障的 404。
+ *
+ * 探测本来就已经拿到了上游的真实清单 —— 不比对一下纯属浪费。
+ *
+ * ## 只报「声明了但上游没有」，不报「上游有但没声明」
+ *
+ * 后者是**预期**的：Go 计划给几十个模型，我们只授权其中几个（能用 ≠ 允许用）。
+ * 把它也报出来只会刷屏，把真正的漂移淹掉。
+ *
+ * ⚠ 漂移**不改变端点健康判定**：端点本身好好的，烂的是我们这边的目录。
+ * 因为目录陈旧就把端点标红，会让路由避开一个完全可用的后端。
+ */
+function missingDeclaredModels(declaredJson: string | null, live: readonly string[]): readonly string[] {
+  if (declaredJson === null || declaredJson.trim() === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(declaredJson)
+  } catch {
+    // 字段坏了不在这里报 —— 那是配置校验的事，不是探测的事
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const liveSet = new Set(live)
+  const missing: string[] = []
+  for (const item of parsed) {
+    // 两种写法都容忍：`["a","b"]` 与 `[{"id":"a"},...]`
+    const id = typeof item === 'string' ? item : (item as { id?: unknown } | null)?.id
+    if (typeof id === 'string' && id !== '' && !liveSet.has(id)) missing.push(id)
+  }
+  return missing
+}
+
 export async function probeAllEndpoints(options: EndpointHealthOptions): Promise<readonly EndpointProbeResult[]> {
   const log = options.log ?? ((): void => {})
   const rows = options.db
-    .prepare('SELECT id, base_url, api_key_ref FROM inference_endpoints WHERE enabled = 1 ORDER BY id')
-    .all() as { id: string; base_url: string; api_key_ref: string | null }[]
+    .prepare('SELECT id, base_url, api_key_ref, models FROM inference_endpoints WHERE enabled = 1 ORDER BY id')
+    .all() as { id: string; base_url: string; api_key_ref: string | null; models: string | null }[]
 
   if (rows.length === 0) {
     log('端点健康探测：没有启用的端点，跳过（不写任何 health 值 —— 让面板继续显示「从未探测」而不是假装健康）')
@@ -140,13 +184,23 @@ export async function probeAllEndpoints(options: EndpointHealthOptions): Promise
         ...(options.env === undefined ? {} : { env: options.env }),
       })
       const quotaOk = !quotaBlocksRouting(quota)
-      const note = `连通（${String(probe.models.length)} 个模型）；${describeQuota(quota)}`
+      const drift = missingDeclaredModels(row.models, probe.models)
+      const driftNote = drift.length === 0 ? '' : `；⚠ 目录漂移：${String(drift.length)} 个已声明模型上游不认（${drift.join('、')}）`
+      const note = `连通（${String(probe.models.length)} 个模型）；${describeQuota(quota)}${driftNote}`
 
       // 额度用尽 ⇒ 整个端点判为**不健康**（否则路由会一直选它然后全线失败）。
       // 但"额度偏低"仍算健康 —— 一低就拦会让系统在还能用的时候提前瘫掉。
       recordEndpointHealth(options.db, row.id, { ok: quotaOk, latencyMs: probe.latencyMs, note })
       recordEndpointProbe(options.db, { endpointId: row.id, model: null, ok: quotaOk, latencyMs: probe.latencyMs, note, models: probe.models })
       log(`端点 ${row.id} ${quotaOk ? '健康' : '额度用尽'}（${String(probe.latencyMs)}ms）；${describeQuota(quota)}`)
+      // ★ 漂移单独吼一声，而且**不改健康判定**：端点没坏，是我们这边的目录烂了。
+      //   写进 note 只是给面板看，真正要修的是 packages/contracts/src/opencode-go.ts。
+      if (drift.length > 0) {
+        log(
+          `⚠ 端点 ${row.id} 目录漂移：${drift.join('、')} 已不在上游模型清单里。` +
+            `路由指到它们必然 404（且错误看起来像网络故障）—— 请更新 packages/contracts/src/opencode-go.ts 并重播种。`,
+        )
+      }
       notifyProbe(options, row.id, quotaOk, quotaOk ? undefined : '额度用尽')
       results.push({ endpointId: row.id, ok: quotaOk, latencyMs: probe.latencyMs, models: probe.models, note })
     } else {

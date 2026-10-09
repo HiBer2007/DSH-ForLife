@@ -37,7 +37,16 @@ let captured: { id: string; factory: (require: (id: string) => unknown) => unkno
   },
 }
 
-await import('../client/index.js')
+// ⚠ 必须拿到**只属于本文件的模块实例**。
+//
+// `client.test.ts` 也 `import` 同一个 `../client/index.js`，而
+// `--experimental-test-isolation=none`（`pnpm test` 就是这么跑的）让**所有测试共用一个进程**
+// ⇒ ESM 模块只求值一次：先加载的那个文件捕获到模块定义，**后加载的那个拿到缓存**，
+// 它的 `captured` 永远是 `undefined` —— 于是整个文件 5 个测试全红，
+// 而单独跑这个文件又是绿的（这就是"顺序相关偶发失败"的真身）。
+//
+// 带上只属于本文件的 query ⇒ 两个文件各自一份实例，谁也不抢谁的。
+await import('../client/index.js?owner=panel-render')
 
 /** 从真实服务端抓的面板接口响应。 */
 const FIXTURES = JSON.parse(
