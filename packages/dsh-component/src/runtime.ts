@@ -537,13 +537,35 @@ export class MemoryRuntime {
     const entries = searchLongFts(this.db, query, maxResults)
     for (const entry of entries) touchLongEntry(this.db, entry.id)
 
-    // 长期库还空时，退一步查中期记忆（避免"刚开始用什么都搜不到"的挫败感）
-    if (entries.length === 0) {
+    // ★★ 2026-10-09（`FIX_PLAN.md` D3 / P0-c）：这里原来是 `if (entries.length === 0)` ——
+    //   "只在长期层**零命中**时才看一眼中期层"。
+    //
+    //   那是一个**新手引导性质**的兜底（原注释自己写的：避免"刚开始用什么都搜不到"的挫败感），
+    //   不是一条检索路径。代价要到长期库有内容之后才显现：
+    //   **任何能命中长期层的查询，再也不会被告知"中期层里还有 N 条"** ⇒
+    //   模型连"要不要 recall_mid"都无从判断 —— 而 P0-a 刚加的那个工具正需要这条提示指路。
+    //   ⇒ 两件事叠起来就是：**工具在那儿，路被堵死了。**
+    //
+    //   改成"长期层没喂饱这次额度，就也看一眼中期层"。
+    //   多一次 FTS 的代价，换的是"不会再有一整层记忆静默消失"。
+    if (entries.length < maxResults) {
       const mid = searchMidFts(this.db, query, maxResults)
       for (const entry of mid) touchMidEntry(this.db, entry.id)
       if (mid.length > 0) {
-        return this.recallResult([], maxPerTurn, maxPerCycle, maxResults, this.midFallbackNote(mid))
+        if (entries.length === 0) {
+          return this.recallResult([], maxPerTurn, maxPerCycle, maxResults, this.midFallbackNote(mid))
+        }
+        // 长期层有命中、中期层也有 ⇒ **两边都要说**，否则中期那一层等于不存在
+        return this.recallResult(
+          entries,
+          maxPerTurn,
+          maxPerCycle,
+          maxResults,
+          this.midAlongsideNote(mid, entries.length),
+        )
       }
+    }
+    if (entries.length === 0) {
       return this.recallResult(
         [],
         maxPerTurn,
@@ -591,19 +613,53 @@ export class MemoryRuntime {
     const inWindow = new Set(this.midWindow().entries.map((entry) => entry.id))
     const inside = hits.filter((entry) => inWindow.has(entry.id)).length
     const outside = hits.length - inside
+
+    // ★★ 2026-10-09（`FIX_PLAN.md` P0-c）：把**能取回它们的 id** 一并交出去。
+    //
+    // 没有这一段，`recall_mid` 就是一个**没有路通向它**的工具：
+    // 模型只知道"有 N 条相关"，不知道是哪几条 ⇒ 干看着，一个字都捞不回来。
+    // 只列前若干条：一次全列出来会把提示词本身撑大，而取回是**逐条**的显式动作。
+    const idHint = ((): string => {
+      const maxIds = 8
+      const ids = hits.slice(0, maxIds).map((entry) => entry.id)
+      if (ids.length === 0) return ''
+      const more = hits.length > maxIds ? `（只列前 ${String(maxIds)} 条，共 ${String(hits.length)} 条）` : ''
+      return `\n要正文就用 recall_mid 逐条取回：${ids.join('、')}${more}`
+    })()
+
     if (outside === 0) {
       return `长期记忆无命中；中期记忆里有 ${String(hits.length)} 条相关，它们已在当前上下文中，无需检索。`
     }
     if (inside === 0) {
       return (
         `长期记忆无命中；中期记忆里有 ${String(hits.length)} 条相关，但它们**都已滑出当前上下文窗口**：` +
-        '摘要与正文都不在你眼前，本次检索也取不回来。不要把窗口外的内容当成「你记得」来作答。'
+        '摘要与正文都不在你眼前。不要把窗口外的内容当成「你记得」来作答。' +
+        idHint
       )
     }
     return (
       `长期记忆无命中；中期记忆里有 ${String(hits.length)} 条相关：其中 ${String(inside)} 条在当前上下文（窗口内），无需检索；` +
-      `另有 ${String(outside)} 条**已经滑出当前上下文窗口** —— 摘要与正文都不在你眼前，本次检索也取不回来。` +
-      '不要把窗口外的内容当成「你记得」来作答。'
+      `另有 ${String(outside)} 条**已经滑出当前上下文窗口** —— 摘要与正文都不在你眼前。` +
+      '不要把窗口外的内容当成「你记得」来作答。' +
+      idHint
+    )
+  }
+
+  /**
+   * "长期层有命中、中期层**也**有命中"时给模型的那句话（`FIX_PLAN.md` D3 的另一半）。
+   *
+   * 原来只有"长期零命中"那一条路会提中期，长期有命中就**整层不提** ——
+   * 那等于"长期库一有内容，中期就再也没人知道它还在"。
+   * 这条补上那一半：说清**两边各有几条**、以及怎么把中期的取回来。
+   */
+  private midAlongsideNote(hits: readonly MidEntryRow[], longHits: number): string {
+    const maxIds = 8
+    const ids = hits.slice(0, maxIds).map((entry) => entry.id)
+    const more = hits.length > maxIds ? `（只列前 ${String(maxIds)} 条，共 ${String(hits.length)} 条）` : ''
+    return (
+      `另外：中期记忆里还有 ${String(hits.length)} 条相关（上面 ${String(longHits)} 条来自长期层）—— ` +
+      '它们不在长期层，`recall_longterm` 查不到。需要的话用 recall_mid 逐条取回：' +
+      `${ids.join('、')}${more}`
     )
   }
 
