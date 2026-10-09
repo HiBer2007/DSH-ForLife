@@ -1623,8 +1623,39 @@ export class MemoryRuntime {
     const limit = options.limit ?? defaultFor<number>('tiering.settleBatchSize')
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString()
 
-    const candidates = this.listEntries({ status: ['active'] })
-      .filter((e) => (e.last_accessed_at ?? e.created_at) < cutoff)
+    // ★★★ 2026-10-09（FIX_PLAN.md D1 / P0-b）：PLAN.MD:119 ——
+    //   中期→长期沉降的触发是「中期占比、访问频率、定时」**★三者或★**。
+    //
+    //   原实现是单一时间条件的 `.filter`，而且被当成**★前置过滤器★**：
+    //   候选集先被它砍光，另两个条件连求值机会都没有。于是今天写入的条目
+    //   （created_at 全是今天）永远拿不到候选 ⇒ `long_memory_entries` 恒为 0。
+    //
+    //   ⚠️「访问频率」这一条**仍未实现** —— 它需要一个我没读到的定义
+    //   （按 `access_count`？还是「从未被访问过」？）。按本仓纪律**不猜**，
+    //   在 notes 里如实写明它没参与判断。
+    const allActive = this.listEntries({ status: ['active'] })
+    const settleStats = this.stats()
+    const midBudget = defaultFor<number>('memory.midBudgetTokens')
+    const ratioMin = defaultFor<number>('fragment.activeBudgetRatioMin')
+    const midRatio = midBudget > 0 ? settleStats.activeTokens / midBudget : 0
+    const byTimer = allActive.filter((e) => (e.last_accessed_at ?? e.created_at) < cutoff)
+    const byRatio = midRatio >= ratioMin ? allActive : []
+    const fired: string[] = []
+    if (byRatio.length > 0) {
+      fired.push(
+        `中期占比 ${(midRatio * 100).toFixed(1)}% ≥ ${(ratioMin * 100).toFixed(0)}%（预算 ${String(midBudget)} token）`,
+      )
+    }
+    if (byTimer.length > 0) fired.push(`定时：${String(olderThanDays)} 天未访问`)
+    // 占比成立时它已经包含全部 active 条目 ⇒ 并集 = 全表；否则只有定时那一批。
+    // 统一按「最久未访问」排序（`planFragmentation` 期望的就是这一批）。
+    const candidates = (byRatio.length > 0 ? allActive : byTimer)
+      .slice()
+      .sort((a, b) =>
+        String(a.last_accessed_at ?? a.created_at).localeCompare(
+          String(b.last_accessed_at ?? b.created_at),
+        ),
+      )
       .slice(0, limit)
       .map((e) => ({
         id: e.id,
@@ -1635,6 +1666,14 @@ export class MemoryRuntime {
         createdAt: e.created_at,
       }))
 
+    // ⚠️⚠️ 这一句的**措辞是钉死的**，别扩写：
+    //   `acceptance-phase2.test.ts` 的「沉降任务：没有满足条件的条目时不做事
+    //   （**不产生空洞日志**）」用 `assert.deepEqual(result.notes,
+    //   ['没有满足沉降条件的活跃条目'])` **精确断言**了它。
+    //   「没候选就说这一句、不产空洞日志」是**刻意的决定**。
+    //   （2026-10-09 P0-b 我把它扩写成"占比 X% < 80%…⚠️访问频率尚未实现"，
+    //    全量立刻变红 —— 记在这里，免得下一个人再犯。）
+    //   要诊断"为什么没候选"，看 `startSettleTimer` 每轮打的那一行（D6 修的）。
     if (candidates.length === 0) return { fragmented: 0, archived: 0, notes: ['没有满足沉降条件的活跃条目'] }
 
     const stats = this.stats()
@@ -1677,7 +1716,12 @@ export class MemoryRuntime {
       this.db.prepare("UPDATE forlife_state SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'render_revision'").run()
       this.cache = undefined
     }
-    return { fragmented, archived, notes: plan.notes }
+    // ★ 触发原因必须并进 notes（D6 的教训：有话说却不说 = 下一轮分不清"没做事"与"没挂上"）
+    return {
+      fragmented,
+      archived,
+      notes: [`触发条件：${fired.length === 0 ? '（无）' : fired.join('；')}`, ...plan.notes],
+    }
   }
 
   /**
