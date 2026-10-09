@@ -84,6 +84,11 @@ services:
         mkdir -p /cold/tiers/cold /cold/archives /cold/backups &&
         mkdir -p /data/dsh/profiles &&
         ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web &&
+        ln -sfn /app/profiles/forlife-headless /data/dsh/profiles/forlife-headless &&
+        ln -sfn /app/profiles/forlife-qq /data/dsh/profiles/forlife-qq &&
+        test -f /data/dsh/profiles/forlife-web/cordis.patch.yml &&
+        test -f /data/dsh/profiles/forlife-headless/cordis.patch.yml &&
+        test -f /data/dsh/profiles/forlife-qq/cordis.patch.yml &&
         exec dsh --profile forlife-web --no-open
     environment:
       # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
@@ -182,6 +187,14 @@ services:
       #   ① `/app` 在镜像层 ⇒ **EACCES**（容器以 node 跑）；
       #   ② 即使能写，**镜像重建就丢** —— 而 gateway 的沉降/维护循环写的就是这个库。
       #   ⇒ 显式指向**与 dsh 同一个库**（两个进程本来就该共用一份，契约必须一致）。
+      # ★★ 2026-10-09 修（第 19 处缺陷的**真根因**）：这里**原来没设 DSH_HOME**。
+      #   gateway 会拉起 `dsh --profile forlife-headless` 做唤醒，
+      #   而 dsh 只从 `$DSH_HOME/profiles/<名>` 找 profile ——
+      #   没设时它去**默认位置**（容器里的 ~/.dsh）找 ⇒ 那里什么都没有
+      #   ⇒ 报 `profile "forlife-headless" does not exist` ⇒ **QQ 唤醒从来没成功过**。
+      #   ⚠️ 症状是**静默的**：两个容器都 healthy，gateway 只把 stderr 打出来。
+      #   ⚠️ 与 dsh 服务**必须是同一个值**（它们共享同一个卷）。
+      DSH_HOME: /data/dsh
       FORLIFE_DB: /data/dsh/forlife/db/forlife.sqlite
       FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
 
