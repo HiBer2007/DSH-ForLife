@@ -205,9 +205,24 @@ const vitals = computed(() => {
       hint: windowDropHint(d.memory),
     },
     {
-      label: '记忆条目',
+      // ★ 2026-10-09（`FIX_PLAN.md` §10）：口径拆成**四块**，并且把话说准。
+      //
+      // 用户原话：「记忆条目板块应当显示为 **活跃 / 中期 / 长期碎片 / 长期**，
+      // 长期碎片指**在中期记忆中关于长期记忆的碎片**」。
+      //
+      // 两条容易搞混的：
+      //  ① 「中期」**不是**「活跃」的同义词 —— 中期记忆区 = 活跃条目 + 长期碎片
+      //     （`PLAN.MD:257`：active 80–85% + 碎片索引 15–20%）。所以这张卡的
+      //     **主数字是中期**，活跃与碎片是它的两个组成部分。
+      //  ② 原来这里写的是「碎片」—— 词太泛。它特指**指向长期记忆的**碎片
+      //     （`status='fragmented'`、带 `fragment_hint` 与 `fragmented_into`），
+      //     所以一律改称「长期碎片」，跟「长期」区分开。
+      label: '中期条目',
       value: formatNumber(d.memory.activeEntries + d.memory.fragmentEntries),
-      hint: `活跃 ${formatNumber(d.memory.activeEntries)} · 碎片 ${formatNumber(d.memory.fragmentEntries)} · 长期 ${formatNumber(d.memory.longEntries)}`,
+      hint:
+        `活跃 ${formatNumber(d.memory.activeEntries)} · ` +
+        `长期碎片 ${formatNumber(d.memory.fragmentEntries)} · ` +
+        `长期 ${formatNumber(d.memory.longEntries)}`,
     },
     {
       label: '24h 降级率',
