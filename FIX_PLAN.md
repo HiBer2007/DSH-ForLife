@@ -995,3 +995,80 @@ const byRatio     = midRatio >= ratioMin ? allActive : []   // 占比成立 ⇒ 
 **验证判据（现成）**：部署后看那一行日志 ——
 `沉降一轮：没有要动的…` 应变成 `沉降一轮：碎片化 N 条、淘汰 M 条｜触发条件：中期占比 311.0% ≥ 80%（预算 500000 token）；…`
 `1555127 / 500000 = 311%` ⇒ **占比条件必然触发**，所以这一行一定会变。
+
+
+---
+
+## 19. P2-b 恢复：**方案**与证据（2026-10-09）
+
+### 为什么要恢复
+
+`opencode-go` 月度额度**只剩 9%**，而它此前承担**主对话模型**。
+DS 官方还有额度（`deepseek-official`）。当初我把它改回 opencode-go，**唯一理由**是：
+
+> 压缩触发点 = `contextWindow × 0.6`，而那 1M 上下文是 `deepseek-v4.1-flash` 的事实
+> ⇒ 换模型后 "600k" 不再成立于实际在跑的那个模型
+
+### ★ 那个理由**已被实测推翻**
+
+**`deepseek-flash` 的上下文窗口 = 1,000,000**（与 `deepseek-v4.1-flash` **相同**）。证据：
+
+```
+dsh-llm-deepseek/lib/index.js:42-54
+  const DEFAULT_MODELS = [{
+      id: "deepseek-flash",
+      name: "DeepSeek-V41-Flash",
+      contextWindow: DEFAULT_CONTEXT_WINDOW,     // ← 常量
+  ... }, {
+      id: "deepseek-v4-pro",
+      contextWindow: DEFAULT_CONTEXT_WINDOW
+  }];
+```
+
+同包 `README.md` 逐字：
+
+> Omitted `models` advertises the text- and image-capable `deepseek-flash` alongside
+> the text-only `deepseek-v4-pro`, **each with a 1,000,000-token context window**.
+> | `defaultContextWindow` | `1,000,000` |
+
+⇒ `1_000_000 × 0.6 = 600_000` ⇒ **"600k"对新默认模型照样成立。**
+
+（也解释了 `dsh --dump-config` 为什么查不到它：它不在 profile 声明的 4 个模型里，
+而是 **native provider 的目录默认值**。）
+
+### ⚠️ 但**不能**往 `MODEL_CONTEXT_WINDOWS` 加一行 —— 会红
+
+`compaction-threshold.test.ts:293-299` 的断言本体（已读到，不是推断）：
+
+```ts
+test('★★ 守卫：四个 profile 的**每个**模型都显式声明了窗口，且等于登记的真值', () => {
+  for (const profile of PROFILES) {
+    const source = readFileSync(`../../../profiles/${profile}/cordis.patch.yml`, ...)
+    // ① 模型集合必须与登记表一致：新增模型不许"悄悄带一个没来源的窗口值"进来
+    assert.deepEqual(modelIdsOf(source).slice().sort(), …)
+```
+
+而 `modelIdsOf()`（`:270-291`）**只扫 profile 的 `models:` 块**。
+`deepseek-flash` 是 native provider 的模型、**不在** `models:` 里
+⇒ 登记表加一行 ⇒ **集合比对失衡 ⇒ 必红**。
+
+（这正是 §7 记的那个毛病：**看到一个"像是该填的地方"就填，没读下游**。
+本轮读到断言本体才拦住。）
+
+### 正确的四步
+
+| # | 动作 | 说明 |
+|---|---|---|
+| **1** | 加一张**独立**的 `NATIVE_MODEL_CONTEXT_WINDOWS`（含 `src` 来源） | **不参与** profile 的 `models:` 集合比对 |
+| **2** | 改 `600k` 守卫（`:168-198`）按"两类来源"取窗口：<br>profile 模型 → `contextWindowOf(source, id)`；native 模型 → 新表；**两边都查不到 ⇒ 红** | 这是**给守卫补一条它本来就缺的表达能力**，不是放水：原来能挡的（没登记 / 抄错值）一条没少，只是多了 native 这一路 |
+| **3** | `DEFAULT_MODEL_ID` → `deepseek-flash` | `1_000_000 × 0.6 = 600_000` ⇒ 那条断言自然成立 |
+| **4** | 四个 profile 改回 `deepseek-official/deepseek-flash` | 用**带前置断言**的脚本（改前 1 次 / 改后 1 次，不满足就中止不提交）—— 防 CRLF 静默失败 |
+
+**判据**：全量绿（尤其 `compaction-threshold.test.ts`）+ 真机
+`current=deepseek-official/deepseek-flash:high`；且 §15 那条"DSH web 只绑回环"
+与本次无关（那次撞的是 `--host` 的硬禁，不是模型）。
+
+### 还欠一个观察项
+
+`849fb6e` 之后基线里「团子」**在 `v`（活值）里 0 处**、只在 `src`（说明文字）里 1 处
+—— 已用**结构化解析**核实（不是字符串计数）。**地雷已拆干净。**
