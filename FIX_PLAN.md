@@ -1072,3 +1072,49 @@ test('★★ 守卫：四个 profile 的**每个**模型都显式声明了窗口
 
 `849fb6e` 之后基线里「团子」**在 `v`（活值）里 0 处**、只在 `src`（说明文字）里 1 处
 —— 已用**结构化解析**核实（不是字符串计数）。**地雷已拆干净。**
+
+
+---
+
+## 20. ★ 暂停点：VM 断电前的优雅关机（2026-10-09）
+
+用户通知「即将断电，需要暂停并关闭虚拟机」。做了：
+
+1. `docker stop -t 60` **依次优雅停止** `forlife-{dsh,gateway,caddy,qq}-1`
+   （SIGTERM ⇒ 给 `forlife.sqlite` 关闭的机会，**避免断电打坏库**）
+2. `sync`
+3. `shutdown -h now`
+
+**为什么必须优雅停而不是直接断电**：库刚被沉降写过（`long` 0→200、`frag` 0→200、200 条写事务），
+SQLite 默认 `journal_mode` 下硬断电有损坏风险。**优雅停是保护数据的唯一手段**，
+而它必然要停 QQ 容器 —— 这与"不准重启 QQ"不冲突：**关机本来就会掉登录，且这次是用户要求的**。
+
+### ⚠️ 本地工作区留下了 4 个**未提交**文件（= 「3 加列」的 ①–⑤）
+
+| 文件 | 内容 |
+|---|---|
+| `packages/store/src/migrations.ts` | 中期表 DDL 加 `access_count`；**新增迁移 `m0028`** + checksum + 注册 |
+| `packages/store/src/repository.ts` | `MidEntryRow.access_count`；`touchMidEntry` 自增 |
+| `packages/memory-core/test/render.test.ts` | 夹具默认值补 `access_count: 0` |
+| `packages/memory-core/test/window.test.ts` | 夹具默认值补 `access_count: 0` |
+
+**它们没被提交，也没跑完全量** —— `pnpm typecheck` + 迁移实测 + 全量的那条命令
+**被"即将断电"打断**（`tool call aborted`），所以**没有任何验证结论**。
+⚠️ 上一轮同样的改动曾栽两处，都已修：① SQL 模板串里不许有反引号（会终止模板串）
+② `MidEntryRow` 加**必填**字段 ⇒ 三个夹具（`render.test.ts:18`、
+`window.test.ts:30`、`window.test.ts:53`，后者经 `row()` 传递）必须补默认值。
+
+**恢复后第一件事**：对这四个文件跑 `pnpm typecheck` + 迁移实测（临时库，
+**不碰线上**）+ 全量；**绿了才提交**；不绿就按上面的坑逐个查。
+
+### ⑥ 仍然缺一个业务定义
+
+`settle()` 里「访问频率」那条要**用**这一列，但"`access_count` 低到什么算冷"是业务定义，
+用户没给 ⇒ 按纪律**不猜**。①–⑤ 只做到"数据有了、在维护了、读得到了"。
+
+### 断电前的现场（都已在磁盘上）
+
+- 仓库：4 个文件已改（上表），其余干净；最新提交 `61eb276`
+- VM：容器**已全部优雅停止**、已 `sync`、已 `shutdown`
+- 线上库最后一次读到的状态：`long=200 / frag=200 / active=10914`
+  —— **沉降链路是通的**（P0-b 真机验证过）
