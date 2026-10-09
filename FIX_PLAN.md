@@ -822,3 +822,55 @@ dsh --profile forlife-web --no-open
 ⇒ 按用户判断执行，不再重复讨论这一点。
 （`--host 0.0.0.0` 且**不发布端口** ⇒ 仍然只有 docker 网络内可达；
 若日后想收紧，可加一条只放 dsh+gateway 的专用网络 —— 记为可选加固，**不在本次范围**。）
+
+
+### ★★★ §15 五次补充：**A 被 DSH 硬禁止**，D7 的结论到此确定
+
+#### 实测：`--host 0.0.0.0` 会让 DSH 起不来
+
+按四次补充的三处改动执行后，`forlife-dsh-1` 进入 `Restarting` 循环，日志反复打：
+
+```
+error: --host 0.0.0.0 is intentionally not supported yet for safety:
+       it would expose remote code execution to the network;
+       use 127.0.0.1 instead
+```
+
+⇒ **DSH 的作者明确认定它的 `/api` 一旦被网络上任何东西碰到就等于交出 RCE，
+所以在代码里硬禁了。** 这不是"风险"，是一堵墙。
+
+**已回滚**：VM 的 `deploy/docker-compose.yml` 用备份还原（`残留 --host 次数: 0`），
+`docker inspect` 确认命令回到 `exec dsh --profile forlife-web --no-open`；
+dsh `Up (healthy)`；**QQ 容器 ID 前后一致**。仓库**完全没动**（改动只落在 VM 上）。
+`/opt/forlife/deploy/.env` 里我生成的那行密钥**现在是惰性的**（compose 已不引用它），
+留着给 D7-B 用。
+
+#### 而且：**我们的插件本身就挂在 DSH 的 webServer 上**
+
+回滚后的启动日志里有：
+
+```
+[forlife] 已注册面板接口 /api/forlife/{state,entries,compaction,spills,health}
+```
+
+⇒ 面板接口与唤醒桥**同源** —— 都走 `ctx.inject('webServer')`。
+这也解释了 `index.ts:243/267/282` 那三条失败分支为什么都在谈 `ctx.inject` / `webServer`。
+
+#### 所以 D7 只剩两条路
+
+| | 做法 | 判断 |
+|---|---|---|
+| ~~A~~ | 绑容器网卡 | ❌ **DSH 硬禁止**（RCE），此路不通 |
+| **B** | 让我们**自己的插件在 dsh 容器里另开一个监听端口**挂唤醒桥（不依赖 DSH 的 webServer） | 这是**代码改动**（`dsh-component` 里自建 http server），不是配置改动。可行，但要写代码 + 守卫测试 |
+| **C** | 承认探不到，把面板那张卡的文案改成**如实说明**；唤醒继续走库里的 `wake_requests` 队列（现状就是这样，一直能工作） | 最小改动。代价：放弃"DSH 挂了能一眼看出"这个设计初衷 |
+
+**⇒ D7 现在的性质变了**：它不再是"配三个变量"（十分钟的活），
+而是 **B（写代码自建监听）或 C（改文案承认探不到）** 二选一。
+**用户原话是"打通"，但打通的技术前提已被 DSH 自己否掉** ⇒ 需要让用户知道这个变化再定。
+
+#### 顺带一条纪律（写给未来的我）
+
+这次我把服务弄挂了几十秒。做对的地方是**先抓日志再回滚** ——
+所以这次故障换来一条硬事实，而不是白挂一次。
+**凡是"改配置让某处能对外通信"的改动，先在容器里手动试一次那条命令**，
+别直接改 compose 再重建：`dsh --profile web --host 0.0.0.0 --help` 一秒就能试出来。
