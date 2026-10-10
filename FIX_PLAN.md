@@ -2899,6 +2899,75 @@ sudo DOCKER_BUILDKIT=0 docker compose -f deploy/docker-compose.yml build dsh
 （★ 我没在本轮改它 —— **这一轮的主题是 D7，不混两件事**。）
 
 
+---
+
+## 45. ✅ 那个偶发红**当场修掉了** —— 根因是排序键少了 `rowid`（顺手修掉一个**面板缺陷**）
+
+> §44 里我把偶发红记成"留给后续"。这一节把它查完了 ——
+> ★ 而且发现**它不只是测试问题，是一个真的产品缺陷**。
+
+### 真身：不是时序玄学，是**排序键不够**
+
+```ts
+// 旧写法（`store/src/cache-metrics.ts:77`）
+.prepare('SELECT * FROM cache_metrics WHERE at >= ? ORDER BY at DESC LIMIT ?')
+  …  return [...rows].reverse()          // 注释写着"新的在后"
+```
+
+`at` 是**毫秒**精度（`nowIso()` = `new Date().toISOString()`）⇒
+**同一毫秒写入的多行并列**，而 `ORDER BY at DESC` 对并列行**不保证顺序**
+⇒ `.reverse()` 之后"新的在后"成了**空话**。
+
+⇒ 于是：端到端测试 `.at(-1)` 取到上一行（**偶发红**），
+而**面板按时间画的曲线也会点序错乱** —— **同一个根因，一个在测试里，一个在你眼前**。
+
+### ★★ 而这是**仓库既有约定里唯一漏掉的一处**
+
+| 文件 | 写法 |
+| :--- | :--- |
+| `endpoints.ts:187,188,254,262` | `ORDER BY at DESC, **rowid DESC**` ✅ |
+| `routing.ts:148` | `ORDER BY at DESC, **rowid DESC**` ✅ |
+| `time-readings.ts:72,140` | `ORDER BY at DESC, **rowid DESC**` ✅ |
+| ★ **`cache-metrics.ts:77`** | `ORDER BY at DESC` ← **唯一漏的** ❌ |
+
+`rowid` 是 SQLite 的**插入序单调键**；本表是普通表（`id TEXT PRIMARY KEY`，非 `WITHOUT ROWID`）
+⇒ 有 rowid 可用。
+
+### 改法（**两处**，方向各自对应）
+
+- `listCacheUsage`（`:77`）：`ORDER BY at DESC, rowid DESC`
+- `unattrributedMisses`（`:110`）：`ORDER BY at ASC, rowid ASC`
+  （归因是**按顺序**回填的 ⇒ 顺序不确定则"同一毫秒内谁先被归因"也不确定）
+
+### 回退验证（注入 ⇒ 红，还原 ⇒ 绿，**给两次数字**）
+
+| | pass | fail | exit |
+| :--- | :--- | :--- | :--- |
+| 注入前 | **3** | **0** | 0 |
+| **注入后**（去掉 `rowid` 兜底） | **1** | **2** | **1** |
+| 还原后 | **3** | **0** | 0 |
+
+★★ **去掉兜底后行为用例真的红了** ⇒ **SQLite 在毫秒并列时的取行顺序确实不确定**
+—— **诊断被实验证实**，不是"我觉得是时序问题"。源文件与注入前**逐字节一致**。
+
+### 新守卫 `packages/store/test/cache-metrics-order.test.ts`（3 个用例）
+
+1. **同一毫秒的两行** ⇒ `listCacheUsage` 必须按**插入序**返回（连读 5 次不许漂）
+2. 同上，`unattrributedMisses` 方向是 **ASC**
+3. ★ **源码守卫**（读源码、**去注释后**）：`cache-metrics.ts` 里**所有** `ORDER BY at`
+   都必须带 `rowid`，且**方向配对**（`DESC, rowid DESC` / `ASC, rowid ASC`）
+
+★ 记我自己的错：守卫第一次红了，因为 **`openDatabase` 收的是 `{ file }`、返回 `{ db, … }`**，
+我按"传路径字符串"写了 —— 照抄别的测试的用法才发现。
+
+### ★ 一条方法论（与 §7 / §41 同类）
+
+**"偶发红"不等于"测试不稳"。** 这次它指着一个**产品缺陷**（面板曲线错序）。
+如果一个偶发红被当成噪声放过去，那个缺陷就会一直留在面板上 ——
+**而且下次真坏的时候，没人会再相信红色。**
+
+
+
 
 
 
