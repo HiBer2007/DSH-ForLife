@@ -1479,5 +1479,84 @@ agent/request 瀑布：
 如果它写的是 `opencode-go` —— **先别开 apply**。
 
 
+---
+
+## 26. ★★★ 面板上**看不到插件那一半的日志** —— 用户那条要求只兑现了一半
+
+### 查出来的事实（2026-10-10）
+
+`packages/dsh-component/src/index.ts`：
+
+```ts
+:596   const log = (message: string): void => { if (config.verbose) console.log(`[forlife] ${message}`) }
+:599   const always = (message: string): void => console.log(`[forlife] ${message}`)
+```
+
+**两条都是 `console.log`。** 而**七级日志库（`log-store`）在 gateway 进程里** ——
+插件跑在 **`dsh` 容器**、网关跑在 **`gateway` 容器**，**是两个进程**。
+
+`grep FORLIFE_GATEWAY / gatewayUrl / logSink / shipLog` 在 `dsh-component/src` ⇒ **零命中**：
+**插件没有任何通往网关的通道。**
+
+⇒ **结论**：面板「日志」区里能看到的**只有网关自己的日志**；
+**记忆写入、沉降、投喂、判档、唤醒** —— 这些**全在插件里**发生的活动，
+**在面板上一条都看不到**（只能 `docker logs forlife-dsh-1`）。
+
+### ★ 这件事的连带后果：我在插件里做的分级迁移，**对面板是不生效的**
+
+我在 `model-router.ts` / `feed-turn-hook.ts` / `wake-bridge-endpoint.ts` /
+`wake-poller.ts` 上花了好几轮做级别迁移（`fault`/`warn`/`debug`/`note`）。
+
+而 `atLevel(log, …)` 的语义是"注入的是 `createLogger()` 产物就设级别，
+**否则退化成直接调它自己**"。这里注入的是 `console.log` 包装
+⇒ **级别根本没被设上**，只是把文本原样打到 stdout。
+
+⇒ 那些迁移**仍然有价值**（`docker logs` 里更清楚、将来汇流时直接可用），
+但**不能说成"面板上现在能按级别筛插件的日志了"** —— 那是**不成立的**。
+**这一条必须写下来**，否则下一个看代码的人会以为它生效了。
+
+### ★ 修它的前提已经验证过（不是设想）
+
+两个容器**共享同一个卷**：
+
+| 容器 | 挂载 |
+| :--- | :--- |
+| `forlife-dsh-1` | `forlife_dsh-home` → `/data/dsh` |
+| `forlife-gateway-1` | `forlife_dsh-home` → `/data/dsh` |
+
+★ 而且**实测过**：在 `dsh` 容器里写 `/data/dsh/.forlife-cross-probe`，
+`gateway` 容器**读得到**。（探针文件是我自己建的，已删。）
+
+⇒ **不需要开网络端口**：插件把 JSONL 追写到**同一个 `forlife-YYYY-MM-DD.jsonl`**，
+网关那边的 `logStore.read()` **本来就在读那个文件**。
+（POSIX 的 `O_APPEND` 对小写入是原子的 ⇒ 两个进程同时追加是安全的。）
+
+### ⚠️ 但**没有**现在动手，理由是具体的
+
+1. **目录解析要对齐**：网关那边是 `resolveLogDir(env, dbPath)`；
+   实测 `/data/dsh/forlife/logs/` **目前还不存在** ⇒ 先得确认它到底落在哪，
+   否则插件的日志会写进一个**没人读**的目录（那就又是一次"接了但没接上"）。
+2. **要处理清理的交互**：网关的 `prune()` 按**文件名日期**删。插件写的文件名必须**同构**，
+   否则要么永不被删（涨满盘）、要么被误删。
+3. **要定"哪一级进文件"**：用户说"**除了 debug 都存**"是**库**的策略；
+   插件这边要不要把 `debug` 也写进文件（靠网关那边筛）还是**根本不写**，是个要定的取舍
+   —— 不写省 IO，写了更完整。**不猜。**
+4. 还有一条更省事的路要一起评估：**让网关去读 `dsh` 容器的 stdout**
+   （Docker `logs` API / 共享 json-file），而不是让插件写文件。
+   两条路各有代价，**选之前要先把两条都看清楚**。
+
+### ★ 这一条与 §23/§25/`c16253b` 是**同一个形状的第四次**
+
+- §23：`startFeedRun` 零生产调用方
+- §25：`ModelSelectionRef` 从来没实现
+- `c16253b`：`getCatalog` 从入口就没传
+- **本次**：日志**写到了一个到不了面板的地方**
+
+⇒ 四次的共同点**都不是"逻辑写错了"**，而是**"两个都对的东西之间没有连起来"**。
+**所以"去读真实产物"这条判据要一直用到最后一步** ——
+包括"我以为它在面板上"这种最像成立的假设。
+
+
+
 
 
