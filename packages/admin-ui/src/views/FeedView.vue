@@ -93,10 +93,143 @@ function actionTone(action: string): 'ok' | 'warn' | 'muted' | 'info' {
 function planned(action: string): number {
   return result.value?.details.filter((row) => row.wouldBe === action).length ?? 0
 }
+
+// ── ★ 模型驱动投喂（`FIX_PLAN.md` §21/§23）────────────────────────────────
+//
+// 与上面那块**根本不同**：
+//  - 上面是**内容驱动**：你把文本交上来，我们直接写库（一批就完了）
+//  - 这里是**模型驱动**：我们只登记"要喂这一份素材"（每段一个**可读路径**），
+//    然后**以轮次为界**一段一段地喂 —— 模型自己去 `read`、自己决定记成什么，
+//    每一轮结束再传下一批（单轮上限 30 分钟），中途断了下次接着喂（断点续传）。
+//
+// ⚠️ 面板这一块**只负责"开始"**：开始之后是**轮次**在推进，进度看下面的
+//    "已投喂 N/M 段"（那来自游标）。**它不是一个跑完就返回的请求。**
+const runDir = ref('')
+const runKind = ref<FeedKind>('experience')
+const runPerTurn = ref(20)
+const runBusy = ref(false)
+const runNotice = ref<{ tone: 'ok' | 'err'; text: string }>()
+const runInfo = ref<{
+  readonly source: string
+  readonly kind: FeedKind
+  readonly perTurn: number
+  readonly segments: number
+  readonly first: string | null
+  readonly fedThrough: number
+}>()
+
+const canStartRun = computed(
+  () => !runBusy.value && runDir.value.trim() !== '' && runPerTurn.value >= 1,
+)
+
+/**
+ * 来源名：用户填了就用，没填就**从目录名推**。
+ *
+ * ★ 为什么必须有它（不能让后端自己编）：来源名是**运行 / 游标 / 会话三条线的关联键**
+ * —— "这份素材喂到第几段"就是按它记的。空的话后端会拒（那是刻意的）。
+ * 而推出来的名字**会显示在下面的结果里**，所以不是"偷偷替用户决定"。
+ */
+const effectiveSource = computed(() => {
+  const typed = source.value.trim()
+  if (typed !== '') return typed
+  const dir = runDir.value.trim().replace(/[/\\]+$/, '')
+  return dir.split(/[/\\]/).pop() ?? ''
+})
+
+async function startRun(): Promise<void> {
+  if (!canStartRun.value) return
+  runBusy.value = true
+  runNotice.value = undefined
+  runInfo.value = undefined
+  try {
+    const response = await api.post<{
+      readonly source: string
+      readonly kind: FeedKind
+      readonly perTurn: number
+      readonly segments: number
+      readonly first: string | null
+      readonly fedThrough: number
+    }>('/feed-run', {
+      // ★ 来源名缺省**从目录名推**（见 `effectiveSource`）——
+      //   它是运行/游标/会话三条线的关联键，空的话后端会拒（那是刻意的）
+      source: effectiveSource.value,
+      as: runKind.value,
+      perTurn: runPerTurn.value,
+      dir: runDir.value.trim(),
+    })
+    runInfo.value = response
+    runNotice.value = {
+      tone: 'ok',
+      text:
+        `已登记 ${formatNumber(response.segments)} 段 —— 从现在起**每一轮喂一批**。` +
+        `已投喂 ${formatNumber(response.fedThrough)} 段。` +
+        '（这块界面只负责"开始"；进度靠下面的游标，不是等一个请求返回。）',
+    }
+  } catch (error) {
+    runNotice.value = { tone: 'err', text: error instanceof Error ? error.message : String(error) }
+  } finally {
+    runBusy.value = false
+  }
+}
 </script>
 
 <template>
   <div class="page">
+    <!-- ★ 模型驱动投喂（`FIX_PLAN.md` §21/§23）。放在最前面：它是**主力**路径 ——
+         手工喂一段（下面那块）是"补一句"用的，而这一块才是"把一整份资料交给她"。 -->
+    <PanelCard
+      title="开始投喂（一段一段来）"
+      subtitle="登记一份分段素材，之后**每一轮喂一批** —— 她自己读、自己决定记成什么；断了下次接着喂"
+    >
+      <form class="form" @submit.prevent="startRun()">
+        <label class="field">
+          <span>素材目录（一段一个文本文件，按文件名里的**数字**排序）</span>
+          <input
+            v-model="runDir"
+            type="text"
+            placeholder="例如 /data/dsh/forlife/chat-feed-v2"
+            autocomplete="off"
+          />
+        </label>
+
+        <label class="field">
+          <span>记成什么</span>
+          <select v-model="runKind">
+            <option v-for="option in KINDS" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>每轮几段（一轮结束传下一批；单轮上限 30 分钟）</span>
+          <input v-model.number="runPerTurn" type="number" min="1" max="200" />
+        </label>
+
+        <p class="hint">
+          来源名：<strong>{{ effectiveSource === '' ? '（还没填目录）' : effectiveSource }}</strong>
+          —— 它决定"这份素材喂到第几段"记在谁名下；填了上面的「来源」就用你填的，否则从目录名推。
+        </p>
+
+        <div class="actions">
+          <button type="submit" class="btn primary" :disabled="!canStartRun">
+            {{ runBusy ? '正在登记…' : '开始投喂' }}
+          </button>
+        </div>
+      </form>
+
+      <p v-if="runNotice" :class="['notice', runNotice.tone]">{{ runNotice.text }}</p>
+
+      <div v-if="runInfo" class="result">
+        <StatCard label="已登记段数" :value="formatNumber(runInfo.segments)" />
+        <StatCard label="已投喂" :value="formatNumber(runInfo.fedThrough)" />
+        <StatCard label="每轮" :value="formatNumber(runInfo.perTurn)" />
+        <p class="hint">
+          第一段：<code>{{ runInfo.first ?? '（没有）' }}</code>
+        </p>
+      </div>
+    </PanelCard>
+
     <PanelCard title="喂食记忆" subtitle="把一段资料亲手交给它 —— 走的是与聊天记忆完全相同的沉降路径">
       <form class="form" @submit.prevent="submit(false)">
         <label class="field">
