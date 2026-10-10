@@ -37,8 +37,21 @@ import { buildWakePrompt } from './wake-prompt.ts'
 import { createSystemWakeSource, type SystemWakeSource } from './wake-system-source.ts'
 import { createWatchSource, type WatchSource } from './wake-watch-source.ts'
 import { createLivenessMonitor, startLivenessWatch, type LivenessMonitor, type LivenessWatch } from './wake-liveness.ts'
+import { createProgramRunner, type ProgramRunner } from './wake-program-runner.ts'
+import { createRealSpawn } from './wake-spawn.ts'
 import { describeWakeProducerGaps } from './wake.ts'
 import { atLevel } from './admin/log.ts'
+
+/**
+ * 监视程序执行器的轮询间隔。
+ *
+ * 为什么是 1 分钟：一个程序**最长能跑 10 分钟**（`DEFAULT_LIMITS.maxRuntimeMs`），
+ * 而这一层是**串行**的（见下面防重叠那段）⇒ 间隔比这个再小没有意义，
+ * 只会让"上一轮还没跑完就又来了"更频繁地被 `ticking` 挡掉。
+ *
+ * ⚠️ 暂时**不可配置**：等真有人需要更快/更慢再开环境变量，不提前加旋钮。
+ */
+const PROGRAM_TICK_MS = 60_000
 
 /** 装配配置。 */
 export interface WakeRuntimeOptions {
@@ -95,6 +108,13 @@ export interface WakeRuntime {
    * 而不是拿"这段时间没人说话"当离线证据（安静时段那是正常的）。
    */
   readonly livenessMonitor: LivenessMonitor | undefined
+  /**
+   * 监视程序执行器（`FIX_PLAN.md` §30）。
+   *
+   * `undefined` ⇒ 没配 `FORLIFE_WORKSPACE_ROOT`（**路径没有沙箱根可比 ⇒ 不许跑脚本**），
+   * 与 `watchSource` 同一个禁用条件、同一个理由。
+   */
+  readonly programRunner: ProgramRunner | undefined
   /** 引擎禁用原因（界面要显示它）。 */
   readonly disabledReason: string | undefined
   /** 监视源禁用原因 —— **与引擎的原因分开**（它们可能一个启用一个没启用）。 */
@@ -162,6 +182,7 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
       watchSource,
       liveness: undefined,
       livenessMonitor: undefined,
+      programRunner: undefined,
       disabledReason: `唤醒引擎未启用：FORLIFE_WAKE_BRIDGE_SECRET ${secretCheck.reason}` ,
       watchDisabledReason,
       stop: () => {},
@@ -179,6 +200,7 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
       watchSource,
       liveness: undefined,
       livenessMonitor: undefined,
+      programRunner: undefined,
       disabledReason: `唤醒引擎未启用：缺少环境变量 ${missing.join('、')}（需要 DSH 侧挂上唤醒桥）`,
       watchDisabledReason,
       stop: () => {},
@@ -308,6 +330,50 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
 
   log(`唤醒引擎已启用：桥 ${config.bridgeUrl}，tick ${String(config.tickMs)}ms`)
 
+  // ── ★★ 监视程序执行器（`FIX_PLAN.md` §30）──────────────────────────────
+  //
+  //   用户 2026-10-10 裁定「**建，按我给的策略**」，四条逐条落位：
+  //
+  //   | 策略 | 落在哪 |
+  //   | :--- | :--- |
+  //   | ① 只允许工作区根下的脚本 | `wake-program-runner.ts:123` 的 `resolveInWorkspace`（**spawn 之前**） |
+  //   | ② 扩展名白名单 | `wake-spawn.ts` 的 `ALLOWED_SCRIPT_EXTENSIONS` |
+  //   | ③ 并发/时长/输出上限 | **并发靠这里的防重叠 + `tick()` 串行**；时长/输出走 `DEFAULT_LIMITS` |
+  //   | ④ 指纹变更后停用并要求重新登记 | `wake-program-runner.ts:137-142` 的 `checkScriptUnchanged` |
+  //
+  //   ⚠️ **没配 `FORLIFE_WORKSPACE_ROOT` 就明确禁用并说原因** —— 与监视源同一条纪律
+  //   （"路径没有沙箱根可比"时不能跑脚本），而不是让它每一轮失败一次把日志刷满。
+  //
+  //   ⚠️ 一个程序最长能跑 `DEFAULT_LIMITS.maxRuntimeMs`（10 分钟），
+  //   所以 tick **必须防重叠** —— 否则一个慢程序会让每一轮都叠一批新进程上去。
+  let programRunner: ProgramRunner | undefined
+  if (config.workspaceRoot !== undefined && config.workspaceRoot.trim() !== '') {
+    programRunner = createProgramRunner({
+      db,
+      workspaceRoot: config.workspaceRoot,
+      spawn: createRealSpawn(),
+      log,
+    })
+    let ticking = false
+    const handle = setIntervalFn(() => {
+      if (ticking) return
+      ticking = true
+      void (programRunner as ProgramRunner)
+        .tick()
+        .catch((error: unknown) => {
+          log(`监视程序 tick 异常：${String(error).slice(0, 200)}`)
+        })
+        .finally(() => {
+          ticking = false
+        })
+    }, PROGRAM_TICK_MS)
+    handle.unref?.()
+    handles.push(handle)
+    log(`监视程序执行器已启用：tick ${String(PROGRAM_TICK_MS)}ms（串行；单程序上限 10 分钟）`)
+  } else {
+    log('监视程序执行器未启用：没配 FORLIFE_WORKSPACE_ROOT，路径没有沙箱根可比')
+  }
+
   // ★ 把"配了也不会发生"的条件打出来（`wake.ts` 的生产者登记表）。
   //
   // 为什么必须在启动时说：那些条件的开关/概率在面板上**照样能点**，
@@ -346,12 +412,17 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
     watchSource,
     liveness,
     livenessMonitor,
+    programRunner,
     disabledReason: undefined,
     watchDisabledReason,
     stop: () => {
       engine.stop()
       liveness.stop()
       for (const h of handles) clearIntervalFn(h)
+      // ⚠️ **如实说明边界**：这里只是不再起新的 tick；
+      //   已经跑起来的子进程会**跑到它自己的超时**（`maxRuntimeMs`）才被 `SIGKILL`。
+      //   要"立刻全杀掉"需要给 runner 加一个 kill 开关 —— **那属于另一件事**，
+      //   不在这里假装做到了。
     },
   }
 }
