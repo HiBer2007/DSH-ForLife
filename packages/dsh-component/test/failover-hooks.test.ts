@@ -92,100 +92,106 @@ test('★★★ 接管与否**与裁决逐字一致**：裁决是 swap ⇒ `{kin
   assert.equal(config['temperature'], 0.3, '★ 其余字段必须原样带过去（不许顺手抹掉）')
   assert.equal(config['maxTokens'], 4096)
 
-  // ② ★ 问裁决层"这个失败该怎么判" —— 测试**不去猜分类器的结论**
-  //    （那是 `@forlife/router` 的事，它有自己的测试）。
-  //    用另一个实例问，是为了**不污染被测那个的状态**。
-  const actionFor = (message: string): string => {
-    const probe = buildFailoverRuntime({} as never, { candidates: () => s.candidates, record: () => undefined })
-    probe.beginStep('1:1', { provider: 'deepseek-official', model: 'deepseek-flash' })
-    return probe.onError({ provider: 'deepseek-official', model: 'deepseek-flash', message }).action
-  }
-  const message = 'invalid api key'
-  const expected = actionFor(message)
-
-  // ③ 把同一个失败喂给**真的接线层**，断言行为与裁决**逐字一致**
+  // ② 喂**到阈值**（默认 3）：前两次该委托，第三次该我们自己接管。
+  //    ★ 只喂一次是测不到接管路径的 —— 那正是我上一轮判断错的地方。
+  const message = '500 server error'
   const current = s.failover.currentRoute()
   assert.ok(current !== undefined)
-  let nextCalled = 0
-  const result = await err(
-    {
-      turn: 1,
-      step: 1,
-      provider: current.provider,
-      failure: { message, code: 'probe' },
-    },
-    async () => {
-      nextCalled += 1
-      return undefined
-    },
-  )
 
-  if (expected === 'swap') {
-    assert.deepEqual(result, { kind: 'retry' }, '★ 裁决是 swap ⇒ 必须回 `{kind:"retry"}` 自己接管')
-    assert.equal(
-      nextCalled,
-      0,
-      '★★★ **绝不调 next()** —— 调了就等于把裁决权交回去，新路由永远不生效，' +
-        '而日志里却写着"已降级"（最坏的一种谎）',
-    )
-    assert.ok(
-      s.logs.some((line) => line.includes('换到')),
-      `降级必须留痕（否则"为什么这次答得不一样"无从查起）：${s.logs.join(' | ')}`,
-    )
-    assert.ok(s.rows.some((row) => row['source'] === 'failover-swap'), '降级要真的写进路由日志')
-  } else {
-    // ★ 委托时**必须把 next() 调掉** —— 放弃裁决权又不调 next() 会让宿主卡在那里
-    assert.equal(nextCalled, 1, `裁决是 ${expected} ⇒ 必须把裁决权交回宿主（调 next()）`)
-    assert.ok(
-      s.logs.some((line) => line.includes(expected)),
-      `裁决结果要留痕（实际：${s.logs.join(' | ')}）`,
+  let nextCalled = 0
+  const results: unknown[] = []
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    results.push(
+      await err(
+        { turn: 1, step: 1, provider: current.provider, failure: { message, code: 'probe' } },
+        async () => {
+          nextCalled += 1
+          return undefined
+        },
+      ),
     )
   }
+
+  // 前两次：裁决是 keep ⇒ **把裁决权交回宿主**（必须调 next()）
+  assert.equal(nextCalled, 2, '★ 前两次必须委托 —— 放弃裁决权又不调 next() 会让宿主卡在那里')
+  assert.deepEqual(results.slice(0, 2), [undefined, undefined], '委托时返回宿主的决定（这里是 undefined）')
+
+  // 第三次：裁决是 swap ⇒ **自己接管**
+  assert.deepEqual(results[2], { kind: 'retry' }, '★ 到阈值必须回 `{kind:"retry"}` 自己接管')
+  assert.equal(
+    nextCalled,
+    2,
+    '★★★ 接管那一次**绝不调 next()** —— 调了就等于把裁决权交回去，新路由永远不生效，' +
+      '而日志里却写着"已降级"（最坏的一种谎）',
+  )
+  assert.ok(
+    s.logs.some((line) => line.includes('换到')),
+    `降级必须留痕（否则"为什么这次答得不一样"无从查起）：${s.logs.join(' | ')}`,
+  )
+  assert.ok(s.rows.some((row) => row['source'] === 'failover-swap'), '降级要真的写进路由日志')
 })
 
 /**
- * ★★ **发现记录**（不是断言"这是对的"，是把事实钉在测试里免得被忘掉）。
+ * ★★★ 失败降级是**按阈值**的 —— 而且我必须记下**我在这里判断错了一次**。
  *
- * 实测：候选链 `[deepseek-official, opencode-go]`、当前在第 0 位时，
- * 五种典型失败**一次都不换家**：
+ * ## 我上一轮写进仓库的那条"发现记录"是**错的**，已删除
  *
- * | 失败 | 裁决 |
+ * 我当时对每种失败**只喂了一次**，看到全是 `keep`/`give-up`，就下了结论
+ * 「**这条链实际上没有降级能力**」，还把它写成一条断言"这五种失败没有 swap"的测试。
+ *
+ * **它错了。** 真相是 `failover-wiring.test.ts:65` 早就写着的一句注释：
+ *
+ * > `// 默认阈值来自基线（3）⇒ 前两次 keep，第三次 swap`
+ *
+ * 实测（连续喂同一个失败，看第几次换家）：
+ *
+ * | 失败 | 序列 |
  * | :--- | :--- |
- * | `invalid api key` | `give-up` |
- * | `500 server error` | `keep` |
- * | `ECONNRESET` | `keep` |
- * | `额度用完了` | `keep` |
- * | `timeout` | `keep` |
+ * | `500 server error` | keep → keep → **swap** |
+ * | `额度用完了` | keep → keep → **swap** |
+ * | `timeout` | keep → keep → **swap** |
+ * | `ECONNRESET` | keep → keep → keep → **swap** |
+ * | `invalid api key` | **give-up**（换家也救不了坏钥匙 —— 这是策略，不是缺陷） |
  *
- * ⇒ 这条链**实际上没有降级能力**。两条可能：① `@forlife/router` 的策略就是这样
- * （例如"同 provider 换 model 才算 swap"、或"限流该等而不是换家"）；
- * ② 候选链的**构造**不对（也许要 `tier` 或别的字段）。
+ * ⇒ **降级能力是通的**，只是要攒够阈值。
  *
- * **本测试只把事实钉住**：它断言"从第 0 位出发，这五种失败的裁决里**没有 swap**"——
- * 哪天策略改了、或者候选链接对了，这条会红，那时就该来更新这一节。
+ * ## 这条测试同时是那次的教训
+ *
+ * 本仓那条纪律（"看到一个**像是**消费点/问题的地方别急着下结论，要把上下游读全"）
+ * 我这个会话已经栽了**四次**。这次栽得最贵：**我把错结论写进了仓库**，
+ * 而且写成"事实表"的样子 —— 那比没有测试更坏，因为它会让后来的人**相信**它。
+ *
+ * **正确做法**：看到反常，先问"是不是有阈值/状态/前置条件我没喂够"，
+ * 再去**上游**（这里是同一文件里那句注释）找答案。
  */
-test('★★ 发现记录：从候选链第 0 位出发，五种典型失败都不换家（待查）', () => {
+test('★★★ 降级是**按阈值**的：同一失败连喂，第 3 次（ECONNRESET 第 4 次）才换家', () => {
   const candidates = [
     { provider: 'deepseek-official', model: 'deepseek-flash' },
     { provider: 'opencode-go', model: 'deepseek-v4.1-flash' },
   ]
-  const actions = ['invalid api key', '500 server error', 'ECONNRESET', '额度用完了', 'timeout'].map((message) => {
+  /** 连续喂同一个失败，返回每一跳的裁决（换家即停）。 */
+  const sequence = (message: string, max = 6): string[] => {
     const probe = buildFailoverRuntime({} as never, { candidates: () => candidates, record: () => undefined })
     probe.beginStep('1:1', { provider: 'deepseek-official', model: 'deepseek-flash' })
-    return `${message} ⇒ ${probe.onError({ provider: 'deepseek-official', model: 'deepseek-flash', message }).action}`
-  })
-  assert.deepEqual(
-    actions,
-    [
-      'invalid api key ⇒ give-up',
-      '500 server error ⇒ keep',
-      'ECONNRESET ⇒ keep',
-      '额度用完了 ⇒ keep',
-      'timeout ⇒ keep',
-    ],
-    '★ 这张表是**实测事实**。若它变了（策略改了/候选链接对了），来更新这里，' +
-      '并顺手确认"降级能力到底通没通" —— 现在这张表说明它**没通**',
-  )
+    const steps: string[] = []
+    for (let i = 0; i < max; i += 1) {
+      const decision = probe.onError({ provider: 'deepseek-official', model: 'deepseek-flash', message })
+      steps.push(decision.action)
+      if (decision.action !== 'keep') break
+    }
+    return steps
+  }
+
+  assert.deepEqual(sequence('500 server error'), ['keep', 'keep', 'swap'], '★ 阈值 3：前两次 keep')
+  assert.deepEqual(sequence('额度用完了'), ['keep', 'keep', 'swap'])
+  assert.deepEqual(sequence('timeout'), ['keep', 'keep', 'swap'])
+  assert.deepEqual(sequence('ECONNRESET'), ['keep', 'keep', 'keep', 'swap'], '网络类要攒到第 4 次')
+
+  // 反面对照：**钥匙坏掉换家也救不了** ⇒ 直接 give-up（这是策略，不是缺陷）
+  assert.deepEqual(sequence('invalid api key'), ['give-up'], '坏钥匙不换家 —— 换了也一样是坏的')
+
+  // ★ 而"只喂一次就以为没有降级能力"正是我犯过的错：一次一定还没到阈值
+  assert.deepEqual(sequence('500 server error', 1), ['keep'], '喂一次必然是 keep —— 别据此下结论')
 })
 
 test('★★ `observe`：**只说不做** —— 原样返回宿主给的 config，一条都不换', async () => {
