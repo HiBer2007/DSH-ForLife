@@ -2594,6 +2594,60 @@ if (stats.fragmentCount >= maxCount) {
    "看起来很有道理、其实是错的"的话（那正是 §7 那两次翻案的同一形状）。
 
 
+---
+
+## 42. 宿主上有个**空转了 9 小时**的 `unattended-upgrade`（2026-10-10 实查，**未处置**）
+
+> 我在前几轮反复看到 `unattended-upgr` 占着 **99.9% CPU**，但一直只当成"有点忙"。
+> 这一轮去查了它到底在干什么。
+
+### 现象
+
+```
+PID 11968  99.9% CPU  ELAPSED 08:57:36   /usr/bin/python3 /usr/bin/unattended-upgrade
+  父: 11944 /bin/sh /usr/lib/apt/apt.systemd.daily lock_is_held install
+  祖父: 11940 /bin/sh /usr/lib/apt/apt.systemd.daily install
+```
+
+### 它卡在哪（日志自己说的）
+
+```
+2026-10-10 16:09:33 WARNING 程序包 libwbclient0 可升级，但未能标记为升级
+                          （E:Error, pkgProblemResolver::Resolve generated breaks,
+                            this may be caused by held packages.）
+2026-10-10 16:09:34 WARNING （同上，重复）
+2026-10-10 20:13:16 WARNING 程序包 samba-libs 可升级，但未能标记为升级（同一原因）
+2026-10-10 20:13:17 WARNING （同上，重复）
+```
+
+⇒ ★ **它在"依赖解析不通过"上反复重试**（`libwbclient0` / `samba-libs`，`pkgProblemResolver` 判定
+会破坏依赖）。**从 16:09 到 20:13 一直在原地打转**，烧掉**一整个核将近 9 小时**。
+
+### ★ 为什么**停它是安全的**（这是判据，不是我猜的）
+
+`ps` 里**没有 `dpkg` 子进程** ⇒ 它卡在**解析/标记阶段**，**没有正在写盘的事务**
+（真正危险的是"dpkg 写到一半被 kill"那种；这里不是）。
+
+另：`/var/lib/dpkg/lock` 存在但**没有半配置状态**（`dpkg --audit` 没有输出）；
+磁盘 **17G 可用**（73%）⇒ 也不是"下不动"。
+
+### 处置方式（**我没有执行**）
+
+```bash
+sudo systemctl stop unattended-upgrades     # 停服务 ⇒ 连带结束那个 python 进程
+sudo systemctl stop apt-daily-upgrade.timer # 防止它下一轮又自己起来
+```
+
+★ **为什么我不自己动手**：
+① 它动的是**宿主 apt 状态**，不是我们的容器 —— 属于"要用户拍板"的那一类；
+② 就算现在安全，**万一**判断错，收拾起来比重启一个容器麻烦得多；
+③ 本项目已经有 4 项待你决定的事，**再加一项也比擅自做一件强**。
+
+★ 附带说明：**它不影响四个容器**（`docker ps` 全程正常，qq 启动时间一字未变）。
+它的代价是**白白占掉 4 个核里的 1 个** —— 而那正是评分器最缺的东西。
+
+
+
 ### ⇒ 真正该记的结论
 
 **不是"数字 200 不对"，而是"上限不是全局的，而它的文案宣称自己是绝对的"。**
