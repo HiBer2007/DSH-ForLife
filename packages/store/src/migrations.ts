@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS mid_memory_entries (
   source_short_ids TEXT NOT NULL DEFAULT '[]',
   created_at       TEXT NOT NULL,
   last_accessed_at TEXT,
+  -- 注意：access_count 不在这里 —— 它由迁移 0028 加（见 m0028）。
+  -- 千万别在建表 DDL 里也写一份：新库会先跑 DDL 再跑全部迁移，
+  -- 两处都写 ⇒ ALTER TABLE ... ADD COLUMN 报 duplicate column name
+  --（2026-10-10 实测栽过：overview-dsh-wiring.test.ts 的 freshDb 直接红）。
+  -- 只写在迁移里 ⇒ 新库（跑迁移）与旧库（补迁移）都能长出来。
+  -- 【本段在模板字符串里，一个反引号都不能有 —— 已栽三次】
   storage_tier     TEXT NOT NULL DEFAULT 'ssd', -- ssd / hdd
   -- [design] EXECUTION_PLAN §2.3：渲染缓存失效用的修订号
   revision         INTEGER NOT NULL DEFAULT 0,
@@ -1455,6 +1461,36 @@ CREATE TABLE IF NOT EXISTS cold_load_stats (
 
 const m0027Checksum = createHash('sha256').update(m0027.sql + m0027.name).digest('hex')
 
+/**
+ * 0028：给中期表加 `access_count`（用户 2026-10-09 裁定「3 加列」）。
+ *
+ * ## 为什么必须是**迁移**，而不只是改 DDL
+ *
+ * 上面 `mid_memory_entries` 的 `CREATE TABLE IF NOT EXISTS` 只对**新库**生效。
+ * 线上那个库**已经存在** ⇒ 改 DDL 对它**一点用都没有**（IF NOT EXISTS 直接跳过）。
+ * 这条 `ALTER TABLE` 才是让旧库长出这一列的那一步。
+ *
+ * ## 为什么 `NOT NULL DEFAULT 0`
+ *
+ * SQLite 的 ADD COLUMN 允许 NOT NULL，**前提是给了 DEFAULT**（已有行填 0）。
+ * 语义也对：已存在的那些条目**确实一次都没被记过访问次数**，0 是实话。
+ */
+const m0028 = {
+  version: 28,
+  name: '0028_mid_access_count',
+  sql: `
+-- 中期条目的访问计数（PLAN.MD:119「访问频率」那条触发所需的数据）。
+-- 在此之前中期表没有这一列（只有长期表有）⇒ 那条触发只能退化成「多久没访问」，
+-- 而那正是「定时」那一条。
+ALTER TABLE mid_memory_entries ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;
+`,
+  up(db: DatabaseSync): void {
+    db.exec(m0028.sql)
+  },
+} as const
+
+const m0028Checksum = createHash('sha256').update(m0028.sql + m0028.name).digest('hex')
+
 /** 全部迁移（升序）。 */
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -1618,6 +1654,12 @@ export const MIGRATIONS: readonly Migration[] = [
     name: m0027.name,
     checksum: m0027Checksum,
     up: m0027.up,
+  },
+  {
+    version: m0028.version,
+    name: m0028.name,
+    checksum: m0028Checksum,
+    up: m0028.up,
   },
 ]
 

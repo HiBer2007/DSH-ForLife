@@ -29,6 +29,7 @@ function row(partial: Partial<MidEntryRow> & { id: string; summary: string }): M
     source_short_ids: '[]',
     created_at: '2026-10-05T00:00:00.000Z',
     last_accessed_at: null,
+    access_count: 0,
     storage_tier: 'ssd',
     revision: 1,
     source_scope: null,

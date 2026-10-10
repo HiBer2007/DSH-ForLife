@@ -116,10 +116,16 @@ function dshCard(dsh: Overview['dsh']): Card {
     const latency = dsh.latencyMs === undefined ? '' : ` · ${String(dsh.latencyMs)} ms`
     return {
       label: 'DSH 后端',
-      value: '连不上',
+      value: '连接超时',
       tone: 'err',
       icon: 'warning',
-      hint: `${where}${latency} · 模型那一侧可能没在跑`,
+      // ⚠️ `where` 是 **gateway 在容器网络里探的地址**（例如 `http://dsh:3080`），
+      //    **浏览器打不开它** —— 那是 docker 网络内的服务名。
+      //    这里显示它只为诊断（"后端到底在探哪儿"），**不是**给用户点的链接。
+      //    ★ 中继关系：浏览器 → gateway `/api` → gateway 探 dsh。
+      //    浏览器**从不**直接访问 DSH（DSH 的 /api 有 Host/Origin 信任栅栏，
+      //    且只绑回环 —— 见 `deploy/` 与 FIX_PLAN §15）。
+      hint: `${where}${latency} · DSH可能未正常工作。`,
     }
   }
   const latency = dsh.latencyMs === undefined ? '' : ` · ${String(dsh.latencyMs)} ms`

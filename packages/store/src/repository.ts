@@ -104,6 +104,8 @@ export interface MidEntryRow {
   readonly source_short_ids: string
   readonly created_at: string
   readonly last_accessed_at: string | null
+  /** 访问计数（迁移 0028 加的列）—— 沉降三条件里「访问频率」那条的数据来源。 */
+  readonly access_count: number
   readonly storage_tier: 'ssd' | 'hdd'
   readonly revision: number
   readonly source_scope: string | null
@@ -312,9 +314,11 @@ export function fragmentMidEntry(db: DatabaseSync, id: string, longMemoryId: str
   }
 }
 
-/** 记录一次访问（用于沉降策略的 `last_accessed_at > 90 天` 判断）。 */
+/** 记录一次访问。两个字段一起更新：`last_accessed_at`（定时那条）与 `access_count`（访问频率那条）。 */
 export function touchMidEntry(db: DatabaseSync, id: string, at = nowIso()): void {
-  db.prepare('UPDATE mid_memory_entries SET last_accessed_at = ? WHERE id = ?').run(at, id)
+  db.prepare(
+    'UPDATE mid_memory_entries SET last_accessed_at = ?, access_count = access_count + 1 WHERE id = ?',
+  ).run(at, id)
 }
 
 /** 词法检索（FTS5）。 */
