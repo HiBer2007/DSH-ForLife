@@ -1716,6 +1716,53 @@ agent/request 瀑布：
    —— 那是 §26 那个修复的**唯一判据**（单测全绿证明不了它）
 
 
+---
+
+## 29. 「零引用扫描」逐个裁定（台账）—— **不要重追已裁定的**
+
+> §27 记了两次**假警报**。为了不再重复，这里把扫描出来的符号**逐个记裁定**。
+> 判据始终是同一句：**"零外部引用"只是线索，去看上下游再定**。
+> 而且接线形式至少三种，扫描**只看得见第一种**（代码里调）：
+> **配置里挂**（profile）／**外部入口**（HTTP、CLI）它都看不见。
+
+### 已裁定：❌ 不是洞
+
+| 符号 | 裁定 | 依据 |
+| :--- | :--- | :--- |
+| `ForlifeCompactionEngine`（+`export default`） | **接了**，扫描看不见 | 四个 profile 的 `cordis.patch.yml` 挂了它（配置层注册）—— 见 §27 |
+| `setCompactionEngineHooks` | **设计如此** | 注释写着"测试与调试用"；`resolveRuntime` 默认从活动登记表取 —— 见 §27 |
+| `saveMediaAsset` / `getMediaAsset` / `listMediaAssets` / `searchMedia` / `buildMediaMemoryText` | ★ **功能还没建，不是接线洞** | `media.ts` 的验收写的是「**`media_save` 之后** `recall_longterm("那张架构图")` 能命中」；而全仓 grep `media_save` ⇒ **只出现在注释与测试里**（**那个工具不存在**）。面板那页也是 `ComingSoonView`（`/api/admin/media ← media_assets / media_usages`）。⇒ store 侧写好了、**工具层与 UI 层还没做**，**符合预期** |
+| `crashGuardInstalled` | **诊断用，确实没人调** | 不影响功能（`installCrashGuard` 是接了的那条） |
+
+> ⚠️ 顺带一条**观察**（不是洞）：`media_assets` 表被**沉降 / 归档 / 迁移 / 面板查询**读着，
+> 而生产里**没人往它写** ⇒ 那几个子系统在真机上**零行可处理**。
+> 这不是 bug（表本来就该空着，直到 `media_save` 建出来），
+> 但**排查"沉降怎么什么都没搬"时要知道这一点** —— 别把它当成沉降坏了。
+
+### 还没裁定（**别当成洞，也别忘了**）
+
+以下这些**我还没读上下游**，因此**不下结论**：
+
+```
+store/src/media.ts 之外的其余零引用符号（共 37 个，已裁定 8 个）
+  admin-ui:   formatBytes / formatTokens / formatDateTime / formatPercent
+              useElementSize / useTheme / useNow / formatRefreshAge / inboundPreview
+  gateway:    isRegularFile / joinWorkspace · createWatermarkChecker / watermarkConfigFromEnv
+              newRestockBudget / restockSticker · redactingLogger / findSensitive
+              systemTriggerPayload / canTransition / forbiddenInstructionFraming
+              createProgramRunner / newExternalToken / isBadState · listBackups
+  dsh-组件:   runDoctor / renderDoctorReport · resetToolSpillStats · runtimeCount
+              textBlocks · runtimeFor · takeCompactionRequest
+```
+
+★ 其中**两个值得优先看**（因为它们牵涉"该有人调"的语义，而不是纯 helper）：
+- `host-contract.ts` 的 **`runDoctor` / `renderDoctorReport`** —— 一套**自检**，从没跑过
+- `gateway/src/admin/storage-write.ts` 的 **`listBackups`** —— 面板上的备份列表？
+
+⇒ **接手的人从这两个开始**，其余大多是格式化 helper 或 composable（属于"库里有、没人用"的正常情形）。
+
+
+
 
 
 
