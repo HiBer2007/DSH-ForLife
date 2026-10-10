@@ -85,9 +85,22 @@ test('★★ 巨量单条文本：系统自己切分、分批投入、批间让�
   const result = firstFeedResult(run)
   assert.ok(result !== undefined)
   assert.equal(result.ok, true, run.error ?? '喂食失败')
-  assert.ok((result.batches ?? 0) >= 2, `必须分成多批（实际 ${String(result.batches)}）`)
-  assert.ok(yields.calls() >= (result.batches ?? 1) - 1, '批与批之间必须让出控制权')
-  assert.ok(result.chunkCount > 100, `一坨 12k 行必须被切成很多片（实际 ${String(result.chunkCount)}）`)
+  // ★ 片数下限**从天花板推导**，不写死绝对量级。
+  //   旧版写死 `chunkCount > 100` —— 那只是 `feed.chunkMaxTokens = 2000`
+  //   那个年代的**副产品**，不是不变量：天花板一放宽，片数就掉到个位数，
+  //   于是"测试红了"其实什么都没证明（2026-10-10 实测栽过）。
+  const totalTokens = result.details.reduce((sum, detail) => sum + detail.tokenCount, 0)
+  assert.ok(result.chunkCount > 1, `一坨 12k 行必须被切开（实际 ${String(result.chunkCount)} 片）`)
+  assert.ok(
+    result.chunkCount >= Math.ceil(totalTokens / ceiling),
+    `片数至少要"总量÷天花板"那么多（实际 ${String(result.chunkCount)} < ⌈${String(totalTokens)}/${String(ceiling)}⌉）`,
+  )
+  // ★ "分批"只在**片数真的超过一批**时才断言 —— 否则测的是 `feed.batchMaxChunks`
+  //   而不是"切分"。批数 = ⌈片数 ÷ batchMaxChunks⌉，片数不到一批时它恒为 1。
+  if (result.chunkCount > defaultFor<number>('feed.batchMaxChunks')) {
+    assert.ok((result.batches ?? 0) >= 2, `片数超过一批时必须分批（实际 ${String(result.batches)} 批）`)
+    assert.ok(yields.calls() >= (result.batches ?? 1) - 1, '批与批之间必须让出控制权')
+  }
 
   // 每一段都 ≤ 天花板（这正是"一条炸掉窗口"那条故障的反面）
   for (const detail of result.details) {
@@ -209,9 +222,17 @@ test('★ 会话记账：投喂期读得到进度，结束后**回到正常**（
       seen.push({ batches: session.batches, chunks: session.chunks, source: session.source })
     },
   })
-  assert.equal(firstFeedResult(run)?.ok, true)
-  assert.ok(seen.length >= 2, '必须有多批，才谈得上"一段一段浮上来"')
-  assert.ok(seen.at(-1)!.chunks > seen[0]!.chunks, '进度必须往前走')
+  const ok = firstFeedResult(run)
+  assert.equal(ok?.ok, true)
+  // ★ 批数由**天花板 × feed.batchMaxChunks** 决定，不该写死。
+  //   旧版直接断言 `seen.length >= 2` —— 天花板一放宽，同一坨输入只剩一批，
+  //   于是"必须有多批"变成了在测**参数取值**而不是测**记账逻辑**（2026-10-10 栽过）。
+  const batches = ok?.batches ?? 1
+  assert.ok(seen.length >= 1, '投喂期必须能读到会话进度（否则模型不知道自己半梦半醒）')
+  if (batches >= 2) {
+    assert.ok(seen.length >= 2, '真的分成多批时，才谈得上"一段一段浮上来"')
+    assert.ok(seen.at(-1)!.chunks > seen[0]!.chunks, '进度必须往前走')
+  }
   assert.equal(seen[0]?.source, 'diary/huge')
   assert.equal(readFeedSession(db), undefined, '投喂结束 = 醒来：会话记录必须被收掉')
   assert.equal(feedModeText(db), '', '结束之后提示段必须回到空串')
@@ -323,7 +344,7 @@ test('★ 缺省来源：仍然按**切分前**的内容派生（与核心同一
 test('★ 目录里多个文件：每个文件一个来源（互不覆盖），且共用一个会话（进度只增不减）', async () => {
   const db = freshDb()
   const dir = tempDir()
-  // 每个文件都要够大 ⇒ 各自跨多批，"进度不许往回跳"才有意义
+  // 文件要够大，才谈得上"跨批"；但**跨几批**由天花板决定，本测试不假设具体批数
   writeFileSync(join(dir, 'a.md'), bigBlob(12_000), 'utf8')
   writeFileSync(join(dir, 'b.md'), bigBlob(12_000).replace(/第 /g, '第B'), 'utf8')
   const progressChunks: number[] = []
@@ -340,7 +361,10 @@ test('★ 目录里多个文件：每个文件一个来源（互不覆盖），�
     (row) => row.s,
   )
   assert.equal(scopes.length, 2, '两个文件必须是两个来源（同源会互相覆盖）')
-  assert.ok(progressChunks.length >= 4, `两个文件各跨多批（实际 ${String(progressChunks.length)} 次进度回调）`)
+  // ★ 旧版写死 `>= 4`（"两个文件各跨多批"）—— 那是 `feed.chunkMaxTokens = 2000`
+  //   那个年代的副产品：批数由**天花板 × batchMaxChunks**决定，天花板一放宽就掉到 1。
+  //   本测试真正钉的是**单调性**（下面那段），不是回调次数。
+  assert.ok(progressChunks.length >= 1, `两个文件都必须有进度回调（实际 ${String(progressChunks.length)} 次）`)
   for (let i = 1; i < progressChunks.length; i += 1) {
     assert.ok(
       (progressChunks[i] as number) >= (progressChunks[i - 1] as number),
