@@ -267,7 +267,24 @@ export function seedDeepSeekFallback(
   let count = 0
   for (const spec of DEEPSEEK_FALLBACK_ROLES) {
     const sameRole = existing.filter((row) => row.role === spec.role)
-    const nextRank = sameRole.reduce((max, row) => Math.max(max, row.rank), -1) + 1
+    // ★★ 2026-10-10（P2-b）：**排到最前**，不是追加到末尾。
+    //
+    //   原来这里是 `max + 1` —— 于是候选链是 `[GO, GO, …, DS 最后]`，
+    //   与用户要的「**额度路由往 `deepseek-official` 倾**」**正好相反**
+    //   （GO 那家"实际上只有百分之 9"，见 `FIX_PLAN.md` §25）。
+    //
+    //   ⚠️ 而这张表的 `rank` **不是装饰**：
+    //   - `listModelRoutes()` 是 `ORDER BY rank`（`store/src/routing.ts:32`）
+    //   - **`failover` 的候选链读的正是它** ⇒ 出错时它会**换到列表里的下一个**
+    //   ⇒ 排在 GO 后面 ⇒ **一抖动就往那家只剩 9% 的换**。
+    //
+    //   为什么用 `min - 1`（可能是负数）而不是 `0`：
+    //   表上有 `UNIQUE INDEX idx_model_routes_role_rank ON (role, rank)`
+    //   ⇒ **不能和 GO 的 rank 0 撞**；而 `rank` 是 `INTEGER`，负数合法且排最前。
+    //   （"同一 role 内越小越优先" —— `migrations.ts:709` 的列注释。）
+    const nextRank = sameRole.length === 0
+      ? 0
+      : sameRole.reduce((min, row) => Math.min(min, row.rank), Number.POSITIVE_INFINITY) - 1
     upsertModelRoute(db, {
       role: spec.role,
       rank: nextRank,
@@ -283,7 +300,7 @@ export function seedDeepSeekFallback(
   return {
     seeded: true,
     count,
-    reason: `追加 ${String(count)} 行 ${DEEPSEEK_OFFICIAL_PROVIDER}/${DEEPSEEK_OFFICIAL_MODEL} 到 L2/L3/scorer 末尾`,
+    reason: `把 ${String(count)} 行 ${DEEPSEEK_OFFICIAL_PROVIDER}/${DEEPSEEK_OFFICIAL_MODEL} 排到 L2/L3/minimum **最前**（P2-b：额度往 DS 倾）`,
   }
 }
 
