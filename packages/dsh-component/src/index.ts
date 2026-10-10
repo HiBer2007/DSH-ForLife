@@ -750,7 +750,23 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     //   订阅 host 的 agent/created · agent/pre-step · agent/turn-stopping。
     //   ★ 默认 **off**：不能让一个没验证过的接线在用户不知情时开始改模型。
     //   先跑 `FORLIFE_ROUTER_MODE=observe`（**只打日志不改**）确认钩子真的响、载荷对得上，再开 `apply`。
-    const modelRouter = installModelRouter(ctx as never, { log: always })
+    //   ★★ 2026-10-10：**补上 `getCatalog`**。它原来**根本没传** ——
+    //   于是 `input.getCatalog === undefined` ⇒ **判档整块被跳过**，
+    //   上面这一整套（连 `apply` 一起）**在生产里是死的**，
+    //   而 `catalog-wiring.test.ts` 只断言了"import 了 + 调用了"，**一直绿着**。
+    //   ⇒ 又一次同一个形状：**东西都在，只是没人把它们接起来。**
+    //   （教训见 `FIX_PLAN.md` §23：「我调它了吗」+「喂给它的数据谁写」两个都要问。）
+    const modelRouter = installModelRouter(ctx as never, {
+      log: always,
+      getCatalog: async () => {
+        const result = await fetchHostCatalog(ctx as never)
+        // ★ 取不到时说清楚 —— 静默给一个空目录会让判档"没得出结果"而**看不出为什么**
+        if (result.unavailableReason !== undefined) {
+          log(`模型表取不到（判档会跳过）：${result.unavailableReason}`)
+        }
+        return result.catalog
+      },
+    })
     disposers.push(() => { modelRouter.dispose() })
     if (modelRouter.mode === 'off') {
       log('模型路由：未启用（设 FORLIFE_ROUTER_MODE=observe 可先观察）')

@@ -89,3 +89,37 @@ test('★ 模型路由（installModelRouter）在启动路径上被真的调用'
   assert.match(src, /modelRouter\.mode/, '模型路由的结果没被用（等于白调）')
   assert.match(src, /modelRouter\.dispose\(\)/, '模型路由没有挂 dispose —— 插件卸载时会漏监听器')
 })
+
+test('★★★ `getCatalog` **必须真的传进去** —— 不传 ⇒ 判档整块是死的，而上面那条守卫照样绿', () => {
+  // ## 这条是怎么被发现的（2026-10-10）
+  //
+  // 上面那条守卫断言了「import 了 + 调用了 + 结果被用了 + 挂了 dispose」——**四条全绿**。
+  // 而真机调用长这样：
+  //
+  //     installModelRouter(ctx as never, { log: always })      ← 没有 getCatalog
+  //
+  // ⇒ `input.getCatalog === undefined` ⇒ **判档整块被跳过**（连 `apply` 一起）
+  // ⇒ 中介层第 ① 块**在生产里是死的**，而**没有任何测试变红**。
+  //
+  // ★ 这又是本仓那个最贵的形状：**东西都在，只是没人把它们接起来**（与 §23 同源）。
+  //   ⇒ 判据要**两个都问**：「我调它了吗」**和**「喂给它的依赖，谁传？」
+  const src = code('src/index.ts')
+  assert.match(
+    src,
+    /installModelRouter\([\s\S]{0,500}?getCatalog:/,
+    '★★★ 必须在 `installModelRouter` 的入参里真的传 `getCatalog` —— ' +
+      '不传的话 `input.getCatalog === undefined`，**判档与 apply 全部静默失效**',
+  )
+  // ★ 而且要真的从宿主取数，不是塞一个空目录糊弄
+  assert.match(
+    src,
+    /getCatalog:[\s\S]{0,400}?fetchHostCatalog\(/,
+    '★ `getCatalog` 要从宿主取（`fetchHostCatalog`），不是返回一个写死的空表',
+  )
+  // ★ 取不到时要说出来（静默给空目录会让判档"没得出结果"而看不出为什么）
+  assert.match(
+    src,
+    /unavailableReason[\s\S]{0,200}?log\(/,
+    '★ 模型表取不到时要留痕 —— 否则"判档为什么没结果"无从查起',
+  )
+})

@@ -153,14 +153,18 @@ function sessionIdOf(agent: unknown): string {
  *
  * @param ctx - 插件上下文（用来订阅事件）。
  * @param input.log - 日志函数。
- * @param input.getCatalog - 拿当前模型目录（观察模式下**不调**它，避免无谓的枚举开销）。
+ * @param input.getCatalog - 拿当前模型目录（`off`/`observe` 下**不调**它，避免无谓的枚举开销）。
+ *   ⚠️ ★★ **但它必须被传**：没传 ⇒ `input.getCatalog === undefined` ⇒
+ *   **判档整块被跳过**（连 `apply` 一起），而**源码守卫看不出这件事** ——
+ *   "import 了 + 调用了"两条都成立。⇒ 接线的守卫要断言**这个参数真的被传了**。
+ *   ★ 允许返回 Promise：宿主那边是 `fetchHostCatalog(ctx)`（**异步枚举**）。
  * @param input.env - 环境变量（便于测试）。
  */
 export function installModelRouter(
   ctx: Context,
   input: {
     readonly log: (message: string) => void
-    readonly getCatalog?: () => ModelCatalog | undefined
+    readonly getCatalog?: () => ModelCatalog | undefined | Promise<ModelCatalog | undefined>
     readonly env?: Record<string, string | undefined>
   },
 ): ModelRouterHandle {
