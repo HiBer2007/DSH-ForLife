@@ -83,3 +83,57 @@ test('★ 这批迁移**没有碰任何调用方**（没人被迫改签名）', 
     '★ 不许把注入类型改成 `Logger` —— 那会让只传普通函数的调用方全部编译不过（"分批迁移"就没了）',
   )
 })
+
+// ── 第二批：`model-router.ts` ─────────────────────────────────────────────
+
+const ROUTER = code('../../dsh-component/src/model-router.ts')
+
+test('★★★ `debug` 第一次有了生产消费点（此前七级里只有它没有）', () => {
+  // `model-router.ts` 的 `👀 agent/xxx` 观察日志是**教科书级的 debug**：
+  // 过程细节、只有排障时才有意义、而且代码本来就只打前 5 次防刷屏。
+  // 默认存储策略不收 debug（用户指定"除了 debug 都存"）
+  // ⇒ 它们在**生产里不再刷屏**，需要时改环境变量就能看到。
+  const debugs = ROUTER.match(/atLevel\(log, 'debug'\)/g) ?? []
+  assert.equal(
+    debugs.length,
+    4,
+    `四处观察日志该是 debug（created / pre-step 两条 / turn-stopping）。实际 ${String(debugs.length)} 处`,
+  )
+  // 反面：不许再有裸的 👀 调用（裸调用一律 info ⇒ 生产里继续刷屏）
+  assert.ok(
+    !/^\s*log\('👀/m.test(ROUTER),
+    '★ `👀` 那几行不许再是裸调用 —— 裸调用被当成 info，会在生产日志里一直刷',
+  )
+})
+
+test('★★★ 「尚未实现」不许压成 debug —— 那正是"写了没接而日志一片安静"的形状', () => {
+  // 这两条说的是**实情**："你开了 apply，但这个功能还没实现"。
+  // 压成 debug ⇒ 默认不存 ⇒ 开了 apply 什么都没发生时，日志里**一个字都没有**。
+  // 本仓栽过 18 次"写好了没接上/接错了"，其中最难查的正是"安静地什么都没发生"。
+  const warnings = ROUTER.match(/atLevel\(log, 'warn'\)/g) ?? []
+  assert.equal(warnings.length, 2, '两条"尚未实现"都该是 warn')
+  assert.ok(!/log\('   ↳ apply 模式/.test(ROUTER), '★ 那两条不许再是裸调用')
+})
+
+test('★★★ 「只装上 N 个监听器」是 `fault` —— 路由这一子系统实际不工作', () => {
+  assert.match(
+    ROUTER,
+    /atLevel\(log, 'fault'\)\(/,
+    '★ 事件名对不上时它会**安静地什么都不做**，而外面看起来一切正常 ⇒ 这是 fault（一个子系统），不是 error（一次操作）',
+  )
+  // 而"订阅单个事件失败"是**一次操作**没兜住 ⇒ error（与上面那条形成分界）
+  assert.match(ROUTER, /atLevel\(log, 'error'\)\('订阅 '/, '单次订阅失败 ⇒ error')
+  const errors = ROUTER.match(/atLevel\(log, 'error'\)/g) ?? []
+  assert.equal(errors.length, 4, '四个错误处理点都该是 error（订阅 / created / pre-step / turn-stopping）')
+})
+
+test('★ 反面：`model-router.ts` 里两句纯事实**保持裸调用**（info 就是对的）', () => {
+  assert.ok(
+    ROUTER.includes("log('模型路由：模式=' + mode"),
+    '「模式=X」是事实 ⇒ 保持裸调用（它恰恰是"路由到底开没开"最该一眼看到的一句）',
+  )
+  assert.ok(
+    ROUTER.includes("log('模型路由：已订阅 '"),
+    '「已订阅 N 个事件」是事实 ⇒ 保持裸调用',
+  )
+})

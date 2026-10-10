@@ -163,6 +163,27 @@ export { FEED_READ_CHUNK_CHARS, FEED_SKIP_DIRS, FEED_TEXT_EXTENSIONS, FeedBinary
 export { FEED_SESSION_KEY, advanceFeedSession, beginFeedSession, endFeedSession, readFeedSession, sessionRefreshOf } from './feed-session.ts'
 export type { FeedSession, FeedSessionRefresh, FeedSessionBatch } from './feed-session.ts'
 
+// ── 日志：七级 + 模块 logger 工厂（用户 2026-10-10 指定的分级制度）──────────
+// `atLevel` 是**迁移期的桥**：注入进来的日志函数若是 `createLogger()` 的产物，
+// 就走真级别；若只是个普通 `(m) => …`，就退化成调它自己（**功能不变**）。
+// ⇒ 这让 161 处调用点可以**一个文件一个文件地补级别**，不必一次改完。
+export { atLevel, createLogger, currentLogSink, installLogSink, logSinkCount } from './admin/log.ts'
+export type { LogRecord, Logger, LoggerLike, LogSink } from './admin/log.ts'
+export {
+  DEFAULT_STORE_LEVEL,
+  LOG_LEVELS,
+  LOG_LEVEL_RANK,
+  atLeast,
+  disabledLevelsFromEnv,
+  isLogLevel,
+  shouldStore,
+} from './admin/log-levels.ts'
+export type { LogLevel } from './admin/log-levels.ts'
+export { DEFAULT_LOG_RETENTION_DAYS, createLogStore, logStoreStats, resolveLogDir, retentionDaysFromEnv } from './admin/log-store.ts'
+export type { LogQuery, LogStore } from './admin/log-store.ts'
+export { LEGACY_LOG_MODULE, LogBuffer, guessLevel } from './admin/log-buffer.ts'
+export type { LogLine } from './admin/log-buffer.ts'
+
 // ── 投喂：断点续传 / 一轮一批 / 模型驱动（用户 2026-10-10 指定）───────────────
 export {
   FEED_CURSOR_PREFIX,

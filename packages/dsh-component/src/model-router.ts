@@ -47,6 +47,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 import type { ModelCatalog } from '@forlife/router'
+import { atLevel } from '@forlife/gateway'
 
 /** 观察模式。 */
 export type RouterMode = 'off' | 'observe' | 'apply'
@@ -143,7 +144,8 @@ export function installModelRouter(
       ).on(event, handler)
       if (typeof off === 'function') disposers.push(off)
     } catch (error) {
-      log('⚠️ 订阅 ' + event + ' 失败：' + String(error).slice(0, 120))
+      // 订阅失败是**一次操作没兜住** ⇒ error（若三个都失败，下面 :243 会升级成 fault）
+      atLevel(log, 'error')('订阅 ' + event + ' 失败：' + String(error).slice(0, 120))
     }
   }
 
@@ -165,13 +167,19 @@ export function installModelRouter(
       const p = (payload ?? {}) as AgentPayload
       const id = sessionIdOf(p.agent)
       observed.set(id, { sessionId: id, agent: p.agent })
-      log('👀 agent/created  sessionId=' + id + '（已观察 ' + String(observed.size) + ' 个）')
+      // ★ 教科书级的 `debug`：这是**过程细节**（某一步的载荷长什么样），
+      //   只有排障时才有意义。默认存储策略**不收 debug**（用户指定："除了 debug 都存"）
+      //   ⇒ 它在生产里不再刷屏，但需要时把环境变量一改就能看到。
+      atLevel(log, 'debug')('👀 agent/created  sessionId=' + id + '（已观察 ' + String(observed.size) + ' 个）')
       if (mode === 'apply') {
         // ★ 真正的装配在下一步做（先验证钩子响不响）
-        log('   ↳ apply 模式：装配 ModelSelectionRef 的逻辑**尚未实现**（先过 observe）')
+        // ★ **warn**：这不是"过程细节"，而是**一条"这个功能还没实现"的实情**。
+        //   压成 debug 会让"开了 apply 却什么都没发生"变得无从解释 —— 那正是
+        //   本仓栽过 18 次的那类问题（写了没接、而日志一片安静）。
+        atLevel(log, 'warn')('   ↳ apply 模式：装配 ModelSelectionRef 的逻辑**尚未实现**（先过 observe）')
       }
     } catch (error) {
-      log('⚠️ agent/created 处理出错：' + String(error).slice(0, 120))
+      atLevel(log, 'error')('agent/created 处理出错：' + String(error).slice(0, 120))
     }
   })
 
@@ -204,21 +212,21 @@ export function installModelRouter(
       const n = p.messages?.length ?? 0
       // ★ 只在头几次详细打，免得刷屏
       if (preStepCount <= 5) {
-        log(
+        atLevel(log, 'debug')(
           '👀 agent/pre-step  sessionId=' + id +
             ' turn=' + String(p.turn ?? '?') +
             ' step=' + String(p.step ?? '?') +
             ' messages=' + String(n) + ' 条',
         )
       } else if (preStepCount === 6) {
-        log('👀 agent/pre-step  （后续不再逐条打，只计数）')
+        atLevel(log, 'debug')('👀 agent/pre-step  （后续不再逐条打，只计数）')
       }
       if (mode === 'apply' && input.getCatalog !== undefined) {
         // ★ 真正的路由在这里（尚未实现 —— 先过 observe）
-        log('   ↳ apply 模式：initialRoute() 接线**尚未实现**（先过 observe）')
+        atLevel(log, 'warn')('   ↳ apply 模式：initialRoute() 接线**尚未实现**（先过 observe）')
       }
     } catch (error) {
-      log('⚠️ agent/pre-step 处理出错：' + String(error).slice(0, 120))
+      atLevel(log, 'error')('agent/pre-step 处理出错：' + String(error).slice(0, 120))
     }
     // ★ 只观察 ⇒ 决定**一个字都不改**地传回去
     return decision
@@ -231,16 +239,23 @@ export function installModelRouter(
       const p = (payload ?? {}) as AgentPayload
       turnStoppingCount += 1
       if (turnStoppingCount <= 5) {
-        log('👀 agent/turn-stopping  sessionId=' + sessionIdOf(p.agent) + ' turn=' + String(p.turn ?? '?'))
+        atLevel(log, 'debug')('👀 agent/turn-stopping  sessionId=' + sessionIdOf(p.agent) + ' turn=' + String(p.turn ?? '?'))
       }
     } catch (error) {
-      log('⚠️ agent/turn-stopping 处理出错：' + String(error).slice(0, 120))
+      atLevel(log, 'error')('agent/turn-stopping 处理出错：' + String(error).slice(0, 120))
     }
   })
 
   log('模型路由：已订阅 ' + String(disposers.length) + ' 个事件（期望 3 个）')
   if (disposers.length < 3) {
-    log('⚠️ 只装上了 ' + String(disposers.length) + ' 个监听器 —— 事件名可能与宿主对不上，路由不会生效')
+    // ★★ **fault**：这不是"一次订阅失败"（那是 error），而是
+    //   **路由这一整个子系统实际不工作** —— 事件名与宿主对不上时，
+    //   它会**安静地什么都不做**，而外面看起来一切正常。这正是本仓
+    //   最贵的一类问题（D6「沉降循环曾完全沉默」是同一个形状）。
+    atLevel(log, 'fault')(
+      '只装上了 ' + String(disposers.length) + ' 个监听器 —— 事件名可能与宿主对不上，**路由不会生效**' +
+        '（这不是"少了一条日志"，是这个功能根本没在跑）',
+    )
   }
 
   return {
