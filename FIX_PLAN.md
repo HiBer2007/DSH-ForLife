@@ -1403,4 +1403,81 @@ turn/end   ─▶ 按实际喂入段数推进游标 ─▶ 解除掩码 ─▶ �
 而不是静默生效或静默失效。
 
 
+---
+
+## 25. ★★★ §22 的真相：`ModelSelectionRef` **是一个从来没被实现过的设计**
+
+### 查出来的事实
+
+`FIX_PLAN.md` §22 与 `model-router.ts` / `initial.ts` 的注释里，
+"怎么把判档结果**落到请求上**"写的是这一句：
+
+```
+installModelSelection(agent.ctx, ref)  ⇒  ref.current = …
+```
+
+**全仓 grep `ModelSelectionRef` / `installModelSelection` ⇒ 7 处命中，没有一处是实现：**
+
+| 位置 | 是什么 |
+| :--- | :--- |
+| `dsh-component/src/model-router.ts` `:15` `:34` | 头注释（流程图与事件表） |
+| `dsh-component/src/model-router.ts` `:230` | ★ **一句日志文案**：`'apply 模式：装配 ModelSelectionRef 的逻辑**尚未实现**'` |
+| `router/src/initial.ts` `:15` `:234` `:239` | 头注释 + 那段 `TODO（用户 2026-10-08 明确要求，**尚未接**）` |
+| `router/src/subagents.ts` `:7` | 头注释 |
+
+> ⚠️ **我第一版写的是"7 处命中，全部在注释里"——那是不实的**：
+> `:230` 是**代码里的字符串**，不是注释。（我按"看起来像注释"下了结论，没逐条看。）
+> 更正之后这一点**反而更强**：连唯一一处不在注释里的，
+> **本身就是一句在喊"尚未实现"的日志**。
+
+⇒ **没有实现，一行都没有。** 那不是"接了一半"，是**那个东西不存在**。
+
+⇒ 所以 §22 里"轮次开始时按档位选模型**未接线**"这个说法**还不够准确**：
+不是"线没接"，而是**要接的那个端子是画在图纸上的**。
+**下一个照着注释去找 `installModelSelection` 的人会白找一场** —— 这正是这一节要拦住的。
+
+### ★★ 真正的接缝其实已经有了（而且我上一轮刚接对）
+
+宿主给的水位事件里，**`agent/request` 的 `next()` 返回的就是 `LlmCallConfig`**
+（`{provider, model, reasoningEffort?, temperature?, maxTokens?, stop?}`）——
+**改它 = 改这一请求用哪个模型。** 这就是"落到请求上"的真正机制，**不需要任何 ref**。
+
+⇒ 我上一轮修 failover 时把断言目标从 `candidates()[0]` 改成"**`next()` 给什么就是什么**"，
+现在回头看**正好是对的**：它让 failover 与**上游任何改模型的层**自动兼容 ——
+
+```
+agent/request 瀑布：
+  [判档层（将来）]  next() → 按档位改 {provider, model}    ← 基线
+        ↓
+  [failover 层]     读 next() 的结果当断言目标            ← 天然拿到基线
+        ↓
+                    只在**出错之后**才偏离它
+```
+
+⇒ **两层的顺序天然正确**，只要 failover 仍然"断言 `next()` 给的东西"。
+（★ 反过来说：如果 failover 还在断言 `candidates()[0]`，它会把判档层的选择**覆盖掉** ——
+那个 bug 若没修，将来接判档时会更难查，因为症状是"判档日志明明选了 A，实际走了 B"。）
+
+### ⚠️ ⚠️ 但现在**不能**接 apply：接上去就会烧掉 GO 那 9%
+
+判档的落地路径是 `initialRoute()` → `pickModel(catalog, tier)`，
+而 `catalog` 来自 `buildCatalog(...)` —— **它按什么顺序给候选？**
+
+已知：`route-seed.ts:162-165` 把 `model_routes` 的 **L1/L2/L3 rank 0 种成 `opencode-go`**。
+而用户原话是「**GO 额度实际上只有百分之 9**」，P2-b 要的是**往 `deepseek-official` 倾**。
+
+⇒ **在 P2-b 的倾斜方向定下来之前接 apply，等于把每一个 L2/L3 轮次都送去 GO。**
+
+**这与我在 `93fa2f2` 修掉的那个 bug 是同一个陷阱、同一个方向** ——
+那次是 failover 的断言，这次是判档的候选顺序。**同一个坑连着埋了两次。**
+
+⇒ **顺序必须是**：① 先让**候选顺序**反映 P2-b 的倾斜（`deepseek-official` 在前）
+→ ② 再开 `apply`（哪怕有 `observe` 兜底，也**先确认判档日志选的是 DS 而不是 GO**）
+→ ③ 才谈 `lockTierForTurn`（同一轮内不换档）。
+
+**判据（一句话）**：打开 `🎚️ 判档（observe…）` 那行日志，
+如果它写的是 `opencode-go` —— **先别开 apply**。
+
+
+
 
