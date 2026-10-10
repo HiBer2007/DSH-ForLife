@@ -1630,15 +1630,21 @@ export class MemoryRuntime {
     //   候选集先被它砍光，另两个条件连求值机会都没有。于是今天写入的条目
     //   （created_at 全是今天）永远拿不到候选 ⇒ `long_memory_entries` 恒为 0。
     //
-    //   ⚠️「访问频率」这一条**仍未实现** —— 它需要一个我没读到的定义
-    //   （按 `access_count`？还是「从未被访问过」？）。按本仓纪律**不猜**，
-    //   在 notes 里如实写明它没参与判断。
+    //   ★ 2026-10-10：第三条「**访问频率**」也实现了 —— 用户裁定 ⑥：
+    //   「access_count **1 个月内没有任何访问/间接访问**」⇒ 阈值
+    //   `tiering.frequencyIdleDays = 30`。
+    //   为什么它**能**同时覆盖"间接访问"：`recall` 路径会 `touchMidEntry`
+    //   每一条选进中期窗口的条目（本文件 `:553`），所以 `last_accessed_at`
+    //   反映的是**直接取回 + 被选进窗口**两种访问。
     const allActive = this.listEntries({ status: ['active'] })
     const settleStats = this.stats()
     const midBudget = defaultFor<number>('memory.midBudgetTokens')
     const ratioMin = defaultFor<number>('fragment.activeBudgetRatioMin')
+    const idleDays = defaultFor<number>('tiering.frequencyIdleDays')
     const midRatio = midBudget > 0 ? settleStats.activeTokens / midBudget : 0
+    const idleCutoff = new Date(Date.now() - idleDays * 24 * 60 * 60 * 1000).toISOString()
     const byTimer = allActive.filter((e) => (e.last_accessed_at ?? e.created_at) < cutoff)
+    const byFrequency = allActive.filter((e) => (e.last_accessed_at ?? e.created_at) < idleCutoff)
     const byRatio = midRatio >= ratioMin ? allActive : []
     const fired: string[] = []
     if (byRatio.length > 0) {
@@ -1646,10 +1652,20 @@ export class MemoryRuntime {
         `中期占比 ${(midRatio * 100).toFixed(1)}% ≥ ${(ratioMin * 100).toFixed(0)}%（预算 ${String(midBudget)} token）`,
       )
     }
+    if (byFrequency.length > 0) {
+      fired.push(`访问频率：${String(idleDays)} 天内无直接/间接访问`)
+    }
     if (byTimer.length > 0) fired.push(`定时：${String(olderThanDays)} 天未访问`)
-    // 占比成立时它已经包含全部 active 条目 ⇒ 并集 = 全表；否则只有定时那一批。
-    // 统一按「最久未访问」排序（`planFragmentation` 期望的就是这一批）。
-    const candidates = (byRatio.length > 0 ? allActive : byTimer)
+    // ★ 三条是**或**关系 ⇒ 候选是**并集**。
+    //   占比那条一旦成立就已经包含全部 active 条目，所以并集就是全表；
+    //   否则把「访问频率」与「定时」两批合起来（按 id 去重）。
+    //   统一按「最久未访问」排序（`planFragmentation` 期望的就是这一批）。
+    const merged = new Map(allActive.map((e) => [e.id, e]))
+    const pool =
+      byRatio.length > 0
+        ? allActive
+        : [...new Set([...byFrequency, ...byTimer].map((e) => e.id))].map((id) => merged.get(id)!)
+    const candidates = pool
       .slice()
       .sort((a, b) =>
         String(a.last_accessed_at ?? a.created_at).localeCompare(

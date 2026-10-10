@@ -134,6 +134,10 @@
       "v": 500000,
       "src": "用户 2026-10-09 拍板（design：**中期记忆区的独立预算** —— 它是 PLAN.MD §5.3 那对 `fragment.activeBudgetRatioMin/Max`（active 80–85%）的**分母**。为什么不复用 `memory.midWindow.maxTokens`：那是**注入窗口**（这次往上下文放多少），这是**存储预算**（中期区总共允许多大），`deviations.ts:201` 专门警告过两者「别混为一谈」。取 500k 的理由：用户在同一次拍板里选定；沉降会搬到「中期 active ≈ 425k（85%）」为止，而其中只有 `midWindow.maxTokens`（100k）看得见 —— 差额是**已知并被接受**的取舍，不是漏洞）"
     },
+    "tiering.frequencyIdleDays": {
+      "v": 30,
+      "src": "用户 2026-10-10 裁定 ⑥（design：**沉降第三条件「访问频率」的阈值** —— 用户原话「access_count 1个月内没有任何访问/间接访问」。语义：某条中期条目在这么久之内**既没被直接取回、也没被选进中期窗口**（间接访问）⇒ 算冷 ⇒ 进候选。为什么这条能被测出来：`runtime.ts:553` 在召回时会对每一条选进窗口的条目 `touchMidEntry`，所以 last_accessed_at 同时反映直接与间接访问。⚠️ 它（30）**小于** `tiering.settleAfterDays`（90）⇒ 实际生效的闲置窗口是 30 天，90 天那条被它包含；这是用户明示的取舍，不是矛盾）"
+    },
     "tiering.settleAfterDays": {
       "v": 90,
       "src": "PLAN.MD §6.3 / §12.2"
