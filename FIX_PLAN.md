@@ -2043,6 +2043,73 @@ REFRESH="node $TOOLS/refresh.mjs"     # ← 与真库里 label="node" 完全吻�
 **按状态数出来的**。中期表里只有 `active`(10714) 与 `fragmented`(200) 两种状态，**没有第三种会被漏掉**。
 
 
+---
+
+## 35. ✅ `compaction_epoch = 0` **是对的**，不是故障（2026-10-10 实算）
+
+> 环境的症状清单里一直挂着「`compaction_runs: 0`；epoch 0」。
+> §34 已经解释了**历史上**为什么是 0（`renderView()` 把整张表渲进前缀 ⇒ `CONTEXT_WINDOW_EXCEEDED`
+> ⇒ 压缩根本没机会被判定）。**但"现在"为什么还是 0，之前没人算过。**
+
+### 判定函数（`memory-core/src/compaction.ts:88-117`，逐字）
+
+```ts
+const tokenOk    = stats.shortTokens >= t.minTokens                 // 2000
+const turnWaived = stats.shortTokens >= t.waiveMinTurnsAboveTokens  // 6000
+const turnsOk    = turnWaived || stats.turnsSinceLast >= t.minTurns  // 3
+const toolsOk    = stats.toolCallsSinceLast >= t.minToolCalls        // 5
+if (!tokenOk || !turnsOk || !toolsOk) {
+  if (!pressure) return { approved: false, reason: 'too_thin', … }
+}
+```
+
+### 阈值（基线 `params`，逐条读出来的）
+
+| 键 | 值 |
+| :--- | :--- |
+| `compaction.minTokens` | **2000** |
+| `compaction.minTurns` | **3** |
+| `compaction.minToolCalls` | **5** |
+| `compaction.waiveMinTurnsAboveTokens` | **6000** |
+| `compaction.emergencyBypassRatio` | **0.75** |
+| ★ `context.windowTokensDefault` | **128000** ← `shortRatio` 的**分母**（`:691`） |
+
+### 真库状态（`forlife_state`，键值表）
+
+| 键 | 值 |
+| :--- | :--- |
+| `acct_short_tokens` | **21844** |
+| `acct_turns_since_compaction` | **14** |
+| `acct_toolcalls_since_compaction` | **2** |
+
+### ⇒ 逐条代入
+
+| 条件 | 算式 | 结果 |
+| :--- | :--- | :--- |
+| `tokenOk` | `21844 ≥ 2000` | ✅ |
+| `turnWaived` | `21844 ≥ 6000` | ✅ ⇒ **`turnsOk` 被豁免** ✅ |
+| ★ **`toolsOk`** | `2 ≥ 5` | ❌ **不满足** |
+| `pressure` | `shortRatio = 21844 / 128000 = **0.171**` vs `0.75` | ❌ 不是告急 |
+
+⇒ **返回 `{ approved: false, reason: 'too_thin' }`。**
+
+★★ **所以 `compaction_epoch = 0` 完全正确**：它**在等第 5 次工具调用**，而现在只有 2 次。
+（冷却期那条**不适用**：`hasPreviousCompaction === false`（从未压缩过）⇒ `:120` 整个跳过，
+所以唯一的解释就是 `too_thin`，**没有第二种可能**。）
+
+### 顺带：这条也解释了**为什么"喂完就期待压缩"是不成立的**
+
+`feed-all.sh` 的注释写着「1900k+ 字符全进去 ⇒ 中期记忆区会被填满 ⇒ **触发压缩**（阈值 50%）」。
+但**投喂本身走的是 `feedMemory()`（写库），不是模型轮次** ⇒ 它**不增加 `toolCallsSinceLast`**
+（那是 `acct_toolcalls_since_compaction`，只在真实轮次的工具调用里加）。
+⇒ **投喂再多，压缩条件也不会因此满足** —— 压缩要的是**真实轮次里的工具调用**。
+
+★ 这不是 bug（`minToolCalls` 是 PLAN.MD §12.1 的规格，作用是"防太薄"），
+但**它意味着"清空重喂之后要靠压缩把四层流水线推起来"这个期待需要修正**：
+中间必须有**真实对话轮次**。
+
+
+
 
 ### 要补什么才能做 P3（按依赖顺序）
 
