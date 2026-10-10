@@ -28,12 +28,22 @@ import { seedDefaultPrompts } from './prompt-store.ts'
 import { seedDefaultRoutes, seedDeepSeekFallback, seedOpenCodeGoRoutes } from './route-seed.ts'
 import { probeLlm } from './llm-probe.ts'
 import { fetchHostCatalog } from './llm-host.ts'
-import { installModelRouter } from './model-router.ts'
+import { installModelRouter, resolveRouterMode } from './model-router.ts'
+// ★★ 跨模型 failover 的接线（`router-hooks.ts` 只有裁决逻辑，从来没写过这一层）
+import { buildFailoverRuntime } from './router-hooks.ts'
+import { installFailoverHooks } from './failover-hooks.ts'
 import { collectUsageFromEvent } from './cache-collector.ts'
 import { buildClockTools } from './clock-tools.ts'
 import { buildRouterTools } from './router-tools.ts'
 import { buildPortTools, portToolOptionsFromEnv } from './port-tools.ts'
-import { getWakeTrigger, markSystemTriggersDue, recoverPendingCompactions, updateWakeTrigger } from '@forlife/store'
+import {
+  getWakeTrigger,
+  // ★ 降级候选链的真源：`model_routes` 是"自动降级"的唯一依据（有序）
+  listModelRoutes,
+  markSystemTriggersDue,
+  recoverPendingCompactions,
+  updateWakeTrigger,
+} from '@forlife/store'
 import { onCompactionFailure } from './compaction-engine.ts'
 import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
@@ -745,6 +755,50 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
     if (modelRouter.mode === 'off') {
       log('模型路由：未启用（设 FORLIFE_ROUTER_MODE=observe 可先观察）')
     }
+
+    // ★★ 2026-10-10（用户裁定「接线」）：**跨模型 failover**。
+    //
+    //   `router-hooks.ts` 的模块头写着「降级能力完全取决于**我们有没有挂上这两个钩子**」，
+    //   但它**全文没有一行宿主交互** —— 裁决逻辑写好了，接线这一层从来没写
+    //   （`deviations.ts:129` 也记着：`FailoverDecision.next` 没有消费者）。
+    //
+    //   候选链 = 库里 `model_routes` 的**有序**表 —— `migrations.ts:695` 与
+    //   `deviations.ts:347` 都写着它是"**自动降级**的唯一依据"。
+    //
+    //   ⚠️ **取哪一档的链**：这里取 `router.fallback` 对应的档（缺省 `L2`）。
+    //      真要做到"按判出来的档取链"需要知道本次决策的档位，而那个信息
+    //      在 failover 这一层拿不到（它只在 `agent/pre-step` 的路由决策里）。
+    //      **如实记在这里**，不假装它按档走。
+    const failoverRole = 'L2'
+    const failoverCandidates = (): { readonly provider: string; readonly model: string }[] =>
+      listModelRoutes(runtime.db, failoverRole)
+        // 只取启用的：面板上禁用的行不该被降级链捡起来
+        .filter((row) => row.enabled === 1)
+        .map((row) => ({ provider: row.provider, model: row.model }))
+    const recordRoute = (input: Parameters<typeof runtime.recordRoutingDecision>[0]): void => {
+      runtime.recordRoutingDecision({ ...input, latencyMs: input.latencyMs ?? 0 })
+    }
+    const failover = buildFailoverRuntime(runtime, {
+      candidates: failoverCandidates,
+      record: recordRoute,
+      log: always,
+    })
+    const failoverHooks = installFailoverHooks(ctx as never, {
+      // ★ 复用**同一个门控**：不新开一个开关（两个开关会让人以为
+      //   "路由关了但降级还开着"，而那正是最需要说清的一件事）
+      mode: resolveRouterMode(),
+      failover,
+      candidates: failoverCandidates,
+      record: recordRoute,
+      log: always,
+    })
+    disposers.push(() => {
+      failoverHooks.dispose()
+    })
+    log(
+      `跨模型 failover 已接线：候选链取自 model_routes 的 ${failoverRole} 档（当前 ${String(failoverCandidates().length)} 条），` +
+        `门控与模型路由同源（FORLIFE_ROUTER_MODE）`,
+    )
     // ⚠️ 这份清单必须与 `prompt.ts` 里真正注册的段**一一对应**（它出现在启动日志里，
     //    少写一个就是日志撒谎 —— 而"日志说法与实际不符"正是这个项目最贵的一类问题）。
     log(
