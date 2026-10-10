@@ -112,7 +112,7 @@ test('★ 单一真源：profile 里不许硬编码 thresholdRatio（YAML 读不
 const EFFECTIVE_THRESHOLD_TOKENS = 600_000
 
 /** 这个项目实际跑的模型（四个 profile 的 `agent-default-model` 都是它）。 */
-const DEFAULT_MODEL_ID = 'deepseek-v4.1-flash'
+const DEFAULT_MODEL_ID = 'deepseek-flash'
 
 /**
  * 取某个 profile 里某个模型声明的 `contextWindow`。
@@ -177,12 +177,19 @@ test('★★ 生效触发点 = 600k：四个 profile 的 `contextWindow × ratio
       `${profile}：默认模型必须是 ${DEFAULT_MODEL_ID} —— 换默认模型的话，"600k"这句话就不再成立于实际跑的那个模型`,
     )
 
-    // ② 分母：模型总上下文（用户澄清是 1M）
-    const contextWindow = contextWindowOf(source, DEFAULT_MODEL_ID)
+    // ② 分母：模型总上下文
+    //    ★ 两类来源：profile 里声明的（contextWindowOf）与 **native provider 自带的**
+    //    （DSH 目录里的真值，profile 里没有）。**两边都查不到 ⇒ 红** ——
+    //    保住"每个数字都必须有可核对的来源"这条纪律。
+    const native = NATIVE_MODEL_CONTEXT_WINDOWS.get(DEFAULT_MODEL_ID)
+    const contextWindow = native === undefined ? contextWindowOf(source, DEFAULT_MODEL_ID) : native.window
     assert.equal(
       contextWindow,
       1_000_000,
-      `${profile}：${DEFAULT_MODEL_ID} 的总上下文是 **1M**（用户 2026-10-09 裁定 ①）。` +
+      `${profile}：${DEFAULT_MODEL_ID} 的总上下文是 **1M**` +
+        (native === undefined
+          ? '（来源：profile 的 models: 声明）'
+          : `（来源：native provider 目录 —— ${native.src}）`) +
         '`262144` 是 `dsh-llm-pi-ai` 的**通用兜底默认值**，不是这个模型的事实。',
     )
 
@@ -235,6 +242,33 @@ const PI_AI_FALLBACK_CONTEXT_WINDOW = 262_144
  * ⚠️ **查不到就别填**：表里每个数字都必须有可核对的来源。真值存疑时正确的做法是
  * 让 `contextWindowOf()` 红着并把来源查清楚，不是"先填个看起来像的"。
  */
+/**
+ * **DSH native provider 自带目录**里的窗口真值。
+ *
+ * ## 为什么单开一张表，而不是并进 `MODEL_CONTEXT_WINDOWS`
+ *
+ * `MODEL_CONTEXT_WINDOWS` 与 profile 的 `models:` 块之间有**集合比对**
+ * （下面 `★★ 守卫：四个 profile 的每个模型都显式声明了窗口` 的 ①）——
+ * 它挡的是"有人加了模型却忘了登记"。而 **native provider 的模型根本不在
+ * `models:` 里**（它们是 DSH 目录的默认值，profile 不需要声明）
+ * ⇒ 并进那张表会让集合比对失衡。
+ *
+ * 所以分成两类来源：**profile 声明的**走那张表（仍受集合比对保护）；
+ * **native 的**走这张表（不参与集合比对）。两处都查不到 ⇒ 守卫红。
+ */
+const NATIVE_MODEL_CONTEXT_WINDOWS = new Map<string, { readonly window: number; readonly src: string }>([
+  [
+    'deepseek-flash',
+    {
+      window: 1_000_000,
+      src:
+        'dsh-llm-deepseek/lib/index.js:42-48 的 contextWindow = DEFAULT_CONTEXT_WINDOW；' +
+        '同包 README 逐字：「each with a 1,000,000-token context window」' +
+        '（表格 defaultContextWindow | 1,000,000）',
+    },
+  ],
+])
+
 const MODEL_CONTEXT_WINDOWS: readonly (readonly [string, number, string])[] = [
   [
     'deepseek-v4.1-flash',
