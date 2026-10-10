@@ -30,6 +30,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { recordEndpointHealth, recordEndpointProbe } from '@forlife/store'
 
 import { describeQuota, probeQuota, quotaBlocksRouting, type QuotaFetch } from './quota.ts'
+import { atLevel } from './admin/log.ts'
 
 /** 注入的 fetch（测试用）。 */
 export type HealthFetch = (url: string, init: { signal: AbortSignal }) => Promise<{
@@ -234,7 +235,7 @@ export function startEndpointHealthLoop(options: EndpointHealthOptions & { reado
       await probeAllEndpoints(options)
     } catch (error) {
       // 探测循环绝不能因为一次异常就死掉 —— 那样面板会永久停在旧值上，且没人知道
-      log(`端点健康探测异常（循环继续）：${String(error)}`)
+      atLevel(log, 'fault')(`端点健康探测异常（循环继续）：${String(error)}`)
     }
     if (!stopped) timer = setTimeout(() => void tick(), intervalMs)
   }

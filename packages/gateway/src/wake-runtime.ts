@@ -38,6 +38,7 @@ import { createSystemWakeSource, type SystemWakeSource } from './wake-system-sou
 import { createWatchSource, type WatchSource } from './wake-watch-source.ts'
 import { createLivenessMonitor, startLivenessWatch, type LivenessMonitor, type LivenessWatch } from './wake-liveness.ts'
 import { describeWakeProducerGaps } from './wake.ts'
+import { atLevel } from './admin/log.ts'
 
 /** 装配配置。 */
 export interface WakeRuntimeOptions {
@@ -295,7 +296,7 @@ export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
           if (o.triggered) log(`监视触发「${o.title}」：${o.detail}`)
         }
       } catch (error) {
-        log(`监视 tick 异常：${String(error).slice(0, 200)}`)
+        atLevel(log, 'fault')(`监视 tick 异常：${String(error).slice(0, 200)}`)
       }
     }, config.watchTickMs)
     handle.unref?.()

@@ -25,6 +25,7 @@
 import { statfsSync } from 'node:fs'
 
 import type { SystemEventHooks } from './wake-system-hooks.ts'
+import { atLevel } from './admin/log.ts'
 
 /** 磁盘检查结果。 */
 export interface DiskCheck {
@@ -127,7 +128,7 @@ export function startSystemMonitor(options: SystemMonitorOptions): SystemMonitor
       }
     } catch (error) {
       // **自己接住异常** —— 定时器里抛异常会静默杀死整个循环
-      log(`系统监视 tick 异常：${String(error).slice(0, 200)}`)
+      atLevel(log, 'fault')(`系统监视 tick 异常：${String(error).slice(0, 200)}`)
     }
   }, intervalMs)
   handle.unref?.()

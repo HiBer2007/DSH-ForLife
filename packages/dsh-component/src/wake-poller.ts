@@ -32,6 +32,7 @@
  * @module forlife-memory/wake-poller
  */
 import { claimWakeRequests, completeWakeRequest, type WakeRequestRow } from '@forlife/store'
+import { atLevel } from '@forlife/gateway'
 
 /** 执行一次唤醒所需的能力（注入，便于测试）。 */
 export interface WakeDeliveryHost {
@@ -140,7 +141,7 @@ export function startWakePoller(options: {
     // **自己接住异常** —— 定时器里抛异常会静默杀死整个循环，
     // 唤醒从此失效而没人知道
     void tick().catch((error: unknown) => {
-      log(`唤醒轮询 tick 异常：${String(error).slice(0, 200)}`)
+      atLevel(log, 'fault')(`唤醒轮询 tick 异常：${String(error).slice(0, 200)}`)
     })
   }, intervalMs)
   handle.unref?.()

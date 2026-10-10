@@ -190,6 +190,55 @@ test('★★ 迁移**不只是升级**：被猜测**高估**的也要降回来',
   )
 })
 
+// ── 第五批：其余四个**循环**（同一个形状，一起钉）──────────────────────────
+
+test('★★★ 「tick 异常」这一族**都是 `fault`** —— 一个循环每轮都炸 = 一个子系统没了', () => {
+  // 同一个形状出现在四个地方：监视循环 / 系统监视循环 / 唤醒轮询循环 / 端点健康探测循环。
+  // 它们的共同点：**循环还在跑、进程还活着、面板还开着**，
+  // 而那个循环负责的**整件事**已经不做工了。
+  //
+  // ⇒ 猜测会判成 `error`（文本里有"异常"）—— 那是**低估**：
+  //   `error` = 这一次操作没兜住；这里 = **这一类操作都会出问题**。
+  //
+  // ★ 这一族与 D6「沉降循环曾完全沉默」是同一个形状的两次出现：
+  //   那次是"有话说却不说"；这些是"说了，但级别让人以为只是偶发"。
+  const loops: readonly (readonly [string, string])[] = [
+    ['../src/wake-runtime.ts', '监视 tick 异常'],
+    ['../src/wake-system-monitor.ts', '系统监视 tick 异常'],
+    ['../../dsh-component/src/wake-poller.ts', '唤醒轮询 tick 异常'],
+    ['../src/endpoint-health.ts', '端点健康探测异常'],
+  ]
+  for (const [path, phrase] of loops) {
+    const src = code(path)
+    assert.match(
+      src,
+      /atLevel\(log, 'fault'\)\(`(?:[^`]*tick 异常|端点健康探测异常)/,
+      `★ ${path} 的「${phrase}」必须是 fault —— 循环每轮都炸，是一整个子系统不可用`,
+    )
+    assert.ok(
+      !new RegExp('^\\s*log\\(`' + phrase, 'm').test(src),
+      `★ ${path} 那一处不许再是裸调用（裸调用会被猜成 error，**低估**它）`,
+    )
+    assert.match(src, /import \{ atLevel \}/, `★ ${path} 要真的 import 了那个桥`)
+  }
+})
+
+test('★★ `endpoint-health.ts` 那处还带一句"循环继续" —— 那正是 fault 的判据', () => {
+  // 「（循环继续）」这四个字是**作者自己写的**：这次异常**不会**让循环停下来
+  // ⇒ 失败会**一轮一轮地重复**，而每一轮都只是"一条 error"。
+  // 那正是"一次 vs 一类"的分界：**它是一类**。
+  assert.match(
+    code('../src/endpoint-health.ts'),
+    /atLevel\(log, 'fault'\)\(`端点健康探测异常（循环继续）/,
+    '原文里的「（循环继续）」就是判据本身 —— 升级成 fault 是把作者已经写下的意思落到级别上',
+  )
+})
+
+// ── 第三批：`wake-bridge-endpoint.ts`（安全相关，**这一批里最要紧的**）──────
+//
+// ⚠️ 这一行分区注释上一轮被我**顺手删掉了**（改第四批时把锚点替换掉了没补回来）。
+//    现在补上 —— 分区注释不是装饰：它让人一眼看出"这批为什么单独成批"。
+
 const WAKE_EP = code('../../dsh-component/src/wake-bridge-endpoint.ts')
 
 test('★★★ 安全拒绝不许是 `info` —— 一次"钥匙不对"显示成普通信息', () => {
