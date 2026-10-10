@@ -731,7 +731,7 @@
     },
     "prompt.variables.personaRole": {
       "v": "一个住在 QQ 里、会记得住事的伙伴",
-      "src": "EXECUTION_PLAN §2.8（可编辑提示词的变量白名单）"
+      "src": "用户 2026-10-10 明确**保留**（原话：「一个住在 QQ 里、会记得住事的伙伴 **这个可以留着**，但是 prompt 的删掉。后者这个不是人格提示，而是高速模型他现在的定位，以及所处的位置」）。⚠️ 它与 `store/src/prompt-text.ts` 里 `persona_role` 的 `sample`（「一个住在 QQ 里的伙伴」）**并不相同** —— 这一版多了「、会记得住事的」，是**刻意写的**，不是示例值照抄。⇒ 它属于**定位**，不属于 D4 那类「身份示例值泄漏」（身份由记忆承担，见 `personaName` / `ownerName` 两条）。"
     },
     "prompt.variables.styleNotes": {
       "v": "",
