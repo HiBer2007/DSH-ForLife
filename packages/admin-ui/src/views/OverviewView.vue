@@ -179,11 +179,28 @@ const health = computed<Card[]>(() => {
  *
  * 为什么单独抽一个函数：这段有三个条件分支，塞进 `computed` 里就会变成
  * 模板字面量套模板字面量 —— 本仓约定**不嵌套反引号**（少看一个反引号就整段跑偏）。
+ *
+ * ★ 2026-10-10：**补上"这些记忆还在库里"这句**。
+ *
+ *   起因是用户的一句实测反馈：「面板显示 **1455k 的上下文窗口（窗口丢弃）**」
+ *   —— 那个 1455k **不是上下文窗口**，而是**这次没进提示词的记忆量**
+ *   （1,555,127 全表 − 窗口内的部分 ≈ 1.455M）。
+ *   卡片标题里有「窗口」两个字、数值又很大 ⇒ **很容易被读成"模型窗口是 1455k"**。
+ *
+ *   ⚠️ 而这两种读法带来的**担忧完全相反**：
+ *   - 「窗口 1455k」⇒ 以为**配置错了**（其实不是）
+ *   - 「1455k 记忆被丢掉了」⇒ 以为**记忆没了**（其实**还在库里**，只是没进这次提示词）
+ *
+ *   ⇒ 副标题把"还在库里"说出来，歧义就没了。
+ *     （**标题不改**：用户自己就是用「窗口丢弃」称呼它的，改名会打断他的心智模型。）
  */
 function windowDropHint(memory: Overview['memory']): string {
   const head = `${formatNumber(memory.windowDroppedEntries)} 条出窗`
   const byCount = memory.windowDroppedByCount > 0 ? `，其中 ${formatNumber(memory.windowDroppedByCount)} 条撞条数上限` : ''
-  return `${head}${byCount} · 预算 ${formatTokens(memory.windowMaxTokens)} / ${formatNumber(memory.windowMaxCount)} 条`
+  const budgets = `预算 ${formatTokens(memory.windowMaxTokens)} / ${formatNumber(memory.windowMaxCount)} 条`
+  // 没有出窗的条目就不加那句（免得读成"有东西丢了"）
+  if (memory.windowDroppedEntries === 0) return `${head} · ${budgets}`
+  return `${head}${byCount} · ${budgets} · 仍在库里（只是没进这次提示词），可逐条取回`
 }
 
 /** 第二排：体检数据。 */

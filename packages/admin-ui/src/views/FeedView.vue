@@ -232,7 +232,7 @@ async function startRun(): Promise<void> {
     runNotice.value = {
       tone: 'ok',
       text:
-        `已登记 ${formatNumber(response.segments)} 段 —— 从现在起**每一轮喂一批**。` +
+        `已登记 ${formatNumber(response.segments)} 段 —— 从现在起每一轮喂一批。` +
         '下面的进度每 3 秒自己更新（它跟着游标走）。',
     }
   } catch (error) {
@@ -249,11 +249,11 @@ async function startRun(): Promise<void> {
          手工喂一段（下面那块）是"补一句"用的，而这一块才是"把一整份资料交给她"。 -->
     <PanelCard
       title="开始投喂（一段一段来）"
-      subtitle="登记一份分段素材，之后**每一轮喂一批** —— 她自己读、自己决定记成什么；断了下次接着喂"
+      subtitle="登记一份分段素材，之后每一轮喂一批 —— 她自己读、自己决定记成什么；断了下次接着喂"
     >
       <form class="form" @submit.prevent="startRun()">
         <label class="field">
-          <span>素材目录（一段一个文本文件，按文件名里的**数字**排序）</span>
+          <span>素材目录（一段一个文本文件，按文件名里的数字排序）</span>
           <input
             v-model="runDir"
             type="text"
@@ -343,7 +343,7 @@ async function startRun(): Promise<void> {
             </button>
           </div>
           <label class="field grow">
-            <span>来源（可选；**同一个来源 = 同一份东西**，再喂一次会更新它）</span>
+            <span>来源（可选；同一个来源 = 同一份东西，再喂一次会更新它）</span>
             <input v-model="source" type="text" placeholder="例如 docs/部署笔记.md" />
           </label>
         </div>
