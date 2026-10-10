@@ -47,7 +47,58 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 import type { ModelCatalog } from '@forlife/router'
+import { initialRoute } from '@forlife/router'
 import { atLevel } from '@forlife/gateway'
+
+/**
+ * 从宿主的 `messages` 里取出**这一轮的输入**（判档要的就是它）。
+ *
+ * ## 为什么单独一个函数（而不是内联三行）
+ *
+ * 因为这是**唯一一处"猜宿主载荷形状"**的地方 —— 而本仓栽过好几次
+ * （`agent/pre-step` 那条瀑布事件就栽过：只写了 `(payload) => {}`，把整轮干掉了）。
+ * 把它抽出来 ⇒ **可以单独喂各种形状去测**，而不是等真机上炸。
+ *
+ * ## 刻意的宽容
+ *
+ * 返回 `undefined` 表示"**取不到**"，调用方据此跳过判档（并打一条 `debug`）——
+ * **宁可这一轮不判档，也不要猜一个错的文本去定档**：档位会决定用哪个模型，
+ * 而"用错模型"是花钱的事，且**从结果上很难看出来**（她照样会回话）。
+ */
+export function extractTurnText(messages: unknown): string | undefined {
+  if (!Array.isArray(messages) || messages.length === 0) return undefined
+  // 从后往前找**最后一条** role=user 的（最后一条用户输入才是这一轮的输入）
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i] as { role?: unknown; content?: unknown } | null | undefined
+    if (m === null || typeof m !== 'object') continue
+    if (m.role !== 'user') continue
+    const text = textOf(m.content)
+    if (text !== undefined && text.trim() !== '') return text
+  }
+  return undefined
+}
+
+/** 内容可能是字符串、`{text}`、或它们的数组 —— 三种都认。 */
+function textOf(content: unknown): string | undefined {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const block of content) {
+      const one = textOfBlock(block)
+      if (one !== undefined) parts.push(one)
+    }
+    return parts.length === 0 ? undefined : parts.join('\n')
+  }
+  return textOfBlock(content)
+}
+
+function textOfBlock(block: unknown): string | undefined {
+  if (typeof block === 'string') return block
+  if (block === null || typeof block !== 'object') return undefined
+  const b = block as { type?: unknown; text?: unknown }
+  // 只取**文本**块：图片/工具调用那些不参与判档（判档看的是"这一轮要干什么"）
+  return typeof b.text === 'string' ? b.text : undefined
+}
 
 /** 观察模式。 */
 export type RouterMode = 'off' | 'observe' | 'apply'
@@ -224,6 +275,47 @@ export function installModelRouter(
       if (mode === 'apply' && input.getCatalog !== undefined) {
         // ★ 真正的路由在这里（尚未实现 —— 先过 observe）
         atLevel(log, 'warn')('   ↳ apply 模式：initialRoute() 接线**尚未实现**（先过 observe）')
+      }
+      // ★★ **判档**（中介层第 ① 块）：真的算一遍，并**让它可见**。
+      //
+      //   为什么先只打日志、不改模型：本文件的头写得很清楚 ——
+      //   本仓栽过 18 次"写好了但没接上/接错了"，最惨的一次是 `profile patch` 的
+      //   `id` 写成包名 ⇒ **整段被静默丢弃**，而容器一直 healthy。
+      //   ⇒ 先把"**判成哪一档、凭什么**"打出来，确认它真的响、真的合理，
+      //     再让 `ref.current` 生效。
+      //
+      //   ★ 而且容器里 `FORLIFE_ROUTER_MODE` 的默认就是 `observe`
+      //   （`deploy/docker-compose.yml` 的 `${FORLIFE_ROUTER_MODE:-observe}`）
+      //   ⇒ 这一段在真机上**会先以 observe 跑起来**，正好是需要的那一步。
+      //
+      //   ⚠️ 取不到这一轮的输入 ⇒ **跳过判档，不猜**。档位决定用哪个模型，
+      //   用错模型是花钱的事，而且**从结果上很难看出来**（她照样会回话）。
+      if (input.getCatalog !== undefined && preStepCount <= 5) {
+        const turnText = extractTurnText(p.messages)
+        if (turnText === undefined) {
+          atLevel(log, 'debug')('   ↳ 判档跳过：这一轮的 messages 里取不到 user 文本（**不猜**）')
+        } else {
+          const catalog = await input.getCatalog()
+          if (catalog === undefined) {
+            atLevel(log, 'note')('   ↳ 判档跳过：模型表还没就绪（getCatalog() 给了 undefined）')
+          } else {
+            // 纯函数、不碰网络：守卫 → 预评分（没接）→ 启发式兜底
+            const decided = initialRoute({ turnText, catalog })
+            if (decided === undefined) {
+              atLevel(log, 'note')(
+                '   ↳ 判档**没得出结果**：模型表里没有可达的模型 —— ' +
+                  '注意这不是"这一轮简单"，而是"**没人可用**"（路由会静默不生效）',
+              )
+            } else {
+              log(
+                '🎚️ 判档（observe，**不改模型**）：' + decided.tier +
+                  '（来源 ' + decided.tierSource + '）⇒ 会选 ' + decided.provider + '/' + decided.model +
+                  '（强度 ' + decided.reasoningEffort + '，' + String(decided.alternatives.length) + ' 个备选）',
+              )
+              atLevel(log, 'debug')('   ↳ 凭什么：' + decided.why)
+            }
+          }
+        }
       }
     } catch (error) {
       atLevel(log, 'error')('agent/pre-step 处理出错：' + String(error).slice(0, 120))

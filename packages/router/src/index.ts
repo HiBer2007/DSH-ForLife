@@ -18,6 +18,15 @@ export type { HttpScorerOptions, ScoreResult, ScoringInput, ScoringPrompt, TierS
 export { deescalate, describeDecision, escalate, routeBatch, Router, startPreScore } from './pipeline.ts'
 export type { RouterOptions, RoutingDecision } from './pipeline.ts'
 
+// ★ 判档那一条链（2026-10-10 接线时才发现**它没被导出**）：
+//   `dsh-component/src/model-router.ts` 要按档位选模型，而入口是 `initialRoute()` ——
+//   它一直只存在于 `initial.ts` 里，**barrel 没往外给**。
+//   ⇒ 于是"按档位选模型"这件事**从外面根本调不到**：不是因为逻辑没写，
+//     而是因为**门没开**。（这与 §23 那个洞是同一种病：找不到入口。）
+//   ⚠️ 记在这里：**导出清单也是一种接线** —— 漏一个名字，等于一整块功能不存在。
+export { decideTier, initialRoute, pickModel, scoreCandidate } from './initial.ts'
+export type { InitialRouteDecision, PreScore, RouteCandidate, TierSource } from './initial.ts'
+
 export {
   assertNotSubagentSwitch,
   assertTierForTurn,
