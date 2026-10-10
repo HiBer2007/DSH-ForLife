@@ -2045,122 +2045,6 @@ REFRESH="node $TOOLS/refresh.mjs"     # ← 与真库里 label="node" 完全吻�
 
 ---
 
-## 35. ✅ `compaction_epoch = 0` **是对的**，不是故障（2026-10-10 实算）
-
-> 环境的症状清单里一直挂着「`compaction_runs: 0`；epoch 0」。
-> §34 已经解释了**历史上**为什么是 0（`renderView()` 把整张表渲进前缀 ⇒ `CONTEXT_WINDOW_EXCEEDED`
-> ⇒ 压缩根本没机会被判定）。**但"现在"为什么还是 0，之前没人算过。**
-
-### 判定函数（`memory-core/src/compaction.ts:88-117`，逐字）
-
-```ts
-const tokenOk    = stats.shortTokens >= t.minTokens                 // 2000
-const turnWaived = stats.shortTokens >= t.waiveMinTurnsAboveTokens  // 6000
-const turnsOk    = turnWaived || stats.turnsSinceLast >= t.minTurns  // 3
-const toolsOk    = stats.toolCallsSinceLast >= t.minToolCalls        // 5
-if (!tokenOk || !turnsOk || !toolsOk) {
-  if (!pressure) return { approved: false, reason: 'too_thin', … }
-}
-```
-
-### 阈值（基线 `params`，逐条读出来的）
-
-| 键 | 值 |
-| :--- | :--- |
-| `compaction.minTokens` | **2000** |
-| `compaction.minTurns` | **3** |
-| `compaction.minToolCalls` | **5** |
-| `compaction.waiveMinTurnsAboveTokens` | **6000** |
-| `compaction.emergencyBypassRatio` | **0.75** |
-| ★ `context.windowTokensDefault` | **128000** ← `shortRatio` 的**分母**（`:691`） |
-
-### 真库状态（`forlife_state`，键值表）
-
-| 键 | 值 |
-| :--- | :--- |
-| `acct_short_tokens` | **21844** |
-| `acct_turns_since_compaction` | **14** |
-| `acct_toolcalls_since_compaction` | **2** |
-
-### ⇒ 逐条代入
-
-| 条件 | 算式 | 结果 |
-| :--- | :--- | :--- |
-| `tokenOk` | `21844 ≥ 2000` | ✅ |
-| `turnWaived` | `21844 ≥ 6000` | ✅ ⇒ **`turnsOk` 被豁免** ✅ |
-| ★ **`toolsOk`** | `2 ≥ 5` | ❌ **不满足** |
-| `pressure` | `shortRatio = 21844 / 128000 = **0.171**` vs `0.75` | ❌ 不是告急 |
-
-⇒ **返回 `{ approved: false, reason: 'too_thin' }`。**
-
-★★ **所以 `compaction_epoch = 0` 完全正确**：它**在等第 5 次工具调用**，而现在只有 2 次。
-（冷却期那条**不适用**：`hasPreviousCompaction === false`（从未压缩过）⇒ `:120` 整个跳过，
-所以唯一的解释就是 `too_thin`，**没有第二种可能**。）
-
-### 顺带：这条也解释了**为什么"喂完就期待压缩"是不成立的**
-
-`feed-all.sh` 的注释写着「1900k+ 字符全进去 ⇒ 中期记忆区会被填满 ⇒ **触发压缩**（阈值 50%）」。
-但**投喂本身走的是 `feedMemory()`（写库），不是模型轮次** ⇒ 它**不增加 `toolCallsSinceLast`**
-（那是 `acct_toolcalls_since_compaction`，只在真实轮次的工具调用里加）。
-⇒ **投喂再多，压缩条件也不会因此满足** —— 压缩要的是**真实轮次里的工具调用**。
-
-★ 这不是 bug（`minToolCalls` 是 PLAN.MD §12.1 的规格，作用是"防太薄"），
-但**它意味着"清空重喂之后要靠压缩把四层流水线推起来"这个期待需要修正**：
-中间必须有**真实对话轮次**。
-
-
-
-
-### 要补什么才能做 P3（按依赖顺序）
-
-1. ~~**写 `feed-prepare.ps1`**（**缺的就是它**）~~ → ✅ **2026-10-10 已写出来**，见下。
-2. **拉源要凭据**：`refresh.mjs:6-8` 写明源是 DeepSeek **网页端**导出，
-   只能从"有登录态的那一侧"拉（`HWWAFSESID` / `ds_session_id` cookie）——
-   **容器里没有、也不该有**。⇒ **这一步必须用户在场**（或者给一份新鲜快照）。
-3. `SOURCE.json` 到位且新鲜之后，再按 P3 走：清空 → 重导。
-
-### ✅ 已补：`.runtime/feed-prepare.ps1`（那个"让你去跑"却不存在的东西）
-
-`refresh.mjs:55` 的报错让你回 Windows 跑它 —— **此前它不存在**（§33 开头那条）。
-现在它在了，做四件事，**顺序不能换**：
-
-| # | 做什么 | 落在哪 |
-| :--- | :--- | :--- |
-| ① | **拉源** —— 调 `.runtime/fetch-deepseek-chat.ps1`（**凭据只活在那个文件里，新脚本不含任何凭据**） | `.runtime/chat-import/*.json` |
-| ② | **重新切分** —— 调 `chat-segv2-tool/generate.py`（`LIMIT=8000` 字/段） | `.runtime/chat-feed-v2/` + `MANIFEST.json` |
-| ③ | ★ **写 `SOURCE.json`** —— `preparedAt` / `segments` / `seg1Items` / `seg2Items` | 闸门要的就是它 |
-| ④ | ★ **自检用闸门自己**（`node refresh.mjs`） | 它说通过才算通过 |
-
-**失败纪律**：任何一步不过 ⇒ **不写 `SOURCE.json` 且非 0 退出**（脚本里 **14 处** `Die`）。
-理由写在脚本头：**写一个"看起来新鲜"的时间戳去骗过闸门，等于把闸门防的那件事亲手做一遍。**
-
-★ **我自己在脚本里堵了一个后门**：`-SkipFetch`（只重切、不重拉）会产出
-一份"刚 prepared"的 `SOURCE.json` ⇒ **让闸门放行一份没重新拉过的源**。
-⇒ 现在它**必须与 `-AllowStaleSource` 一起用**，否则直接失败，并明确写出
-"这份 SOURCE.json 只证明**我重新切过**，**不证明源是新的**"。
-
-**验证**：`Parser::ParseFile` **语法 0 错误**；它引用的三个外部件都在；
-`.gitignore:2` 的 `.runtime/` 盖住它 ⇒ **脚本按约定不进仓库**（与 `fetch-*.ps1` / `refresh.mjs` 一致）。
-
-⇒ **剩下唯一挡着 P3 的**：**① 需要你那份网页端登录态**（cookie/token 会过期，几小时到几天）。
-你把它更新一下、跑一次 `pwsh -File .runtime\feed-prepare.ps1`，
-段包就会带上新鲜的 `SOURCE.json`；之后清空 + 重导就能按 P3 走。
-
-
-### 顺带解开的两个旧谜
-
-- ★ **`compaction_runs: 0` 的谜底**（`feed-batch.ts:13-18` 原文）：
-  `renderView()` 曾把**整张中期记忆表**（10,794 条 / **1,504,850 token**）全量渲染进提示词
-  ⇒ `CONTEXT_WINDOW_EXCEEDED` ⇒ **压缩永远不触发**（压缩看上下文占比，而上下文一开始就爆）
-  ⇒ `compaction_epoch` 恒 0、`long_memory_entries` 恒 0 ⇒ **四层流水线第一层就堵死**。
-- ★ **重导**大概率**不用模型**（与"71 轮 × 24k token"的担心相反）：
-  `feed-batch.ts:29-34` 写明每批走 `feedMemory()`（`insertLongEntry` / `appendMidEntry` /
-  检索判重 / 归档），那是**写库**，本模块只做调度。
-  ⚠️ 但**这一条我还没实读到 `feedMemory` 内部**，所以先记为"大概率"、不当作结论。
-
-
----
-
 ## 34. 本地评分器：**装起来了、能回答、但慢了 200–1000 倍**（2026-10-10 实机）
 
 > 用户 2026-10-10 裁定「部署小模型，把预评分接上」+「授权我联网下」。
@@ -2295,10 +2179,118 @@ store/src/media.ts 之外的其余零引用符号（共 37 个，已裁定 8 个
 
 ⇒ **接手的人从这两个开始**，其余大多是格式化 helper 或 composable（属于"库里有、没人用"的正常情形）。
 
+## 35. ✅ `compaction_epoch = 0` **是对的**，不是故障（2026-10-10 实算）
+
+> 环境的症状清单里一直挂着「`compaction_runs: 0`；epoch 0」。
+> §34 已经解释了**历史上**为什么是 0（`renderView()` 把整张表渲进前缀 ⇒ `CONTEXT_WINDOW_EXCEEDED`
+> ⇒ 压缩根本没机会被判定）。**但"现在"为什么还是 0，之前没人算过。**
+
+### 判定函数（`memory-core/src/compaction.ts:88-117`，逐字）
+
+```ts
+const tokenOk    = stats.shortTokens >= t.minTokens                 // 2000
+const turnWaived = stats.shortTokens >= t.waiveMinTurnsAboveTokens  // 6000
+const turnsOk    = turnWaived || stats.turnsSinceLast >= t.minTurns  // 3
+const toolsOk    = stats.toolCallsSinceLast >= t.minToolCalls        // 5
+if (!tokenOk || !turnsOk || !toolsOk) {
+  if (!pressure) return { approved: false, reason: 'too_thin', … }
+}
+```
+
+### 阈值（基线 `params`，逐条读出来的）
+
+| 键 | 值 |
+| :--- | :--- |
+| `compaction.minTokens` | **2000** |
+| `compaction.minTurns` | **3** |
+| `compaction.minToolCalls` | **5** |
+| `compaction.waiveMinTurnsAboveTokens` | **6000** |
+| `compaction.emergencyBypassRatio` | **0.75** |
+| ★ `context.windowTokensDefault` | **128000** ← `shortRatio` 的**分母**（`:691`） |
+
+### 真库状态（`forlife_state`，键值表）
+
+| 键 | 值 |
+| :--- | :--- |
+| `acct_short_tokens` | **21844** |
+| `acct_turns_since_compaction` | **14** |
+| `acct_toolcalls_since_compaction` | **2** |
+
+### ⇒ 逐条代入
+
+| 条件 | 算式 | 结果 |
+| :--- | :--- | :--- |
+| `tokenOk` | `21844 ≥ 2000` | ✅ |
+| `turnWaived` | `21844 ≥ 6000` | ✅ ⇒ **`turnsOk` 被豁免** ✅ |
+| ★ **`toolsOk`** | `2 ≥ 5` | ❌ **不满足** |
+| `pressure` | `shortRatio = 21844 / 128000 = **0.171**` vs `0.75` | ❌ 不是告急 |
+
+⇒ **返回 `{ approved: false, reason: 'too_thin' }`。**
+
+★★ **所以 `compaction_epoch = 0` 完全正确**：它**在等第 5 次工具调用**，而现在只有 2 次。
+（冷却期那条**不适用**：`hasPreviousCompaction === false`（从未压缩过）⇒ `:120` 整个跳过，
+所以唯一的解释就是 `too_thin`，**没有第二种可能**。）
+
+### 顺带：这条也解释了**为什么"喂完就期待压缩"是不成立的**
+
+`feed-all.sh` 的注释写着「1900k+ 字符全进去 ⇒ 中期记忆区会被填满 ⇒ **触发压缩**（阈值 50%）」。
+但**投喂本身走的是 `feedMemory()`（写库），不是模型轮次** ⇒ 它**不增加 `toolCallsSinceLast`**
+（那是 `acct_toolcalls_since_compaction`，只在真实轮次的工具调用里加）。
+⇒ **投喂再多，压缩条件也不会因此满足** —— 压缩要的是**真实轮次里的工具调用**。
+
+★ 这不是 bug（`minToolCalls` 是 PLAN.MD §12.1 的规格，作用是"防太薄"），
+但**它意味着"清空重喂之后要靠压缩把四层流水线推起来"这个期待需要修正**：
+中间必须有**真实对话轮次**。
 
 
 
 
+### 要补什么才能做 P3（按依赖顺序）
+
+1. ~~**写 `feed-prepare.ps1`**（**缺的就是它**）~~ → ✅ **2026-10-10 已写出来**，见下。
+2. **拉源要凭据**：`refresh.mjs:6-8` 写明源是 DeepSeek **网页端**导出，
+   只能从"有登录态的那一侧"拉（`HWWAFSESID` / `ds_session_id` cookie）——
+   **容器里没有、也不该有**。⇒ **这一步必须用户在场**（或者给一份新鲜快照）。
+3. `SOURCE.json` 到位且新鲜之后，再按 P3 走：清空 → 重导。
+
+### ✅ 已补：`.runtime/feed-prepare.ps1`（那个"让你去跑"却不存在的东西）
+
+`refresh.mjs:55` 的报错让你回 Windows 跑它 —— **此前它不存在**（§33 开头那条）。
+现在它在了，做四件事，**顺序不能换**：
+
+| # | 做什么 | 落在哪 |
+| :--- | :--- | :--- |
+| ① | **拉源** —— 调 `.runtime/fetch-deepseek-chat.ps1`（**凭据只活在那个文件里，新脚本不含任何凭据**） | `.runtime/chat-import/*.json` |
+| ② | **重新切分** —— 调 `chat-segv2-tool/generate.py`（`LIMIT=8000` 字/段） | `.runtime/chat-feed-v2/` + `MANIFEST.json` |
+| ③ | ★ **写 `SOURCE.json`** —— `preparedAt` / `segments` / `seg1Items` / `seg2Items` | 闸门要的就是它 |
+| ④ | ★ **自检用闸门自己**（`node refresh.mjs`） | 它说通过才算通过 |
+
+**失败纪律**：任何一步不过 ⇒ **不写 `SOURCE.json` 且非 0 退出**（脚本里 **14 处** `Die`）。
+理由写在脚本头：**写一个"看起来新鲜"的时间戳去骗过闸门，等于把闸门防的那件事亲手做一遍。**
+
+★ **我自己在脚本里堵了一个后门**：`-SkipFetch`（只重切、不重拉）会产出
+一份"刚 prepared"的 `SOURCE.json` ⇒ **让闸门放行一份没重新拉过的源**。
+⇒ 现在它**必须与 `-AllowStaleSource` 一起用**，否则直接失败，并明确写出
+"这份 SOURCE.json 只证明**我重新切过**，**不证明源是新的**"。
+
+**验证**：`Parser::ParseFile` **语法 0 错误**；它引用的三个外部件都在；
+`.gitignore:2` 的 `.runtime/` 盖住它 ⇒ **脚本按约定不进仓库**（与 `fetch-*.ps1` / `refresh.mjs` 一致）。
+
+⇒ **剩下唯一挡着 P3 的**：**① 需要你那份网页端登录态**（cookie/token 会过期，几小时到几天）。
+你把它更新一下、跑一次 `pwsh -File .runtime\feed-prepare.ps1`，
+段包就会带上新鲜的 `SOURCE.json`；之后清空 + 重导就能按 P3 走。
 
 
+### 顺带解开的两个旧谜
 
+- ★ **`compaction_runs: 0` 的谜底**（`feed-batch.ts:13-18` 原文）：
+  `renderView()` 曾把**整张中期记忆表**（10,794 条 / **1,504,850 token**）全量渲染进提示词
+  ⇒ `CONTEXT_WINDOW_EXCEEDED` ⇒ **压缩永远不触发**（压缩看上下文占比，而上下文一开始就爆）
+  ⇒ `compaction_epoch` 恒 0、`long_memory_entries` 恒 0 ⇒ **四层流水线第一层就堵死**。
+- ★ **重导**大概率**不用模型**（与"71 轮 × 24k token"的担心相反）：
+  `feed-batch.ts:29-34` 写明每批走 `feedMemory()`（`insertLongEntry` / `appendMidEntry` /
+  检索判重 / 归档），那是**写库**，本模块只做调度。
+  ⚠️ 但**这一条我还没实读到 `feedMemory` 内部**，所以先记为"大概率"、不当作结论。
+
+
+---
