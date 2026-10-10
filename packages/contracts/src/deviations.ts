@@ -125,13 +125,18 @@ export const RULE_DEVIATIONS: readonly RuleDeviation[] = [
       '每次裁决都写 `routing_log`、并可用 `revert_model` 撤销（`router-tools.ts:54-91` 与 `applySwitch()` `:185-240`）。' +
       '⚠️ **本次核对据实删掉了原登记里两处不成立的主张**：' +
       '① 「主动切换仍然禁止」—— 不成立：上面的工具是活的，且有测试断言它生效（审计 §3 第 20 条）；' +
-      '② 「provider 无额度/失败时允许被动降级（routing.failover）」—— **生产未接线**：' +
-      '`buildFailoverRuntime()`（`router-hooks.ts:143`）只被 `test/failover-wiring.test.ts` 调用，' +
-      '没有任何生产代码订阅宿主的 `agent/request-error`，`FailoverDecision.next` 也没有消费者。' +
-      '那不是「已生效的例外」而是**待接线的缺口**，留在偏离登记里会让人以为它存在（审计 §7.4 与 §4 第 20 条）。' +
+      '② 「provider 无额度/失败时允许被动降级（routing.failover）」—— 本条**2026-10-10 已接线**：' +
+      '`installFailoverHooks()`（`dsh-component/src/failover-hooks.ts`）在 `index.ts` 里真的装上了，' +
+      '订阅宿主的 `agent/request-error`（自己接管时返回 `{kind:\'retry\'}` 且**不调 `next()`**）与 ' +
+      '`agent/request`（每步重新断言，防粘性）；候选链取自 `model_routes`（只取 `enabled`），' +
+      '门控**复用** `FORLIFE_ROUTER_MODE`（不新开第二个开关）。有接线守卫（读源码）钉住"装上了"。' +
+      '⚠️ 仍有一处如实记着：候选链当前**固定取 L2 档** —— "按判出来的档取链"需要本次决策的档位，' +
+      '而那个信息在 failover 这一层拿不到。' +
       '另有一处同源的现状必须说清：`switch_model` 只写 `tierOverride` + `routing_log`，' +
-      '而「轮次开始时按档位选模型」这条链路本身在生产里尚未接线（`defaultRouteEntries` / `new Router(` / ' +
-      '`lockTierForTurn` 均无生产调用方）⇒ 这个例外当前还**没有真正改变过任何一次请求的模型**。',
+      '而「轮次开始时按档位选模型」这条链路本身在生产里**仍未接线**（`defaultRouteEntries` / `new Router(` / ' +
+      '`lockTierForTurn` 在 `dsh-component/src` 里零调用方 —— 2026-10-10 复核仍然如此）' +
+      '⇒ 这个例外当前还**没有真正改变过任何一次请求的模型**；' +
+      '而上面刚接上的 failover **只在请求失败时**才动路由，**不构成轮次开始时的档位选择**。',
     reason:
       '「轮次内不换模型」要防的是语气与判断标准断裂。而用户明确要求（EXECUTION_PLAN §2.18.1 / §2.18.2）：' +
       '模型遇到确实超出当前档位的问题时应当能申请换更强的档位 —— 否则它只能硬答或委派，' +
