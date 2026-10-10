@@ -24,6 +24,11 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
+// ★ 迁移到七级（用户 2026-10-10）。判据不是"数还剩多少处"，而是
+//   **"这句该归哪一级、而猜测够不够得着它"**：
+//   `guessLevel` 只能猜 `info`/`warn`/`error`，**`fault`/`crash`/`note`/`debug` 必须显式**。
+import { atLevel } from './admin/log.ts'
+
 import {
   countFiredToday,
   decideWake,
@@ -153,7 +158,15 @@ export function createWakeEngine(options: WakeEngineOptions): WakeEngine {
         try {
           options.onGateBlocked?.(trigger, decision.decision, decision.reason)
         } catch (error) {
-          log(`预算上报失败（已忽略）：${String(error).slice(0, 160)}`)
+          // ★ **warn**（不是 `error`）：它是"**出了点问题但兜住了**"——上报丢了，
+      //   可唤醒本身继续工作（下一轮会再报）。按用户定的轴（**影响范围**）：一次上报
+      //   没送到 = 范围极小 ⇒ warn。
+      //
+      //   ⚠️ 这一处**猜测会高估**：文本里有"失败"，`guessLevel` 会判成 `error`，
+      //   于是面板上一条**被容忍的**小故障长得像硬错误。
+      //   ⇒ 迁移不只是"把该升级的升级"，**也包括把被高估的降回来** ——
+      //     两者做反了都会让那一档失去分辨力。
+      atLevel(log, 'warn')(`预算上报失败（已忽略）：${String(error).slice(0, 160)}`)
         }
       }
       // **被拦下也要留痕**（而且是可区分的原因）—— 否则用户看到"没醒"却查不出为什么
@@ -275,7 +288,15 @@ export function createWakeEngine(options: WakeEngineOptions): WakeEngine {
   const handle = setIntervalFn(() => {
     // tick 里已经接住了派发异常，这里再兜一层：**定时器里抛异常会静默杀死整个循环**
     void tick().catch((error: unknown) => {
-      log(`唤醒 tick 异常：${String(error).slice(0, 200)}`)
+      // ★ **fault**（不是 `error`）：这是**唤醒循环**在报错 ——
+      //   而唤醒循环是**唤醒这一子系统的全部**。它每次 tick 都炸 ⇒ 她**永远叫不醒**，
+      //   而进程还活着、面板还开着、别的一切看起来正常。
+      //
+      //   ⚠️ 猜测（`guessLevel`）会把它判成 `error`（文本里有"异常"），
+      //   那是**低估**：`error` 说的是"这一次操作没兜住"，而这里是"**这一类操作都会出问题**"。
+      //   —— 这正是 D6「沉降循环曾完全沉默」的同一个形状：
+      //   那次的教训是"有话说却不说"，这一次是"说了，但说的级别让人以为只是偶发"。
+      atLevel(log, 'fault')(`唤醒 tick 异常：${String(error).slice(0, 200)}`)
     })
   }, tickMs)
   handle.unref?.()
