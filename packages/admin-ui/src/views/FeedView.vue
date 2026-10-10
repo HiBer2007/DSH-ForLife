@@ -12,7 +12,7 @@
  * 那里能递归扫目录、还能按来源重导。浏览器这边只做"一段一段地喂"，
  * 而且受接口请求体上限（64 KB）约束 —— 这一点直接写在页面上，别让人喂到一半才发现。
  */
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { api } from '../api/client.ts'
@@ -118,6 +118,74 @@ const runInfo = ref<{
   readonly fedThrough: number
 }>()
 
+/**
+ * **实时**进度（来自 `GET /feed-run`）。
+ *
+ * ⚠️ 开始那个 POST 返回的只是"**开始那一刻**"的快照 —— 投喂是**以轮次为界**
+ * 推进的，喂了几轮之后那个数字就不动了，而用户会**以为卡住了**。所以这里轮询。
+ */
+interface FeedRunProgress {
+  readonly active: boolean
+  readonly source?: string
+  readonly kind?: FeedKind
+  readonly perTurn?: number
+  readonly segments?: number
+  readonly fedThrough?: number
+  readonly pending?: number
+  readonly done?: boolean
+  readonly next?: { readonly from: number; readonly to: number } | null
+  readonly lastSegment?: string | null
+}
+const progress = ref<FeedRunProgress>()
+
+/** 轮询间隔：投喂是"一轮几分钟"量级的事，3 秒足够，也不至于把面板变成压测工具。 */
+const POLL_MS = 3000
+let pollTimer: number | undefined
+
+async function refreshProgress(): Promise<void> {
+  try {
+    const next = await api.get<FeedRunProgress>('/feed-run')
+    progress.value = next
+    // 喂完了就停 —— 没必要一直问（她不会自己再开始）
+    if (next.active !== true || next.done === true) stopPolling()
+  } catch {
+    // 读数失败不打扰用户：下一轮会补上（这一页别因为读数坏掉就不能用）
+  }
+}
+
+function startPolling(): void {
+  if (pollTimer !== undefined) return
+  pollTimer = window.setInterval(() => void refreshProgress(), POLL_MS)
+}
+
+function stopPolling(): void {
+  if (pollTimer !== undefined) {
+    window.clearInterval(pollTimer)
+    pollTimer = undefined
+  }
+}
+
+// 打开页面就问一次：**她可能正在投喂**（上一轮、或另一个页面开始的）
+onMounted(() => {
+  void refreshProgress().then(() => {
+    if (progress.value?.active === true && progress.value.done !== true) startPolling()
+  })
+})
+onBeforeUnmount(stopPolling)
+
+/** 进度那一行的话（把三种状态说清，别让人对着一堆数字猜）。 */
+const progressLine = computed(() => {
+  const p = progress.value
+  if (p === undefined) return ''
+  if (p.active !== true) return '现在没有在投喂。'
+  const total = p.segments ?? 0
+  const fed = p.fedThrough ?? 0
+  if (p.done === true) return `投喂完成：${formatNumber(fed)}/${formatNumber(total)} 段。`
+  const next = p.next ?? null
+  const range = next === null ? '' : `，本轮第 ${formatNumber(next.from)}–${formatNumber(next.to)} 段`
+  return `已投喂 ${formatNumber(fed)}/${formatNumber(total)} 段（还剩 ${formatNumber(p.pending ?? 0)} 段${range}）`
+})
+
 const canStartRun = computed(
   () => !runBusy.value && runDir.value.trim() !== '' && runPerTurn.value >= 1,
 )
@@ -158,12 +226,14 @@ async function startRun(): Promise<void> {
       dir: runDir.value.trim(),
     })
     runInfo.value = response
+    // ★ 开始之后**打开轮询** —— 否则面板上的数字会停在"开始那一刻"不动
+    startPolling()
+    void refreshProgress()
     runNotice.value = {
       tone: 'ok',
       text:
         `已登记 ${formatNumber(response.segments)} 段 —— 从现在起**每一轮喂一批**。` +
-        `已投喂 ${formatNumber(response.fedThrough)} 段。` +
-        '（这块界面只负责"开始"；进度靠下面的游标，不是等一个请求返回。）',
+        '下面的进度每 3 秒自己更新（它跟着游标走）。',
     }
   } catch (error) {
     runNotice.value = { tone: 'err', text: error instanceof Error ? error.message : String(error) }
@@ -220,10 +290,25 @@ async function startRun(): Promise<void> {
 
       <p v-if="runNotice" :class="['notice', runNotice.tone]">{{ runNotice.text }}</p>
 
+      <!-- ★ **实时**进度（轮询 `GET /feed-run`）—— 不是"开始那一刻"的快照。
+           喂了几轮之后上面的提示不动了，但这里会跟着游标走。 -->
+      <div v-if="progress?.active === true" class="result">
+        <StatCard label="已投喂" :value="formatNumber(progress.fedThrough ?? 0)" />
+        <StatCard label="待投喂" :value="formatNumber(progress.pending ?? 0)" />
+        <StatCard label="每轮" :value="formatNumber(progress.perTurn ?? 0)" />
+        <p class="hint">{{ progressLine }}</p>
+        <p class="hint">
+          来源 <code>{{ progress.source }}</code> · 记成
+          {{ progress.kind === 'knowledge' ? '知识（长期）' : '经历（中期）' }}
+          <template v-if="progress.lastSegment"> · 最后一段 <code>{{ progress.lastSegment }}</code></template>
+        </p>
+      </div>
+      <p v-else-if="progress !== undefined" class="hint">{{ progressLine }}</p>
+
+      <!-- 开始那个请求的应答（"登记了什么"）—— 与上面的实时进度是两件事 -->
       <div v-if="runInfo" class="result">
         <StatCard label="已登记段数" :value="formatNumber(runInfo.segments)" />
-        <StatCard label="已投喂" :value="formatNumber(runInfo.fedThrough)" />
-        <StatCard label="每轮" :value="formatNumber(runInfo.perTurn)" />
+        <StatCard label="开始时的进度" :value="formatNumber(runInfo.fedThrough)" />
         <p class="hint">
           第一段：<code>{{ runInfo.first ?? '（没有）' }}</code>
         </p>
