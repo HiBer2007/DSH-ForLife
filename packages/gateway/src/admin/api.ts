@@ -71,7 +71,7 @@ import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
-import { isLogLevel, type LogLevel } from './log-levels.ts'
+import { LOG_LEVELS, isLogLevel, type LogLevel } from './log-levels.ts'
 import { openLogStream } from './sse.ts'
 import type { PortService } from '../port-service.ts'
 import { enqueueOutbound } from '../outbox.ts'
@@ -1606,6 +1606,9 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
 
         // `modules` 总是一起给：面板的模块下拉靠它，免得用户手打拼错
         const known = buffer.modules()
+        // `levels` 也一起给：**七级的唯一真源在服务端**（`log-levels.ts`）。
+        // 面板照着渲染即可 —— 前端再抄一份清单，两边迟早对不上。
+        const levelNames = [...LOG_LEVELS]
         if (filtered) {
           const lines = buffer.query({ levels, modules, ...(contains === '' ? {} : { contains }), limit })
           json(res, 200, {
@@ -1614,6 +1617,7 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
             size: buffer.size,
             capacity: buffer.capacity,
             modules: known,
+            levels: levelNames,
             filtered: true,
           })
           return true
@@ -1626,6 +1630,7 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
           size: buffer.size,
           capacity: buffer.capacity,
           modules: known,
+          levels: levelNames,
         })
         return true
       }
