@@ -1,0 +1,138 @@
+{"level":"info","module":"gateway","text":"已应用迁移 v1 0001_init","at":"2026-10-10T04:24:32.099Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v2 0002_spill","at":"2026-10-10T04:24:32.101Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v3 0003_compaction_runs","at":"2026-10-10T04:24:32.102Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v4 0004_effects","at":"2026-10-10T04:24:32.103Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v5 0005_qq","at":"2026-10-10T04:24:32.104Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v6 0006_outbox_queue","at":"2026-10-10T04:24:32.105Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v7 0007_outbox_conversation_kind","at":"2026-10-10T04:24:32.106Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v8 0008_admin_chat","at":"2026-10-10T04:24:32.107Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v9 0009_prompt_revisions","at":"2026-10-10T04:24:32.107Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v10 0010_cache_metrics","at":"2026-10-10T04:24:32.108Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v11 0011_time_readings","at":"2026-10-10T04:24:32.109Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v12 0012_conversation_clocks","at":"2026-10-10T04:24:32.110Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v13 0013_routing","at":"2026-10-10T04:24:32.111Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v14 0014_inference_endpoints","at":"2026-10-10T04:24:32.111Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v15 0015_image_descriptions","at":"2026-10-10T04:24:32.112Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v16 0016_endpoint_probes","at":"2026-10-10T04:24:32.113Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v17 0017_admin_auth","at":"2026-10-10T04:24:32.113Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v18 0018_stickers","at":"2026-10-10T04:24:32.114Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v19 0019_p1_fragmented","at":"2026-10-10T04:24:32.115Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v20 0020_conversation_profiles","at":"2026-10-10T04:24:32.116Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v21 0021_published_ports","at":"2026-10-10T04:24:32.116Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v22 0022_tcp_listen_port","at":"2026-10-10T04:24:32.117Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v23 0023_wake_engine","at":"2026-10-10T04:24:32.118Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v24 0024_wake_requests","at":"2026-10-10T04:24:32.118Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v25 0025_media_tier","at":"2026-10-10T04:24:32.120Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v26 0026_migration_engine","at":"2026-10-10T04:24:32.120Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v27 0027_cold_load_latency","at":"2026-10-10T04:24:32.121Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v28 0028_mid_access_count","at":"2026-10-10T04:24:32.122Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v1 0001_init","at":"2026-10-10T04:24:32.158Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v2 0002_spill","at":"2026-10-10T04:24:32.159Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v3 0003_compaction_runs","at":"2026-10-10T04:24:32.159Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v4 0004_effects","at":"2026-10-10T04:24:32.160Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v5 0005_qq","at":"2026-10-10T04:24:32.161Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v6 0006_outbox_queue","at":"2026-10-10T04:24:32.162Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v7 0007_outbox_conversation_kind","at":"2026-10-10T04:24:32.163Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v8 0008_admin_chat","at":"2026-10-10T04:24:32.163Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v9 0009_prompt_revisions","at":"2026-10-10T04:24:32.164Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v10 0010_cache_metrics","at":"2026-10-10T04:24:32.164Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v11 0011_time_readings","at":"2026-10-10T04:24:32.165Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v12 0012_conversation_clocks","at":"2026-10-10T04:24:32.165Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v13 0013_routing","at":"2026-10-10T04:24:32.166Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v14 0014_inference_endpoints","at":"2026-10-10T04:24:32.167Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v15 0015_image_descriptions","at":"2026-10-10T04:24:32.167Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v16 0016_endpoint_probes","at":"2026-10-10T04:24:32.168Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v17 0017_admin_auth","at":"2026-10-10T04:24:32.168Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v18 0018_stickers","at":"2026-10-10T04:24:32.169Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v19 0019_p1_fragmented","at":"2026-10-10T04:24:32.170Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v20 0020_conversation_profiles","at":"2026-10-10T04:24:32.170Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v21 0021_published_ports","at":"2026-10-10T04:24:32.171Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v22 0022_tcp_listen_port","at":"2026-10-10T04:24:32.171Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v23 0023_wake_engine","at":"2026-10-10T04:24:32.172Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v24 0024_wake_requests","at":"2026-10-10T04:24:32.173Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v25 0025_media_tier","at":"2026-10-10T04:24:32.174Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v26 0026_migration_engine","at":"2026-10-10T04:24:32.175Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v27 0027_cold_load_latency","at":"2026-10-10T04:24:32.176Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v28 0028_mid_access_count","at":"2026-10-10T04:24:32.176Z"}
+{"level":"info","module":"gateway","text":"日志落盘：D:\\DSH-ForLife\\.forlife\\logs","at":"2026-10-10T04:24:32.627Z"}
+{"level":"info","module":"gateway","text":"日志落盘：D:\\DSH-ForLife\\.forlife\\logs","at":"2026-10-10T04:24:32.627Z"}
+{"level":"info","module":"gateway","text":"[admin] 已设置管理口令并创建首个会话","at":"2026-10-10T04:24:32.702Z"}
+{"level":"info","module":"gateway","text":"[admin] 已设置管理口令并创建首个会话","at":"2026-10-10T04:24:43.781Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v1 0001_init","at":"2026-10-10T04:26:20.815Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v2 0002_spill","at":"2026-10-10T04:26:20.817Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v3 0003_compaction_runs","at":"2026-10-10T04:26:20.817Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v4 0004_effects","at":"2026-10-10T04:26:20.818Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v5 0005_qq","at":"2026-10-10T04:26:20.820Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v6 0006_outbox_queue","at":"2026-10-10T04:26:20.821Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v7 0007_outbox_conversation_kind","at":"2026-10-10T04:26:20.822Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v8 0008_admin_chat","at":"2026-10-10T04:26:20.823Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v9 0009_prompt_revisions","at":"2026-10-10T04:26:20.823Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v10 0010_cache_metrics","at":"2026-10-10T04:26:20.824Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v11 0011_time_readings","at":"2026-10-10T04:26:20.825Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v12 0012_conversation_clocks","at":"2026-10-10T04:26:20.826Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v13 0013_routing","at":"2026-10-10T04:26:20.826Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v14 0014_inference_endpoints","at":"2026-10-10T04:26:20.827Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v15 0015_image_descriptions","at":"2026-10-10T04:26:20.828Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v16 0016_endpoint_probes","at":"2026-10-10T04:26:20.828Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v17 0017_admin_auth","at":"2026-10-10T04:26:20.829Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v18 0018_stickers","at":"2026-10-10T04:26:20.830Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v19 0019_p1_fragmented","at":"2026-10-10T04:26:20.830Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v20 0020_conversation_profiles","at":"2026-10-10T04:26:20.831Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v21 0021_published_ports","at":"2026-10-10T04:26:20.831Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v22 0022_tcp_listen_port","at":"2026-10-10T04:26:20.832Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v23 0023_wake_engine","at":"2026-10-10T04:26:20.833Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v24 0024_wake_requests","at":"2026-10-10T04:26:20.834Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v25 0025_media_tier","at":"2026-10-10T04:26:20.835Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v26 0026_migration_engine","at":"2026-10-10T04:26:20.836Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v27 0027_cold_load_latency","at":"2026-10-10T04:26:20.836Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v28 0028_mid_access_count","at":"2026-10-10T04:26:20.837Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v1 0001_init","at":"2026-10-10T04:26:20.872Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v2 0002_spill","at":"2026-10-10T04:26:20.873Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v3 0003_compaction_runs","at":"2026-10-10T04:26:20.874Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v4 0004_effects","at":"2026-10-10T04:26:20.874Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v5 0005_qq","at":"2026-10-10T04:26:20.875Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v6 0006_outbox_queue","at":"2026-10-10T04:26:20.876Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v7 0007_outbox_conversation_kind","at":"2026-10-10T04:26:20.877Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v8 0008_admin_chat","at":"2026-10-10T04:26:20.877Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v9 0009_prompt_revisions","at":"2026-10-10T04:26:20.878Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v10 0010_cache_metrics","at":"2026-10-10T04:26:20.878Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v11 0011_time_readings","at":"2026-10-10T04:26:20.879Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v12 0012_conversation_clocks","at":"2026-10-10T04:26:20.880Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v13 0013_routing","at":"2026-10-10T04:26:20.880Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v14 0014_inference_endpoints","at":"2026-10-10T04:26:20.881Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v15 0015_image_descriptions","at":"2026-10-10T04:26:20.881Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v16 0016_endpoint_probes","at":"2026-10-10T04:26:20.882Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v17 0017_admin_auth","at":"2026-10-10T04:26:20.882Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v18 0018_stickers","at":"2026-10-10T04:26:20.883Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v19 0019_p1_fragmented","at":"2026-10-10T04:26:20.883Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v20 0020_conversation_profiles","at":"2026-10-10T04:26:20.884Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v21 0021_published_ports","at":"2026-10-10T04:26:20.884Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v22 0022_tcp_listen_port","at":"2026-10-10T04:26:20.885Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v23 0023_wake_engine","at":"2026-10-10T04:26:20.886Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v24 0024_wake_requests","at":"2026-10-10T04:26:20.887Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v25 0025_media_tier","at":"2026-10-10T04:26:20.888Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v26 0026_migration_engine","at":"2026-10-10T04:26:20.889Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v27 0027_cold_load_latency","at":"2026-10-10T04:26:20.889Z"}
+{"level":"info","module":"gateway","text":"已应用迁移 v28 0028_mid_access_count","at":"2026-10-10T04:26:20.890Z"}
+{"level":"info","module":"gateway","text":"日志落盘：D:\\DSH-ForLife\\.forlife\\logs","at":"2026-10-10T04:26:21.391Z"}
+{"level":"info","module":"gateway","text":"日志落盘：D:\\DSH-ForLife\\.forlife\\logs","at":"2026-10-10T04:26:21.392Z"}
+{"level":"info","module":"gateway","text":"[admin] 已设置管理口令并创建首个会话","at":"2026-10-10T04:26:21.475Z"}
+{"level":"info","module":"gateway","text":"[admin] 已设置管理口令并创建首个会话","at":"2026-10-10T04:26:32.664Z"}
+{"level":"info","module":"demo-module","text":"旧签名一句话","at":"2026-10-10T04:26:47.362Z"}
+{"level":"info","module":"demo-module","text":"旧签名一句话","at":"2026-10-10T04:26:47.362Z"}
+{"level":"info","module":"demo-module","text":"i","at":"2026-10-10T04:26:47.363Z"}
+{"level":"info","module":"demo-module","text":"i","at":"2026-10-10T04:26:47.363Z"}
+{"level":"note","module":"demo-module","text":"n","at":"2026-10-10T04:26:47.364Z"}
+{"level":"note","module":"demo-module","text":"n","at":"2026-10-10T04:26:47.364Z"}
+{"level":"warn","module":"demo-module","text":"w","at":"2026-10-10T04:26:47.365Z"}
+{"level":"warn","module":"demo-module","text":"w","at":"2026-10-10T04:26:47.365Z"}
+{"level":"error","module":"demo-module","text":"e","at":"2026-10-10T04:26:47.365Z"}
+{"level":"error","module":"demo-module","text":"e","at":"2026-10-10T04:26:47.365Z"}
+{"level":"fault","module":"demo-module","text":"f","at":"2026-10-10T04:26:47.366Z"}
+{"level":"fault","module":"demo-module","text":"f","at":"2026-10-10T04:26:47.366Z"}
+{"level":"crash","module":"demo-module","text":"c","at":"2026-10-10T04:26:47.366Z"}
+{"level":"crash","module":"demo-module","text":"c","at":"2026-10-10T04:26:47.366Z"}
+{"level":"error","module":"boom","text":"这条应当被兜底吞掉","at":"2026-10-10T04:26:47.367Z"}
+{"level":"error","module":"boom","text":"这条应当被兜底吞掉","at":"2026-10-10T04:26:47.367Z"}
+{"level":"crash","module":"boom","text":"这条也是","at":"2026-10-10T04:26:47.368Z"}
+{"level":"crash","module":"boom","text":"这条也是","at":"2026-10-10T04:26:47.368Z"}

@@ -68,25 +68,44 @@ export interface Logger {
   readonly module: string
 }
 
-let sink: LogSink | undefined
+/**
+ * 已安装的落点。**是集合（扇出），不是单个**。
+ *
+ * ## ★ 为什么改成扇出（2026-10-10，被测试逼出来的）
+ *
+ * 第一版是"只允许一个落点"，理由写的是"多个落点意味着日志去哪要看安装顺序"。
+ * **那个理由不成立，而且它制造了一个更坏的故障**：
+ *
+ * 本仓的测试用 `--experimental-test-isolation=none` **共用一个进程** ⇒
+ * 一个测试里 `createAdminServer()` 装上落点之后，**另一个测试装的落点被顶掉**
+ * （或者反过来）。实测就是这么红的：模块 logger 的测试收不到自己的记录。
+ *
+ * ⇒ 真正的性质是"**日志不许丢**"，而不是"落点只许有一个"。
+ *   扇出的语义是确定的（**所有活着的落点都收到**，与安装顺序无关），
+ *   而"后装的顶掉先装的"会**悄悄让一个落点再也收不到东西**。
+ */
+const sinks = new Set<LogSink>()
 
 /**
- * 安装落点。返回**卸载函数**（测试要在用例之间还原来路，否则会互相串）。
+ * 安装落点。返回**卸载函数**（只摘掉自己那一个）。
  *
- * ⚠️ 只允许一个落点。多个落点意味着"日志去哪"要看安装顺序 —— 那是最难查的一类不一致。
- * 需要扇出（内存缓冲 + 落盘 + stdout）就在**这一个落点内部**扇出。
+ * 需要扇出（内存缓冲 + 落盘 + stdout）时，各装一个即可 —— 不必在一个落点里手写扇出。
  */
 export function installLogSink(next: LogSink): () => void {
-  const previous = sink
-  sink = next
+  sinks.add(next)
   return () => {
-    sink = previous
+    sinks.delete(next)
   }
 }
 
-/** 当前落点（测试用；也是"有没有装"的唯一判据）。 */
+/** 当前落点（测试用；也是"有没有装"的唯一判据）。扇出时返回**第一个**。 */
 export function currentLogSink(): LogSink | undefined {
-  return sink
+  return sinks.values().next().value
+}
+
+/** 当前落点个数（排障用：**泄漏的落点会在这里显形**）。 */
+export function logSinkCount(): number {
+  return sinks.size
 }
 
 /**
@@ -100,17 +119,19 @@ export function currentLogSink(): LogSink | undefined {
 export function createLogger(module: string): Logger {
   const emit = (level: LogLevel, message: string): void => {
     const record: LogRecord = { level, module, text: message, at: new Date().toISOString() }
-    const target = sink
-    if (target === undefined) {
+    if (sinks.size === 0) {
       // 兜底：没有落点也要留下痕迹。走 stderr —— stdout 可能被当成协议通道。
       process.stderr.write(`[${level}] [${module}] ${message}\n`)
       return
     }
-    try {
-      target(record)
-    } catch (error: unknown) {
-      // ★ 落点抛错**不许**反向杀死调用方：一次日志写失败不该让业务逻辑崩掉。
-      process.stderr.write(`[forlife] 日志落点抛错（已忽略）：${String(error)}\n`)
+    for (const sink of sinks) {
+      try {
+        sink(record)
+      } catch (error: unknown) {
+        // ★ 落点抛错**不许**反向杀死调用方，也**不许**影响别的落点：
+        //   一次日志写失败不该让业务崩掉，更不该让另一个落点也收不到。
+        process.stderr.write(`[forlife] 日志落点抛错（已忽略）：${String(error)}\n`)
+      }
     }
   }
 

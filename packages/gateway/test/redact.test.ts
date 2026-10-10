@@ -134,9 +134,31 @@ test('★★ 接线守卫：脱敏真的挂在**唯一汇聚点**上（源码级
   // （whitelist 参数被丢、onConnectionState 被构造函数丢掉，两次都是单测全绿）。
   //
   // 纯函数测不出"有没有被调用"。所以这里直接读源码断言接线还在。
+  //
+  // ★ 2026-10-10 改成**形状无关**的断言：原来写死 `logBuffer.push(safe)`，
+  //   而那天日志线改造把它换成了 `logBuffer.pushRecord(record)`（`record.text = safe`）
+  //   —— **性质一点没变，断言却红了**。写死形状的守卫会在每次正当重构时误报，
+  //   久了就变成"红了就改断言"，那等于没有守卫。
+  //   ⇒ 改成直接断言**失败模式本身**（未脱敏的原文不许流进任何出口），与写法无关。
   const src = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')
-  assert.match(src, /const safe = redact\(message\)/, '**脱敏必须挂在 log 汇聚点上**')
-  assert.match(src, /logBuffer\.push\(safe\)/, '内存缓冲那条出口也要脱敏')
-  assert.match(src, /options\.log\?\.\(safe\)/, '文件 sink 那条出口也要脱敏')
-  // **两条出口都要** —— 只挂一条的话，另一条照样把原文写进日志文件
+  assert.match(src, /redact\(message\)/, '**脱敏必须挂在 log 汇聚点上**')
+  assert.match(src, /text: safe\b/, '送进缓冲/落盘的那条记录，文本必须是 safe（不是原文）')
+  assert.match(src, /options\.log\?\.\(safe\)/, 'stdout 那条出口也要脱敏')
+  // 结构化那条入口（`createLogger` 的记录）同样要先脱敏再出口
+  assert.match(src, /text: redact\(record\.text\)/, '结构化那条入口也要脱敏')
+
+  // ★★ 真正要禁止的东西：**未经脱敏的 `message` 不许流进任何出口**。
+  // 这条与"用哪个方法、分几条出口"无关 —— 以后再加第三条出口也照样被它拦住。
+  const leaks = [
+    /\blogBuffer\.\w+\(\s*message\s*\)/,
+    /\blogStore\.write\(\s*message\s*\)/,
+    /options\.log\?\.\(\s*message\s*\)/,
+  ]
+  for (const pattern of leaks) {
+    assert.ok(
+      !pattern.test(src),
+      `★ 未脱敏的原文流进了出口（命中 ${String(pattern)}）—— ` +
+        '日志一旦写下去就收不回来了（会被复制、打包、发给别人看）',
+    )
+  }
 })

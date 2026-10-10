@@ -23,7 +23,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { openDatabase } from '@forlife/store'
 
 import { createAdminApi } from './admin/api.ts'
-import { LogBuffer } from './admin/log-buffer.ts'
+import { LEGACY_LOG_MODULE, LogBuffer, guessLevel } from './admin/log-buffer.ts'
+// ★ 七级 + "存哪些"的判定（用户 2026-10-10 指定的分级制度）
+import { disabledLevelsFromEnv } from './admin/log-levels.ts'
+// ★ 结构化日志的落点（`createLogger()` 产出的记录从这里进来）
+import { installLogSink } from './admin/log.ts'
+// ★ 落盘 + 保留期（用户 2026-10-10「可以设置保留事件」）
+import { createLogStore, resolveLogDir, retentionDaysFromEnv } from './admin/log-store.ts'
 import { redact } from './redact.ts'
 import { serveStatic } from './admin/static.ts'
 import { startGatewayRuntime, type RunningGatewayRuntime } from './runtime.ts'
@@ -126,6 +132,22 @@ export function createAdminServer(options: AdminServerOptions): {
   // 文件位置随部署形态变、还可能被轮转截断，而"最近发生了什么"才是排障要的）
   const logBuffer = new LogBuffer(500)
   /**
+   * 落盘那一侧（用户 2026-10-10：「可以设置**保留事件**」）。
+   *
+   * 目录：`FORLIFE_LOG_DIR` → 否则从 `FORLIFE_DB_PATH` 推 → 否则进程目录下的 `.forlife/logs`
+   * （**可移植**：绝不碰宿主 `~`）。保留天数：`FORLIFE_LOG_RETENTION_DAYS`，`0` = 不裁剪。
+   * 关掉哪些等级：`FORLIFE_LOG_DISABLE`（默认只关 `debug`）。
+   */
+  const logStore = createLogStore({
+    dir: resolveLogDir(process.env),
+    retentionDays: retentionDaysFromEnv(process.env['FORLIFE_LOG_RETENTION_DAYS']),
+    disabledLevels: disabledLevelsFromEnv(process.env['FORLIFE_LOG_DISABLE']).disabled,
+    onError: (message) => {
+      // 落盘自己出错时**只喊到 stdout**（再往缓冲里写会递归）
+      options.log?.(`[forlife] ${message}`)
+    },
+  })
+  /**
    * **唯一的日志汇聚点** —— 脱敏放在这里，两条出口就都被覆盖。
    *
    * 挂在某一个出口上是不够的：漏掉的那条照样把原文写进日志文件，
@@ -133,12 +155,41 @@ export function createAdminServer(options: AdminServerOptions): {
    *
    * 这也正是 `log-buffer.ts` 那条判断的落点：
    * "脱敏属于**写入侧**的职责" —— 这里就是写入侧。
+   *
+   * ## ★ 2026-10-10：现在有**两条**入口，级别真假不同
+   *
+   * | 入口 | 谁在用 | 级别 |
+   * | :--- | :--- | :--- |
+   * | 这个 `log(message)` | **127 处旧调用点** | **猜的**（只 `info`/`warn`/`error`） |
+   * | {@link installLogSink} 那个回调 | `createLogger(module)` | **真的**（七级 + 模块） |
+   *
+   * 两条都写**同一个缓冲**与**同一个落盘**，所以面板与文件里是混在一起的。
+   * 旧调用点先猜着，是为了"**不改完 127 处也能跑**"—— 但**不许长期如此**
+   * （真正的 `fault`/`crash` 写成裸字符串就永远筛不出来）。
    */
   const log = (message: string): void => {
     const safe = redact(message)
-    logBuffer.push(safe)
+    // ★ 猜测只做**一次**，缓冲与落盘用同一个结果 ——
+    //   各猜一次会让同一行在两处显示成不同等级（面板与文件对不上，最难查）
+    const at = new Date().toISOString()
+    const record = { level: guessLevel(safe), module: LEGACY_LOG_MODULE, text: safe, at }
+    logBuffer.pushRecord(record)
+    logStore.write(record)
     options.log?.(safe)
   }
+  /**
+   * ★ 把 `createLogger()` 的结构化记录接到**同样的两条出口**上。
+   *
+   * 用 `installLogSink` 而不是给每个调用点传 logger：127 处调用点不该各自知道
+   * "日志去哪"。落点在 `start()` 里装、在服务关闭时卸 —— 否则
+   * **测试之间会互相串**（上一轮装的落点还在，把这一轮的日志写进上一个临时目录）。
+   */
+  const uninstallLogSink = installLogSink((record) => {
+    const safe = { ...record, text: redact(record.text) }
+    logBuffer.pushRecord(safe)
+    logStore.write(safe)
+    options.log?.(safe.text)
+  })
   const host = options.host ?? '127.0.0.1'
   const port = options.port ?? 8081
   const startedAt = Date.now()
@@ -237,12 +288,23 @@ export function createAdminServer(options: AdminServerOptions): {
       const address = server.address()
       const actualPort = typeof address === 'object' && address !== null ? address.port : port
 
+      // ★★ **保留期必须真的跑一次**，否则 `log-store.ts` 那套只是摆设
+      //    （本仓栽过这个跟头："函数写好了、测试全绿、线上根本没跑"）。
+      //    放在启动时：进程活着期间最多留到次日；重启即清 —— 对"保留 N 天"够用，
+      //    而**不引入一个定时器**（一个为清理日志而常驻的定时器，本身就是新的故障源）。
+      const pruned = logStore.prune()
+      if (pruned > 0) log(`日志保留期：已清理 ${String(pruned)} 个过期日志文件（保留 ${String(retentionDaysFromEnv(process.env['FORLIFE_LOG_RETENTION_DAYS']))} 天）`)
+      log(`日志落盘：${resolveLogDir(process.env)}`)
+
       return {
         server,
         port: actualPort,
         host,
         dbPath: options.dbPath,
         close: async (): Promise<void> => {
+          // ★ **先卸落点**：不卸的话它会一直指着这个已经关掉的 server
+          //   （测试里表现为"上一轮的日志写进这一轮的目录"）
+          uninstallLogSink()
           await runtime?.stop()
           await new Promise<void>((resolve) => server.close(() => resolve()))
           db.close()

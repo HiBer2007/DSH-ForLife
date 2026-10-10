@@ -26,7 +26,7 @@ import {
   isLogLevel,
   shouldStore,
 } from '../src/admin/log-levels.ts'
-import { createLogger, currentLogSink, installLogSink, type LogRecord } from '../src/admin/log.ts'
+import { createLogger, installLogSink, logSinkCount, type LogRecord } from '../src/admin/log.ts'
 
 test('★★ 七级且顺序固定（顺序即严重度，代码里不许有第二份）', () => {
   assert.deepEqual(
@@ -78,8 +78,10 @@ test('★ `atLeast`：比较只有一处实现（`<` 写成 `<=` 是经典失误
 
 test('★★ 模块 logger：旧签名 ⇒ info，七个方法各归其级，且带模块名', () => {
   const got: LogRecord[] = []
+  const before = logSinkCount()
   const uninstall = installLogSink((record) => got.push(record))
   try {
+    assert.equal(logSinkCount(), before + 1, '落点是**扇出**的（集合），装上就是多一个')
     const log = createLogger('demo-module')
     assert.equal(log.module, 'demo-module', '模块名要挂在 logger 上（面板按它筛）')
 
@@ -110,7 +112,10 @@ test('★★ 模块 logger：旧签名 ⇒ info，七个方法各归其级，且
   } finally {
     uninstall()
   }
-  assert.equal(currentLogSink(), undefined, '卸载必须真的把落点还回去（否则测试之间会互相串）')
+  // ★ 卸载只摘掉**自己那一个**，不许把别人的也摘了 ——
+  //   测试共用进程（`--experimental-test-isolation=none`），
+  //   别的用例可能正装着落点（例如 `createAdminServer`）。
+  assert.equal(logSinkCount(), before, '卸载必须精确摘掉自己那一个')
 })
 
 test('★★ 落点抛错**不许反杀调用方**（一次日志写失败不该让业务崩掉）', () => {
