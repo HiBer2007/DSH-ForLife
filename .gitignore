@@ -35,3 +35,10 @@ test_photo/
 /escalation-note-*.md
 /*-diag.mjs
 /test_photo
+
+# ── 运行时产物：日志与临时状态，**绝不进仓库** ───────────────────────────
+# 理由：日志里会有路径、主机名、QQ 号等；而且它们每次跑测试都会变
+# （`git add -A` 会把它们一起收进来 —— 这个坑本仓踩过两次）。
+.forlife/
+*.log
+**/.plugin-manager/logs/
