@@ -74,7 +74,16 @@ export function listCacheUsage(db: DatabaseSync, options: { readonly limit?: num
   const limit = options.limit ?? 200
   const since = new Date(Date.now() - (options.sinceHours ?? 168) * 3600_000).toISOString()
   const rows = db
-    .prepare('SELECT * FROM cache_metrics WHERE at >= ? ORDER BY at DESC LIMIT ?')
+    // ★ 2026-10-10（`FIX_PLAN.md` §45）：`at` 是**毫秒**精度（`nowIso()` = `toISOString()`），
+    //   同一毫秒内写入的多行**并列**，而 `ORDER BY at DESC` 对并列行**不保证顺序**
+    //   ⇒ 下面那个 `.reverse()` 之后，"新的在后"就成了**空话**：
+    //   面板按时间画的曲线会**点序错乱**，端到端测试也会**偶发红**
+    //   （实测：`cache-collector-wiring.test.ts:164` 期望 8192 实得 0 —— 取到了上一行）。
+    //   `rowid` 是 SQLite 的**插入序**单调键，本表是普通表（`id TEXT PRIMARY KEY`，
+    //   非 `WITHOUT ROWID`）⇒ 有 rowid 可用。
+    //   ★ 这也是**本仓库既有的约定**：`endpoints.ts` / `routing.ts` / `time-readings.ts`
+    //   的同类查询**全都**写了 `, rowid DESC` —— 只有这里漏了。
+    .prepare('SELECT * FROM cache_metrics WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT ?')
     .all(since, limit) as unknown as CacheMetricRow[]
   return [...rows].reverse()
 }
@@ -107,7 +116,9 @@ export function setMissReason(db: DatabaseSync, id: string, reason: string | nul
 /** 未归因的未命中记录（`cache_read_tokens = 0` 且没原因）。 */
 export function unattrributedMisses(db: DatabaseSync, limit = 50): readonly CacheMetricRow[] {
   return db
-    .prepare('SELECT * FROM cache_metrics WHERE cache_read_tokens = 0 AND miss_reason IS NULL AND (input_tokens + cache_write_tokens) > 0 ORDER BY at ASC LIMIT ?')
+    // ★ 同上（`FIX_PLAN.md` §45）：`at` 并列时补 `rowid` 兜底，方向与 `at` 一致。
+    //   归因是**按顺序**回填的，顺序不确定 ⇒ 同一毫秒内的两条谁先被归因就不确定。
+    .prepare('SELECT * FROM cache_metrics WHERE cache_read_tokens = 0 AND miss_reason IS NULL AND (input_tokens + cache_write_tokens) > 0 ORDER BY at ASC, rowid ASC LIMIT ?')
     .all(limit) as unknown as CacheMetricRow[]
 }
 
