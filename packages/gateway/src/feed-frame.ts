@@ -44,7 +44,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { defaultFor } from '@forlife/contracts'
 
 import type { FeedKind } from './feed.ts'
-import { readFeedSession, type FeedSession } from './feed-session.ts'
+import { readFeedSession, type FeedSession, type FeedSessionBatch } from './feed-session.ts'
 
 /**
  * 框架文案里认得的占位符（守卫测试用它断言"模板里没有别的占位符"）。
@@ -53,7 +53,7 @@ import { readFeedSession, type FeedSession } from './feed-session.ts'
  * 而投喂的最后一批与"会话结束"之间只隔几微秒 ⇒ 那个状态**永远轮不到被渲染**
  * （留着就是死代码）。"投喂结束 = 醒来"由整段消失表达，文案里如实说明这条弧线。
  */
-export const FEED_FRAME_PLACEHOLDERS: readonly string[] = ['source', 'kind', 'chunks', 'batches']
+export const FEED_FRAME_PLACEHOLDERS: readonly string[] = ['source', 'kind', 'chunks', 'batches', 'batch']
 
 /** 两种喂食目标在**人话**里的说法（提示词与工具返回共用同一份，避免两处口径不一致）。 */
 export function feedKindLabel(kind: FeedKind): string {
@@ -73,6 +73,7 @@ export function renderFeedFrame(session: FeedSession): string {
     kind: feedKindLabel(session.as),
     chunks: String(session.chunks),
     batches: String(session.batches),
+    batch: describeFeedBatch(session.batch),
   }
   let text = template
   // 按**白名单常量**替换（而不是遍历 values 的键）：这样"文案里写了什么占位符"
@@ -100,6 +101,23 @@ export function feedModeText(db: DatabaseSync, options: { readonly now?: Date } 
   if (session === undefined) return ''
   const text = renderFeedFrame(session)
   return text === '' ? '' : text
+}
+
+/**
+ * 把会话里的**批次指针**说成人话（用户 2026-10-10：「以单个轮次为界」）。
+ *
+ * ## 为什么这个占位符**不能留空**
+ *
+ * 文案里它多半嵌在一句完整的话中（"本轮请从 {{batch}} 这一段开始"）。
+ * 若渲染成空串，那句话会读成"本轮请从  这一段开始" —— **模型会看不懂该读哪一段**，
+ * 而"该读哪一段"正是这个占位符存在的**唯一理由**。
+ * ⇒ 没有指针时给一句**明确的说明**，而不是留空。
+ *
+ * @param batch - 会话里的指针（`undefined` = 这一轮没有指定范围）。
+ */
+export function describeFeedBatch(batch: FeedSessionBatch | undefined): string {
+  if (batch === undefined) return '（本轮未指定范围：请从这一份素材尚未投喂的部分接着读）'
+  return `第 ${String(batch.from)}–${String(batch.to)} 段（共 ${String(batch.total)} 段）`
 }
 
 /**
