@@ -100,6 +100,18 @@ services:
       #
       #   生产：把 `FORLIFE_COLD_DIR` 指向**真 HDD 的挂载点**即可，容器侧路径不用改。
       #   单盘：不设也行（cold 会退回 warm，面板显示"冷层退回了"）。
+      # ★★ 2026-10-10（`FIX_PLAN.md` §26）：**插件与网关的日志目录必须显式对齐**。
+      #
+      #   背景：插件（`dsh` 容器）与管理面板的七级日志库（`gateway` 容器）是**两个进程**；
+      #   插件原来只 `console.log` ⇒ **面板上看不到记忆/沉降/投喂/判档/唤醒的任何活动**。
+      #   现在插件会把日志**追写到网关读的那同一个 JSONL 文件**（共享卷 `dsh-home`）。
+      #
+      #   ⚠️ 两边各自**能**推出一个目录，但**推出来的不是同一个**：
+      #     插件侧兜底 = `<DSH_HOME>/forlife/logs`；
+      #     网关侧兜底 = `dirname(FORLIFE_DB)/logs` = `/data/dsh/forlife/db/logs`
+      #   ⇒ **不显式设这一行，这次修复等于没生效**（而单测全绿）。
+      #   ⇒ 两个服务都设成**同一个值**。
+      FORLIFE_LOG_DIR: /data/dsh/forlife/logs
       FORLIFE_ROOT_HOT: /data/tiers/hot
       FORLIFE_ROOT_WARM: /data/tiers/warm
       FORLIFE_ROOT_COLD: /cold/tiers/cold
@@ -190,6 +202,18 @@ services:
       #
       #   生产：把 `FORLIFE_COLD_DIR` 指向**真 HDD 的挂载点**即可，容器侧路径不用改。
       #   单盘：不设也行（cold 会退回 warm，面板显示"冷层退回了"）。
+      # ★★ 2026-10-10（`FIX_PLAN.md` §26）：**插件与网关的日志目录必须显式对齐**。
+      #
+      #   背景：插件（`dsh` 容器）与管理面板的七级日志库（`gateway` 容器）是**两个进程**；
+      #   插件原来只 `console.log` ⇒ **面板上看不到记忆/沉降/投喂/判档/唤醒的任何活动**。
+      #   现在插件会把日志**追写到网关读的那同一个 JSONL 文件**（共享卷 `dsh-home`）。
+      #
+      #   ⚠️ 两边各自**能**推出一个目录，但**推出来的不是同一个**：
+      #     插件侧兜底 = `<DSH_HOME>/forlife/logs`；
+      #     网关侧兜底 = `dirname(FORLIFE_DB)/logs` = `/data/dsh/forlife/db/logs`
+      #   ⇒ **不显式设这一行，这次修复等于没生效**（而单测全绿）。
+      #   ⇒ 两个服务都设成**同一个值**。
+      FORLIFE_LOG_DIR: /data/dsh/forlife/logs
       FORLIFE_ROOT_HOT: /data/tiers/hot
       FORLIFE_ROOT_WARM: /data/tiers/warm
       FORLIFE_ROOT_COLD: /cold/tiers/cold
