@@ -40,7 +40,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { LogLevel, LogRecord } from '@forlife/gateway'
+import { redact, type LogLevel, type LogRecord } from '@forlife/gateway'
 
 /** 与网关那边同一个前缀/后缀（`log-store.ts:44-45`）。 */
 export const PLUGIN_LOG_PREFIX = 'forlife-'
@@ -96,7 +96,11 @@ export function createPluginLogSink(options: PluginLogSinkOptions): PluginLogSin
           dirReady = true
         }
         const at = now()
-        const record: LogRecord = { level, module, text, at: at.toISOString() }
+        // ★★ **必须脱敏**（2026-10-10 补）。网关那边的汇聚点一直有脱敏
+        //   （`server.ts:176` / `:193`），而这条插件路径写的是**同一个文件**
+        //   —— 不脱敏就是**在同一个文件里绕过那道保护**。
+        //   而插件的日志比网关的更容易带敏感内容（记忆正文、唤醒载荷、投喂素材）。
+        const record: LogRecord = { level, module, text: redact(text), at: at.toISOString() }
         // ★ 一次 `appendFileSync` = 一次 `O_APPEND` 写 ⇒ 与网关进程并发也安全
         appendFileSync(join(options.dir, pluginLogFileName(at)), `${JSON.stringify(record)}\n`, 'utf8')
       } catch (error: unknown) {

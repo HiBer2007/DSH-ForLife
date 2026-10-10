@@ -120,6 +120,43 @@ test('★ 目录不存在时**懒创建**（不写日志就不建目录，启动
 //
 // ⇒ 这里必须断言：**两个日志入口真的把每一条都写进汇**，不只是 import 了。
 
+test('★★★ 插件写的行**必须脱敏** —— 否则是在同一个文件里绕过网关那道保护', () => {
+  // ## 这条是怎么来的
+  //
+  // 网关的日志汇聚点**有**脱敏（`server.ts:176` / `:193`，`redact.test.ts:144` 钉着）。
+  // 而 `log-sink.ts` 写的是**同一个 JSONL 文件** —— 第一版**没有脱敏** ⇒
+  // **在同一个文件里绕过了那道保护**。
+  // 而插件的日志比网关的更容易带敏感内容（记忆正文、唤醒载荷、投喂素材）。
+  //
+  // ★ 而 `redact` 当时**根本没从 `@forlife/gateway` 导出** ⇒ 插件**引不到**
+  //   —— 与 `initialRoute` / `atLevel` 是同一类"门没开"。
+  const dir = tempDir()
+  try {
+    const sink = createPluginLogSink({ dir, now: () => new Date('2026-10-10T00:00:00.000Z') })
+    // 用测试里那把**已知会被识别的**假 key（`redact.test.ts:23` 用的是同一把）
+    sink.write('info', '用 oc_sk_d52d3e8dab4b_hOIdD08o25kgWnvw4HYPUCwM8k-4hkaX 调接口')
+    sink.write('warn', 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig')
+
+    const raw = readFileSync(join(dir, 'forlife-2026-10-10.jsonl'), 'utf8')
+    assert.ok(
+      !raw.includes('oc_sk_d52d3e8dab4b_hOIdD08o25kgWnvw4HYPUCwM8k-4hkaX'),
+      '★★★ 明文 key **不许**出现在文件里 —— 这个文件是面板要读、要给人看的',
+    )
+    assert.ok(!raw.includes('eyJhbGciOiJIUzI1NiJ9.payload.sig'), '★★★ Bearer token 同理')
+    // ★ 而且脱敏之后**仍然能被网关读出来**（别把整行写坏了）
+    const store = createLogStore({ dir })
+    const rows = store.read({ limit: 10 })
+    assert.equal(rows.length, 2, `脱敏不许破坏可读性（实际读到 ${String(rows.length)} 行）`)
+    // ⚠️ 标记是 `oc_sk_***` / `***`（`redact.ts:46-51`）——
+    //    **不是** `«redacted»`：那是 `panel-api.json` **夹具**里的另一套约定，
+    //    我第一版就是把它当成了脱敏产物，于是断言写错了一条。
+    assert.equal(rows[0]?.text, '用 oc_sk_*** 调接口', '脱敏后该是 `oc_sk_***`（保留前缀，去掉密钥本体）')
+    assert.equal(rows[1]?.text, 'Authorization: ***', 'Bearer 那条该是 `Authorization: ***`')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('★★★ 接线守卫：`log` **和** `always` 都必须把日志写进汇（只接一个 = 一半看不见）', () => {
   const src = readSource(new URL('../src/index.ts', import.meta.url), 'utf8')
   assert.match(src, /import\s*\{\s*createPluginLogSink\s*\}/, '没 import 日志汇')

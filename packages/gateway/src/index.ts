@@ -184,6 +184,16 @@ export type { LogQuery, LogStore } from './admin/log-store.ts'
 export { LEGACY_LOG_MODULE, LogBuffer, guessLevel } from './admin/log-buffer.ts'
 export type { LogLine } from './admin/log-buffer.ts'
 
+// ★ 脱敏（2026-10-10）：**插件也要用**。
+//
+//   发现过程：网关的日志汇聚点**有**脱敏（`server.ts:176` / `:193`，`redact.test.ts:144`
+//   还钉着），但 `dsh-component` 那条**新加的插件日志汇**写的是**同一个文件**、
+//   却**没有脱敏** ⇒ 插件日志里的机密会**明文落进面板要读的文件**。
+//
+//   ⇒ 而它原来**没被导出** ⇒ 插件**引不到**（与 `initialRoute` / `atLevel` 是同一类"门没开"）。
+//   ★ 又一次印证：**导出清单也是一种接线** —— 漏一个名字，等于一整块保护不存在。
+export { findSensitive, redact, redactValue, redactingLogger } from './redact.ts'
+
 // ── 投喂：断点续传 / 一轮一批 / 模型驱动（用户 2026-10-10 指定）───────────────
 export {
   FEED_CURSOR_PREFIX,
