@@ -39,6 +39,9 @@ import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
 // ★ D7 / D-B：唤醒桥的**自建宿主**（DSH 的 webServer 只绑回环，gateway 够不到）
 import { startWakeHost } from './wake-host.ts'
+// ★ 投喂的轮次钩子（用户 2026-10-10：「以单个轮次为界」）
+import { createFeedTurnHook } from './feed-turn-hook.ts'
+import type { ToolRestrictHost } from './feed-restrict.ts'
 import { registerLoopGuard } from './loop-guard-register.ts'
 import { registerToolResultSpill } from './tool-spill.ts'
 import { createToolLoopGuard } from './tool-loop-guard.ts'
@@ -476,6 +479,21 @@ export function registerTurnAccounting(
   /** 已写读数轮数（只在第一轮报一次日志，避免每轮刷屏）。 */
   let observedTurns = 0
 
+  /**
+   * ★★ 投喂的**轮次钩子**（用户 2026-10-10：「以单个轮次为界，每一个轮次结束就传输下一批次」）。
+   *
+   * 它把投喂那条链串成闭环：`turn/start` 排产 + 写"本轮范围" + 收窄工具；
+   * `turn/end` 按**实际喂进去的段数**推进游标 + 解除掩码 + 喂完收尾（醒来）。
+   *
+   * `tools` 从这里取（`ctx.get('tools')`）：拿不到就**不收窄**，
+   * 而钩子内部会如实记一行 —— 不假装"限制住了"。
+   */
+  const feedTurn = createFeedTurnHook({
+    db: runtime.db,
+    tools: ctx.get('tools') as ToolRestrictHost | undefined,
+    log: options.log,
+  })
+
   /** 用宿主 tokenMeter 量当前短期压力（拿不到就 `undefined` —— 绝不用估算值冒充真实读数）。 */
   const measureShortTokens = (session: unknown): number | undefined => {
     const meter = ctx.get('tokenMeter') as { measure?: (subject: unknown) => unknown } | undefined
@@ -505,6 +523,14 @@ export function registerTurnAccounting(
         // ① 轮次开始 ⇒ 重置"每轮"额度 + 推进"自上次压缩以来的轮次"（PLAN §4.4 记账）
         if (type === 'turn/start') {
           runtime.beginTurn()
+          // ★ 投喂轮次的开始（不是投喂轮就什么都不做，但会顺手解除遗留的掩码）
+          const turn = feedTurn.onTurnStart()
+          if (turn.active) {
+            options.log(
+              `投喂轮次：${turn.note}｜本轮读 ${String(turn.segments.length)} 段` +
+                `（${turn.segments.map((s) => s.path).join('、')}）`,
+            )
+          }
           return
         }
 
@@ -517,6 +543,15 @@ export function registerTurnAccounting(
 
         // ③ 轮次结束 ⇒ 写真实短期读数
         if (type === 'turn/end') {
+          // ★★ 投喂的轮末收尾**必须最先做**，而且**绝不能**被下面那条 early return 跳过。
+          //
+          //   下面在"拿不到 token 读数"时会 `return` —— 若把投喂收尾放在它之后，
+          //   "读数拿不到"就会连带让**掩码永远留着**，而那是
+          //   "她的正常对话从此发不出 QQ 消息、且没人会发现"的那条故障。
+          //
+          //   `consumeFedSegments()` 是**取走**（清零）：轮末推进游标必须只发生一次，
+          //   两条路径各读一次会让游标**跳段**。
+          feedTurn.onTurnEnd({ fedCount: runtime.consumeFedSegments() })
           const tokens = measureShortTokens(session) ?? lastUsageTokens
           if (tokens === undefined) {
             options.log('轮次结束但拿不到短期 token 真实读数（tokenMeter 与 usage 都没有）—— 保留上次读数')

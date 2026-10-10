@@ -222,6 +222,15 @@ export function buildFeedTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         return { ...failure(reason), ...(result === undefined ? {} : { source: result.source, scope: result.scope }) }
       }
 
+      // ★ 投喂的"这一轮喂了几段"只在这里加（用户 2026-10-10：「以单个轮次为界」）。
+      //
+      //   为什么是 **1**：模型驱动路径里**一次调用 = 素材的一段**
+      //   （一段就是一个文件；`whole: true` 让它整块记成一条）。
+      //   为什么必须由**成功写入**的地方加，而不是由"该喂几段"推：
+      //   按"该喂的"推会让只喂了一半的轮次也把游标推满 ⇒ **漏喂 = 丢记忆**。
+      //   （游标本身仍是**提示**而非正确性机制 —— 重喂幂等，见 `feed-cursor.ts` 的头。）
+      runtime.noteFeedSegment(1)
+
       // 把"发生了什么"说成人话：模型看到"判重 3 段"才会知道
       // "这段内容我已经记过了"，而不是以为没喂进去。
       const notes: string[] = []

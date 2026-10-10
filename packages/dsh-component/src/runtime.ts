@@ -1067,6 +1067,8 @@ export class MemoryRuntime {
     this.turnExtensionBonus = 0
     // PLAN §7.1 的 queries_this_turn 是"**本轮**查过什么" ⇒ 轮次边界清空
     this.queriesThisTurn = []
+    // ★ 投喂的"本轮喂了几段"同样是**每轮**的量（用户 2026-10-10：「以单个轮次为界」）
+    this.feedSegmentsThisTurn = 0
     this.turnsThisCycle += 1
     // 基线值是 `on_compaction`（见 PLAN §7.6）：周期额度由压缩提交时的 `resetCycle()` 归零。
     // 若有人把策略改成按轮重置，这里也要跟着归零（否则改了个寂寞）。
@@ -1080,6 +1082,40 @@ export class MemoryRuntime {
   /** 记一次工具调用（§4.4 的"自上次压缩工具调用数"）。 */
   recordToolCall(): void {
     this.bumpCounter('acct_toolcalls_since_compaction', 1)
+  }
+
+  /**
+   * 本轮**已经喂进记忆的段数**（用户 2026-10-10：「以单个轮次为界」）。
+   *
+   * ## 为什么它必须是**每轮**的、而且是"实际喂进去的"而不是"该喂的"
+   *
+   * 投喂的断点续传靠它推进游标（`feed-turn-hook.ts` 的 `onTurnEnd`）。
+   * 如果按"这一轮**该**喂几段"推，那么模型只喂了一半时游标也会往前走满
+   * ⇒ **没喂的那几段永远不会被喂** = **漏喂 = 丢记忆**。
+   * 重喂只是慢（`feedMemory` 同源同序号是幂等更新），**漏喂是不可逆的**。
+   *
+   * ⇒ 所以这个数只由**真的写成功了**的地方加：`feed-tools.ts` 的
+   *   `feed_memory` 在 `result.ok` 之后调 {@link noteFeedSegment}。
+   */
+  private feedSegmentsThisTurn = 0
+
+  /** 记"喂进去了一段"（`feed_memory` 成功写入后调；整块投喂时一次调用 = 一段）。 */
+  noteFeedSegment(count = 1): void {
+    if (!Number.isFinite(count) || count <= 0) return
+    this.feedSegmentsThisTurn += Math.trunc(count)
+  }
+
+  /**
+   * 取走本轮的喂入段数**并清零**（`turn/end` 上用来推进投喂游标）。
+   *
+   * 为什么是"取走"而不是"读"：轮末推进游标这件事**必须只发生一次**。
+   * 若两条路径（轮末钩子 + 某个兜底）各读一次，游标会被推进两次 ⇒ **跳段**。
+   * 与 `recallThisTurn` 同一个道理（那里的注释写着"累计 2 次之后永久失效"）。
+   */
+  consumeFedSegments(): number {
+    const value = this.feedSegmentsThisTurn
+    this.feedSegmentsThisTurn = 0
+    return value
   }
 
   /**
