@@ -93,12 +93,35 @@ test('★ 选模型：不可达的永远不会被选', () => {
   assert.ok(!picked?.alternatives.some((a) => a.model === 'dead'))
 })
 
-test('★ 选模型：档位偏好生效（L1 偏 ours，L3 偏 native）', () => {
+test('★★★ 额度路由（P2-b）：**每个档位都优先 `native`（DS 官方），`ours` 退成兜底**', () => {
+  // ## 这条测试原来是反过来的
+  //
+  // 旧断言是「L1 偏 ours」，而 `TIER_PREFERENCE` 里 L2 的理由写着
+  // 「自建接入点优先（**额度可控**）」—— 那句话里有个**不成立的等号**：
+  //
+  //   ours  = "我们自己注册的 provider"（`catalog.ts:128` 的判据）
+  //   额度可控 = "自己搭的、烧自己的电"（注释想说的）
+  //
+  // 而 `oursProviders` 的默认值是 `['opencode-go']`（`catalog.ts:151`）——
+  // **第三方 API**，用户原话「**GO 额度实际上只有百分之 9**」。
+  //
+  // ⇒ 按分数算：L1 = GO 10 / DS 0，L2 = GO 10 / DS 8 ⇒ **L1 与 L2 全走那家只剩 9% 的**。
+  //   用户要的是"**额度路由往 `deepseek-official` 倾**"（P2-b）。
+  //
+  // ⇒ 三个档位现在都该选 DS。**这不是"改测试让它绿"，是旧断言编码了一个错的判断。**
+  for (const tier of ['L1', 'L2', 'L3'] as const) {
+    assert.equal(
+      pickModel(BASIC, tier)?.entry.provider,
+      'deepseek-official',
+      `${tier} 应该优先 native（额度在主账户那家）—— 见 FIX_PLAN §25 与 P2-b`,
+    )
+  }
+  // ★ 而 `ours` **必须仍然是备选**（DS 挂了还得能用它）—— 不是"排除 GO"，是"排后面"
   const l1 = pickModel(BASIC, 'L1')
-  assert.equal(l1?.entry.provider, 'opencode-go', 'L1 应该优先自建接入点')
-
-  const l3 = pickModel(BASIC, 'L3')
-  assert.equal(l3?.entry.provider, 'deepseek-official', 'L3 应该优先原生')
+  assert.ok(
+    l1?.alternatives.some((a) => a.provider === 'opencode-go'),
+    '★ GO 要留在备选里：把首选的额度耗光/挂掉时，兜底还得是它（**不是禁用，是降序**）',
+  )
 })
 
 test('选模型：一个可达的都没有 ⇒ undefined（不硬编一个）', () => {
@@ -136,7 +159,8 @@ test('★★ 初始路由：端到端 —— 档位 + 模型 + 理由 + 备选',
   assert.ok(decision !== undefined)
   assert.equal(decision.tier, 'L1')
   assert.equal(decision.tierSource, 'guard')
-  assert.equal(decision.provider, 'opencode-go')
+  // ★ P2-b：额度路由往 DS 官方倾（见上面那条"额度路由"测试里的完整理由）
+  assert.equal(decision.provider, 'deepseek-official')
   assert.equal(decision.reasoningEffort, 'low')
   assert.ok(decision.alternatives.length >= 1, '应该有备选')
   assert.match(decision.why, /守卫命中/) // 理由里要能看出"为什么"
@@ -163,7 +187,9 @@ test('★★ 选模型与定档分离：接入点挂了只换模型，档位判�
       { provider: 'opencode-go', id: 'ok' },
       { provider: 'deepseek-official', id: 'ok2' },
     ],
-    unreachable: ['opencode-go/ok'],
+    // ★ 挂的是**首选那家**（P2-b 之后首选是 DS）——
+    //   这才真的测到"首选挂了能不能兜住"，比原来更严。
+    unreachable: ['deepseek-official/ok2'],
   })
 
   const d1 = initialRoute({ turnText: '😀', catalog: full })

@@ -90,13 +90,47 @@ export interface InitialRouteDecision {
  * ⚠️ 这里**不写死 provider/model**（那正是第 17 处缺陷的教训：
  * 写死的清单会与实际可用集合漂移）。**只写"要什么特征"**，
  * 由目录里**实际可达的**模型来满足。
+ *
+ * ## ★★ 2026-10-10 改序：`native` 提到 `ours` 前面（用户要求的 P2-b）
+ *
+ * **原来的写法把 `ours` 排在前面，理由是"自建接入点优先（额度可控）"** —— 那句话里
+ * 藏着一个**不成立的等号**：
+ *
+ * ```
+ * ours  = "我们自己注册的 provider"      ← marksOf 的判据（catalog.ts:128）
+ * 额度可控 = "自己搭的、烧的是自己的电"    ← 注释想表达的意思
+ * ```
+ *
+ * 这两个**不是一回事**。反例就是本项目自己：`marksOf` 的默认
+ * `oursProviders = ['opencode-go']`（`catalog.ts:151`）——
+ * **`opencode-go` 是第三方 API，而用户原话是「GO 额度实际上只有百分之 9」。**
+ *
+ * ⇒ 按**分数**算一遍（`scoreCandidate` 给 want 里第 i 个标记 `10 - i*2` 分）：
+ *
+ * | 档位 | 原 `want` | GO（`ours`） | DS（`native`） | 结果 |
+ * | :--- | :--- | :--- | :--- | :--- |
+ * | L1 | `['ours','free']` | **10** | 0 | ❌ 走 GO |
+ * | L2 | `['ours','native']` | **10** | 8 | ❌ 走 GO |
+ * | L3 | `['native','ours']` | 8 | **10** | ✅ 走 DS |
+ *
+ * ⇒ **L1 与 L2 会把每一个轮次都送去那家只剩 9% 的**（而 L3 恰好是对的）。
+ * 这正是 `FIX_PLAN.md` §25 里那条警告的具体数字 —— 也是我在 `93fa2f2`
+ * 修 failover 时踩过的**同一个坑、同一个方向**。
+ *
+ * ⇒ 改成 **`native`（DSH 原生 provider，如 `deepseek-official`）一律排在最前**，
+ * `ours` 退成兜底。用户的原话就是"**额度路由往 `deepseek-official` 倾**"。
+ *
+ * ⚠️ **仍然不写死 provider 名** —— 只是换了**特征的优先级**：
+ * 将来若真有一个"自建、烧自己的电"的 provider，它该拿 `native`/`account` 这类标记，
+ * 而不是靠"名字被列进 `oursProviders`"。
  */
 const TIER_PREFERENCE: Record<Tier, { readonly want: readonly string[]; readonly avoid: readonly string[] }> = {
   // L1：闲聊与简单问答 —— 要快。避开贵的/慢的。
-  L1: { want: ['ours', 'free'], avoid: [] },
-  // L2：一般任务 —— 要稳。自建接入点优先（额度可控）。
-  L2: { want: ['ours', 'native'], avoid: [] },
-  // L3：复杂任务 —— 要强。原生 + 自建都行。
+  // ★ `free` 保留在末位：真·免费的（本地/免费额度）仍然优先于付费兜底。
+  L1: { want: ['native', 'ours', 'free'], avoid: [] },
+  // L2：一般任务 —— 要稳。**原生账号优先**（额度是主账户的，见上面那张表）。
+  L2: { want: ['native', 'ours'], avoid: [] },
+  // L3：复杂任务 —— 要强。原生 + 自建都行（本来就已是 native 在前，未改）。
   L3: { want: ['native', 'ours'], avoid: [] },
 }
 
