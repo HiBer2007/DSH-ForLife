@@ -1733,6 +1733,24 @@ agent/request 瀑布：
 | `setCompactionEngineHooks` | **设计如此** | 注释写着"测试与调试用"；`resolveRuntime` 默认从活动登记表取 —— 见 §27 |
 | `saveMediaAsset` / `getMediaAsset` / `listMediaAssets` / `searchMedia` / `buildMediaMemoryText` | ★ **功能还没建，不是接线洞** | `media.ts` 的验收写的是「**`media_save` 之后** `recall_longterm("那张架构图")` 能命中」；而全仓 grep `media_save` ⇒ **只出现在注释与测试里**（**那个工具不存在**）。面板那页也是 `ComingSoonView`（`/api/admin/media ← media_assets / media_usages`）。⇒ store 侧写好了、**工具层与 UI 层还没做**，**符合预期** |
 | `crashGuardInstalled` | **诊断用，确实没人调** | 不影响功能（`installCrashGuard` 是接了的那条） |
+| `runDoctor` / `renderDoctorReport` | ★ **接了**（**第二次栽在"外部入口"上**） | 被 **`packages/dsh-component/scripts/doctor.mjs`** 调（`:29` import、`:111` `runDoctor({})`、`:115` `renderDoctorReport`）；`dsh-plugin.json:32` 还声明了插件命令 `forlife.doctor`。★ **而 `.dockerignore` 没排除 `scripts/`** ⇒ 镜像里有这个脚本、`node packages/dsh-component/scripts/doctor.mjs` 能跑 |
+
+> ★★ **扫描的盲区现在有两个确证的实例了**：
+> ① **配置里挂**（§27 的 `ForlifeCompactionEngine`，走 profile 的 `cordis.patch.yml`）
+> ② **外部入口**（本条的 `runDoctor`，走 CLI 脚本 + 插件命令声明）
+>
+> 两者 `grep src/` 都**看不见**。⇒ **"零引用"只是候选**这句话不是修辞 ——
+> 已经四次里有两类**结构性看不见**的接线方式。
+> 判据要一直保持成：**先假设它可能接了，再去证伪**。
+
+### ⚠️ 仍然待查（本轮查了一半）
+
+| 符号 | 现状 | 下一步 |
+| :--- | :--- | :--- |
+| `listBackups`（`gateway/src/admin/storage-write.ts:73`） | **全仓只有定义处一处** ⇒ 真·零调用 | 去面板找"备份列表"那页 —— 若那页在读别的接口，这个函数就是**写好了没用**；若那页缺数据，就是洞 |
+| 插件命令 `forlife.doctor` | `dsh-plugin.json:32` 声明了它 | `contributes.commands` 可能只是**声明**；要去代码里找**处理函数**在不在（不在 = 点了没反应） |
+| `scripts/doctor.mjs:111` 传的是 `runDoctor({})` | **空 ctx** ⇒ 契约探针会全部报缺失 | 确认那是"演示"还是**真用法** —— 若是真用法，这个诊断工具**永远报红**，等于没有 |
+
 
 > ⚠️ 顺带一条**观察**（不是洞）：`media_assets` 表被**沉降 / 归档 / 迁移 / 面板查询**读着，
 > 而生产里**没人往它写** ⇒ 那几个子系统在真机上**零行可处理**。
