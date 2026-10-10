@@ -165,6 +165,26 @@ export interface FeedOptions {
    * （与这里用的是同一个实现，不是第二套）。
    */
   readonly archiveLeftovers?: boolean
+  /**
+   * **整块投喂**：不要把 item 的正文按空行/标题行拆段，一个 item 就是**一段**。
+   *
+   * ## 为什么需要（用户 2026-10-09 裁定 C-②）
+   *
+   * 原行为是"每段写一条"，于是 `.runtime/chat-feed-v2` 的 283 段产出 **11,114 条**
+   * （一段 50~77 条），条目 token 中位数只有 **106** —— **记忆被切成了碎片**。
+   * 用户的判断是：**条目化/总结化/印象化应当由模型来做，不该由喂食机制替它决定**；
+   * 喂食只该把 **10k–50k token 的原始片段**整块交给模型。
+   *
+   * ⇒ 这个开关就是关掉那层"替模型做决定"的切分。
+   *
+   * ## ⚠️ 它**只关段落切分，不关天花板**
+   *
+   * `feed.chunkMaxTokens` 那道**天花板**照旧生效（见下面 ①b）——
+   * 目的是"别一次撑爆上下文"，而那是**保护**，不是替模型做决定。
+   * 「整块」与「有上限」不矛盾：把 `feed.chunkMaxTokens` 定在 10k–50k 这一档，
+   * 就是"整块喂进去、但单条不许无限大"。
+   */
+  readonly whole?: boolean
 }
 
 /** 一段资料的处理结果。 */
@@ -472,9 +492,14 @@ export function feedMemory(db: DatabaseSync, options: FeedOptions): FeedResult {
   //
   // 每段都记下它来自哪个 item：摘要与实体要按**它所属的那一条输入**取，
   // 不能一律用 `items[0]` 的（那会给第二份文件的段落安上第一份的摘要/实体）。
+  //
+  // ★ `options.whole` = **不切分**：一个 item 就是一段（用户裁定 C-②：
+  //   条目化交给模型，喂食只负责把原始片段交出去）。
+  //   ⚠️ 它只关这一层；下面 ①b 的天花板**照旧**（那是防撑爆，不是替模型决定）。
   const paragraphs: { readonly text: string; readonly itemIndex: number }[] = []
   for (const [itemIndex, item] of options.items.entries()) {
-    for (const chunk of splitIntoFeedChunks(item.content)) paragraphs.push({ text: chunk, itemIndex })
+    const pieces = options.whole === true ? [item.content] : splitIntoFeedChunks(item.content)
+    for (const chunk of pieces) paragraphs.push({ text: chunk, itemIndex })
   }
 
   // ①b **天花板切分**：只有超过 `feed.chunkMaxTokens` 的段落才被切开（见 `feed-chunk.ts`）。
