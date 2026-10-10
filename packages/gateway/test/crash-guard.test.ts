@@ -24,7 +24,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { crashGuardInstalled, installCrashGuard, makeCrashHandler } from '../src/admin/crash-guard.ts'
+import { makeCrashHandler } from '../src/admin/crash-guard.ts'
 import { createLogger, installLogSink, type LogRecord } from '../src/admin/log.ts'
 
 /** 造一个记账用的处理器（落点装到 got 里）。 */
@@ -112,13 +112,35 @@ test('★ 非 Error 的崩溃值也要能摊成一行（不许抛、不许变 [o
   }
 })
 
-test('★ 幂等：`installCrashGuard` 第二次调用不生效', () => {
-  const before = crashGuardInstalled()
-  if (!before) {
-    assert.equal(installCrashGuard(() => undefined), true, '第一次装生效')
-  }
-  assert.equal(installCrashGuard(() => undefined), false, '★ 重复装不许再生效一个（叠一堆处理器）')
-  assert.equal(crashGuardInstalled(), true)
+test('★★ 幂等由**源码守卫**钉住，不在这里真装（真装会污染整个测试进程）', async () => {
+  // ## ★★ 这条测试原本真的调了 `installCrashGuard`，那是个**错误的做法**
+  //
+  // 它会往**测试进程**上装真实的 `process.on('uncaughtException')` /
+  // `unhandledRejection` 处理器，而传进去的 `onFatal` 是个空函数。
+  // ⇒ **Node 的致命默认行为被关掉，未处理的拒绝从此被静默吞掉**，
+  //   而处理器是**进程级、不随用例结束而撤销**的 ⇒ 后面的用例看到的是
+  //   一个"错误不再致命"的世界。实测后果：全量里
+  //   `cache-collector-wiring` 的端到端用例**连续两轮红**
+  //   （`0 !== 8192`：`cache_metrics` 没写进去），而它**单独跑两次都绿**。
+  //
+  // ⇒ 这正是"测试环境本身也会制造假象"的第 N 次。**进程级副作用不许在用例里造。**
+  //   要验"真的挂上去了"，读源码（下面这条就是）；要验行为，调 `makeCrashHandler`。
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/admin/crash-guard.ts', import.meta.url), 'utf8')
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n')
+  assert.match(code, /if \(installed\) return false/, '★ 幂等判断必须在（叠一堆处理器是个安静的故障）')
+  assert.match(code, /installed = true/, '装上了要把标志置位')
+  // 而且**只有** `installCrashGuard` 会碰 `process.on`（`makeCrashHandler` 是纯的）
+  const makeAt = code.indexOf('export function makeCrashHandler')
+  const makeBody = code.slice(makeAt, code.indexOf('export function installCrashGuard'))
+  assert.ok(
+    !makeBody.includes('process.on'),
+    '★ `makeCrashHandler` 必须是**纯的**（不碰 process）—— 测试要能直接调它而不产生进程级副作用',
+  )
 })
 
 test('★★ 接线守卫：CLI **入口**真的装了它，而且排在其它一切之前、且不从 start() 装', async () => {
