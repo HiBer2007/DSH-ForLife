@@ -71,6 +71,7 @@ import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts
 import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
+import { isLogLevel, type LogLevel } from './log-levels.ts'
 import { openLogStream } from './sse.ts'
 import type { PortService } from '../port-service.ts'
 import { enqueueOutbound } from '../outbox.ts'
@@ -1579,13 +1580,53 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
         const session = requireSession(req, res, path)
         const buffer = options.logBuffer
         if (buffer === undefined) {
-          json(res, 200, { lines: [], sequence: 0, size: 0, capacity: 0 })
+          json(res, 200, { lines: [], sequence: 0, size: 0, capacity: 0, modules: [] })
           return true
         }
         const since = Number(url.searchParams.get('since') ?? '0')
         const limit = Number(url.searchParams.get('limit') ?? '200')
+
+        // ★ 筛选（用户 2026-10-10：「在管理面板的日志区能筛选**等级、模块**等」）。
+        //
+        // ⚠️ 筛选与 `since` **不能并用**：`since` 的语义是"给我比这个序号新的"，
+        //    而筛选是"在所有行里挑符合的"。两者一起用会得到一个**每个轮询周期
+        //    都不同**的集合（新行进来会改变"哪些行符合"），前端增量追加就会错位。
+        //    ⇒ 有筛选时**忽略 `since`**、按筛选回一批，并用 `filtered: true`
+        //      明确告诉前端"这一批不是增量的，请整段替换"。
+        const levels = (url.searchParams.get('levels') ?? '')
+          .split(',')
+          .map((piece) => piece.trim())
+          .filter((piece): piece is LogLevel => isLogLevel(piece))
+        const modules = (url.searchParams.get('modules') ?? '')
+          .split(',')
+          .map((piece) => piece.trim())
+          .filter((piece) => piece !== '')
+        const contains = (url.searchParams.get('q') ?? '').trim()
+        const filtered = levels.length > 0 || modules.length > 0 || contains !== ''
+
+        // `modules` 总是一起给：面板的模块下拉靠它，免得用户手打拼错
+        const known = buffer.modules()
+        if (filtered) {
+          const lines = buffer.query({ levels, modules, ...(contains === '' ? {} : { contains }), limit })
+          json(res, 200, {
+            lines,
+            sequence: buffer.sequence,
+            size: buffer.size,
+            capacity: buffer.capacity,
+            modules: known,
+            filtered: true,
+          })
+          return true
+        }
+
         const lines = Number.isFinite(since) && since > 0 ? buffer.since(since, limit) : buffer.tail(limit)
-        json(res, 200, { lines, sequence: buffer.sequence, size: buffer.size, capacity: buffer.capacity })
+        json(res, 200, {
+          lines,
+          sequence: buffer.sequence,
+          size: buffer.size,
+          capacity: buffer.capacity,
+          modules: known,
+        })
         return true
       }
 

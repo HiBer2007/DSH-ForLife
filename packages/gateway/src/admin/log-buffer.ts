@@ -63,10 +63,25 @@ export interface LogLine {
  *
  * ★ **只覆盖 `info`/`warn`/`error`** —— `debug`/`note`/`fault`/`crash` 猜不出来，
  * 也不该猜（见模块头）。特别是后两个：那是**影响范围**的判断。
+ *
+ * ## ★★ 2026-10-10 修了一个一直存在的 bug：**中文关键字从来没生效过**
+ *
+ * 原写法是 `/\b(error|失败|异常|✖|failed)\b/i`。
+ *
+ * `\b` 是「**单词字符**与非单词字符」之间的边界，而 `\w` 只含 `[A-Za-z0-9_]`
+ * —— **汉字不是 `\w`**。所以 `\b失败\b` 要求 `失` 的旁边是单词字符，
+ * 在「出错了 失败」这种文本里**永远不成立**。
+ *
+ * ⇒ 后果：面板上「失败/异常/警告/重试/降级」的消息**一直显示成 `info`**
+ *   （只有英文的 `error`/`failed`/`warn` 生效）。**测试全绿、线上就是不对**，
+ *   因为当时**没有任何测试用过中文关键字**。
+ *
+ * ⇒ 现在 `\b` 只加在纯 ASCII 分支上，中文分支不带边界。
+ *   并且补了测试（`log-query.test.ts`）—— **语言不该让一条断言静默失效**。
  */
 export function guessLevel(text: string): LogLevel {
-  if (/\b(error|失败|异常|✖|failed)\b/i.test(text)) return 'error'
-  if (/\b(warn|警告|⚠|重试|降级)\b/i.test(text)) return 'warn'
+  if (/\b(error|failed)\b|失败|异常|✖/i.test(text)) return 'error'
+  if (/\bwarn\b|警告|⚠|重试|降级/i.test(text)) return 'warn'
   return 'info'
 }
 
