@@ -1984,14 +1984,39 @@ npm warn install-scripts   koffi@3.1.1 / node-pty / @google/genai / protobufjs �
 
 ### 要补什么才能做 P3（按依赖顺序）
 
-1. **写 `feed-prepare.ps1`**（**缺的就是它**）。它要串起：
-   `fetch-deepseek-chat.ps1`（重新拉源）→ `chat-segv2-tool/generate.py`（重新切分）
-   → **写 `SOURCE.json`**（`preparedAt` = 现在、`segments` = 实际段数、`seg1Items`/`seg2Items`）
-   → 打包。★ **闸门要的 `items=<n>` 标记来自基线 `feed.refresh.itemsMarker`**，别改格式。
+1. ~~**写 `feed-prepare.ps1`**（**缺的就是它**）~~ → ✅ **2026-10-10 已写出来**，见下。
 2. **拉源要凭据**：`refresh.mjs:6-8` 写明源是 DeepSeek **网页端**导出，
    只能从"有登录态的那一侧"拉（`HWWAFSESID` / `ds_session_id` cookie）——
    **容器里没有、也不该有**。⇒ **这一步必须用户在场**（或者给一份新鲜快照）。
 3. `SOURCE.json` 到位且新鲜之后，再按 P3 走：清空 → 重导。
+
+### ✅ 已补：`.runtime/feed-prepare.ps1`（那个"让你去跑"却不存在的东西）
+
+`refresh.mjs:55` 的报错让你回 Windows 跑它 —— **此前它不存在**（§33 开头那条）。
+现在它在了，做四件事，**顺序不能换**：
+
+| # | 做什么 | 落在哪 |
+| :--- | :--- | :--- |
+| ① | **拉源** —— 调 `.runtime/fetch-deepseek-chat.ps1`（**凭据只活在那个文件里，新脚本不含任何凭据**） | `.runtime/chat-import/*.json` |
+| ② | **重新切分** —— 调 `chat-segv2-tool/generate.py`（`LIMIT=8000` 字/段） | `.runtime/chat-feed-v2/` + `MANIFEST.json` |
+| ③ | ★ **写 `SOURCE.json`** —— `preparedAt` / `segments` / `seg1Items` / `seg2Items` | 闸门要的就是它 |
+| ④ | ★ **自检用闸门自己**（`node refresh.mjs`） | 它说通过才算通过 |
+
+**失败纪律**：任何一步不过 ⇒ **不写 `SOURCE.json` 且非 0 退出**（脚本里 **14 处** `Die`）。
+理由写在脚本头：**写一个"看起来新鲜"的时间戳去骗过闸门，等于把闸门防的那件事亲手做一遍。**
+
+★ **我自己在脚本里堵了一个后门**：`-SkipFetch`（只重切、不重拉）会产出
+一份"刚 prepared"的 `SOURCE.json` ⇒ **让闸门放行一份没重新拉过的源**。
+⇒ 现在它**必须与 `-AllowStaleSource` 一起用**，否则直接失败，并明确写出
+"这份 SOURCE.json 只证明**我重新切过**，**不证明源是新的**"。
+
+**验证**：`Parser::ParseFile` **语法 0 错误**；它引用的三个外部件都在；
+`.gitignore:2` 的 `.runtime/` 盖住它 ⇒ **脚本按约定不进仓库**（与 `fetch-*.ps1` / `refresh.mjs` 一致）。
+
+⇒ **剩下唯一挡着 P3 的**：**① 需要你那份网页端登录态**（cookie/token 会过期，几小时到几天）。
+你把它更新一下、跑一次 `pwsh -File .runtime\feed-prepare.ps1`，
+段包就会带上新鲜的 `SOURCE.json`；之后清空 + 重导就能按 P3 走。
+
 
 ### 顺带解开的两个旧谜
 
