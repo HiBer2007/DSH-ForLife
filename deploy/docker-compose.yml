@@ -127,6 +127,16 @@ services:
       # ★ 先跑 observe 确认钩子真的响（agent/created · agent/pre-step · agent/turn-stopping），
       #   再开 apply。默认 off —— 不让没验证过的接线擅自改模型。
       FORLIFE_ROUTER_MODE: ${FORLIFE_ROUTER_MODE:-observe}
+
+      # ── 唤醒桥：**我们自己的监听**（FIX_PLAN D7 / 用户裁定 D-B）────────────
+      # 为什么需要它：DSH 的 webServer **只绑回环**（它硬禁 --host 0.0.0.0，
+      # 理由是 /api 暴露 = RCE）⇒ 同 docker 网络的 gateway **够不到它** ⇒
+      # 面板那张「DSH 后端」卡永远显示"未配置/连接超时"。
+      # ⇒ 我们另起一个只服务唤醒端点、带密钥校验的监听（绑容器网卡）。
+      # ★ 端口取 3098：DSH 自己是 3080、napcat-probe 占 3099、NapCat WebUI 是 6099。
+      # ★ 它是**密钥保护的提权入口**，所以只 `expose`（容器网络内可达），
+      #   **不 publish 到宿主** —— 公网碰不到它。
+      FORLIFE_WAKE_BRIDGE_PORT: ${FORLIFE_WAKE_BRIDGE_PORT:-3098}
     volumes:
       - forlife-data:/data # db / vectors / attachments / workspace / models
       - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
@@ -135,7 +145,10 @@ services:
       - ${FORLIFE_COLD_DIR:-/mnt/forlife-cold}:/cold
     networks: [edge, internal]
     # 只在内网暴露，公网一律经 Caddy
-    expose: ["3080"]
+    # ★ 3098 = 唤醒桥的自建监听（见上面 FORLIFE_WAKE_BRIDGE_PORT 的说明）。
+    #   `expose` 只是文档性的 —— 同一 docker 网络内的容器本来就能打到任意端口，
+    #   写在这里是为了让"这个容器对外提供哪些端口"一眼可见。
+    expose: ["3080", "3098"]
 
     # ★★ 2026-10-07 真机部署发现：**镜像里那条 HEALTHCHECK 探的是 8081**（gateway 的端口），
     #   而 dsh 跑在 **3080** ⇒ 容器**永远 unhealthy**（服务其实是好的）。
@@ -220,6 +233,19 @@ services:
       FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
       # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
       FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
+
+      # ── DSH 后端地址（面板那张「DSH 后端」卡的数据来源）────────────────────
+      # ★★ 这就是那张卡一直显示 **「未配置」** 的根因：`dsh-status.ts:64-78`
+      #   读 `FORLIFE_DSH_URL`，没有它就从 `FORLIFE_WAKE_BRIDGE_URL` 推 host ——
+      #   **两个变量容器里都没有** ⇒ 如实回答"未配置"。
+      # ★ 为什么是自建监听的端口（3098）而不是 DSH 自己的 3080：
+      #   3080 **只绑回环**，从 gateway 容器里打不通；3098 才是容器网络可达的那个。
+      #   （面板显示的 URL 就是这个"gateway 到底在探哪儿"，不是给用户点的链接。）
+      FORLIFE_DSH_URL: ${FORLIFE_DSH_URL:-http://dsh:3098}
+      # 真正发唤醒用的那个端点（同一 host:port，走 /forlife/wake）
+      FORLIFE_WAKE_BRIDGE_URL: ${FORLIFE_WAKE_BRIDGE_URL:-http://dsh:3098/forlife/wake}
+      # 与 dsh 容器里那个**必须是同一个值**（否则唤醒会 401，而 401 看起来像"桥没通"）
+      FORLIFE_WAKE_BRIDGE_SECRET: ${FORLIFE_WAKE_BRIDGE_SECRET:-}
 
       # ── QQ 链路（OneBot 反向 WS）────────────────────────
       # ★ 主编排**默认不开** —— gateway 只在 FORLIFE_ONEBOT=1 时才起 OneBot 服务，
