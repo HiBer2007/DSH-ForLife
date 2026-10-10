@@ -30,6 +30,16 @@
  */
 import type { DatabaseSync } from 'node:sqlite'
 
+// ★ 迁移到七级（用户 2026-10-10 指定的分级制度）。
+//   `atLevel` 是那个桥：注入进来的 `log` 只是普通函数时**退化成调它自己**，
+//   所以这一批改动**不需要碰任何调用方**。
+//
+//   ⚠️ 本文件里**真正是 `info` 的那几处故意没动**（"存储分层就绪"、"维护一轮（沉降）搬了 N 条"、
+//      "碎片维护：淘汰 N 条"、"维护循环已启动"）—— 裸 `log(...)` 本来就归 `info`，
+//      改它们只是多打几个字、不增加任何信息。
+//      **迁移的判据是"这句话该归哪一级"，不是"把每一处都改一遍"。**
+import { atLevel } from './admin/log.ts'
+
 import {
   evictFragments,
   fragmentThresholdFromEnv,
@@ -140,7 +150,8 @@ export function startSettleLoop(options: {
   const setTimeoutFn = options.setTimeoutImpl ?? ((fn, ms) => setTimeout(fn, ms))
 
   if (!config.enabled) {
-    log(`维护循环未启用：${String(config.disabledReason)}`)
+    // 没启用是一条**判断**（由配置决定），值得回看但不是异常 ⇒ note
+    atLevel(log, 'note')(`维护循环未启用：${String(config.disabledReason)}`)
     return {
       config,
       tick: async () => ({ moved: 0, skipped: 0, failed: 0, failures: [] }),
@@ -165,7 +176,9 @@ export function startSettleLoop(options: {
     const tierChecks = checkTierWritability(roots)
     const tierWarning = describeTierWritability(tierChecks, roots.fellBack)
     if (tierWarning !== undefined) {
-      log('⚠️ 存储分层有问题：' + tierWarning)
+      // ★ **fault**：存储分层是**一个子系统**，它有问题就是"一部分功能不可用"
+      //   （沉降会落到错误的层上）—— 不是某一次操作出错
+      atLevel(log, 'fault')('存储分层有问题：' + tierWarning)
     } else {
       log('存储分层就绪：hot/warm/cold 三层根都可写')
     }
@@ -202,7 +215,8 @@ export function startSettleLoop(options: {
       const decision = shouldRunFragmentMaintenance(options.db, fragmentThresholdFromEnv(options.env))
       if (!decision.shouldRun) {
         fragments = { merged: false, evicted: 0, refused: 0, orphans: 0 }
-        log(`碎片维护跳过：${decision.reason}`)
+        // "跳过了"是一条**判断**（决策），不是异常 ⇒ note
+        atLevel(log, 'note')(`碎片维护跳过：${decision.reason}`)
       } else {
         const merged = mergeFragmentIndex(options.db)
         // **先算计划再执行** —— 删除不可逆，计划是唯一能提前发现"算法写错了"的机会
@@ -222,7 +236,9 @@ export function startSettleLoop(options: {
       }
     } catch (error) {
       // **碎片维护失败不该让沉降也失败** —— 两件事互相独立
-      log(`碎片维护异常（沉降不受影响）：${String(error).slice(0, 160)}`)
+      // ★ **fault**：碎片维护是维护循环的一部分，它**每轮**都炸 ⇒
+      //   不是"这一次操作没兜住"（那是 error），而是"这一类操作都会出问题"
+      atLevel(log, 'fault')(`碎片维护异常（沉降不受影响）：${String(error).slice(0, 160)}`)
     }
 
     // ── 长期记忆的 HDD 沉降（PLAN §6.3 的"定时任务扫描"那一半）──────────
@@ -261,12 +277,18 @@ export function startSettleLoop(options: {
       if (settled > 0 && fellBack) {
         // **不假装有 HDD**：库里只有 ssd/hdd 两个值，表达不了"落在哪块盘"，
         // 所以退回时必须在日志里说清 —— 否则运维会以为冷数据真的在另一块盘上。
-        log(`⚠️ 冷层退回了（没配 FORLIFE_ROOT_COLD）：这 ${String(settled)} 条的归档实际落在 ${coldRoot}，与热数据同一块盘`)
+        // ★ **warn**：出了配置问题但**兜住了**（还是归档了，只是落错层）
+        //   —— "没兜住"才是 error
+        atLevel(log, 'warn')(
+          `冷层退回了（没配 FORLIFE_ROOT_COLD）：这 ${String(settled)} 条的归档实际落在 ${coldRoot}，与热数据同一块盘`,
+        )
       }
-      for (const reason of longFailures) log(`长期沉降失败：${reason}`)
+      // ★ **error**：**单条**没沉下去（逐条循环里的一条）⇒ 一次操作没兜住
+      for (const reason of longFailures) atLevel(log, 'error')(`长期沉降失败：${reason}`)
     } catch (error) {
       // **长期沉降失败不该让 blob 沉降/碎片维护的结果丢掉**（三件事互相独立）
-      log(`长期记忆沉降异常（其余维护不受影响）：${String(error).slice(0, 160)}`)
+      // ★ **fault**：与碎片维护同理 —— 这一类操作每轮都会出问题
+      atLevel(log, 'fault')(`长期记忆沉降异常（其余维护不受影响）：${String(error).slice(0, 160)}`)
     }
 
     return { moved, skipped, failed, failures, ...(fragments === undefined ? {} : { fragments }), ...(longTerm === undefined ? {} : { longTerm }) }
@@ -285,7 +307,10 @@ export function startSettleLoop(options: {
       void tick()
         .catch((error: unknown) => {
           // **自己接住异常** —— 定时器里抛异常会静默杀死整个循环
-          log(`维护一轮异常：${String(error).slice(0, 200)}`)
+          // ★ **fault**：**整轮**维护都炸了，而循环还在跑 ⇒
+          //   维护这一子系统实际上没在工作（这正是 D6「沉降循环曾完全沉默」的反面：
+          //   那时是"有话说却不说"，这里是"确实坏了，而且要说清楚坏的是整轮"）
+          atLevel(log, 'fault')(`维护一轮异常：${String(error).slice(0, 200)}`)
         })
         .finally(() => {
           schedule()
