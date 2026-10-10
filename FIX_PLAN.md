@@ -2785,20 +2785,60 @@ if (ratioFull) { …停… }
 ★ 记我自己的错：守卫**第一次红了**，因为**我忘了 `import { readFileSync }`**
 （而我先前那次"只有 1 处"的 grep，命中的正是我自己写的调用）。
 
-### ⏳ 部署（进行中）
+### ✅ 部署（已完成，2026-10-10 22:32）
 
-- 快照 → `/tmp/forlife-new` → **合并式同步**进 `/opt/forlife`（**不带 `--delete`**）
-- ★ **保命文件核对**：`deploy/.env` md5 `421c2904…` **一致**、权限仍 **600**；
-  `deploy/docker-compose.override.yml` md5 `ca57673b…` **一致** ✅
-- ★ 记一个坑：`cp -a` 在那台机器的文件系统上**无法保留时间戳**，
-  会刷出上百行 `cp: 保留…的时间: 不允许的操作` —— 那是**警告不是失败**，
-  但 `set -e` 会因此**把整个脚本带崩**（第一次就崩在这里，构建根本没跑）。
-- ⏳ 构建中：`docker compose -f deploy/docker-compose.yml build dsh`
+| 容器 | 部署前 | 部署后 | 判定 |
+| :--- | :--- | :--- | :--- |
+| caddy | `64038311aa2b` | `64038311aa2b` | **未变** ✅ |
+| ★ **qq** | `22c73c283b3f` | **`22c73c283b3f`** | ★★ **未重建**（Up 12 小时）✅ |
+| llama-server | `3ab24096cf5e` | `3ab24096cf5e` | **未变** ✅ |
+| dsh | `5fc0c4e3645c` | `abefeab68c79` | 已换 ✅ healthy |
+| gateway | `4e531fb001ca` | `ed73387b418e` | 已换 ✅ healthy |
 
-**部署后的验证判据**（这才是 D7 真正的验收）：
-下一次沉降循环的日志里应当出现
+★ **保护性文件核对**：`deploy/.env` md5 `421c2904…` **一致**、权限仍 **600**；
+`deploy/docker-compose.override.yml` md5 `ca57673b…` **一致**。
+
+★ **新代码确在部署的产物里**（读**容器内**文件）：
+`countFull && ratioFull` **1 处** · 旧写法 **0 处** · 「双重」note **1 处** · 「继续碎片化」note **1 处**。
+
+### ★★★ 重建配方的重大发现：必须 `DOCKER_BUILDKIT=0`
+
+**症状**：`docker compose -f deploy/docker-compose.yml build dsh` 跑到
+`npm i @deepseek-ai/dsh@0.1.7-rc.2` 那一层后**卡住 24 分钟**，
+Build Cache **十分钟纹丝不动**，而 `dockerd` 在刷
+`level=error msg="[resolver] failed to query external DNS server"`
+（**5 分钟 14 次**）。
+
+**根因**：compose v2.40 的 `build` **默认走它自带的 BuildKit**，
+而 **BuildKit 会忽略 compose 的 `build.network: host`**
+（`deploy/docker-compose.yml:74` 那个 `network: host` 是**给 classic builder 写的**，
+部署树里还留着注释：「★★ 真机实测：构建容器拿不到可用的 DNS，**必须走宿主网络**」）。
+⇒ 构建容器落到**默认 bridge**，吃到这台 VM 那套不稳的 DNS ⇒ `npm` 无限重试。
+
+**修法**：加 `DOCKER_BUILDKIT=0` ⇒ classic builder **认** `network: host` ✅
+
+```
+sudo DOCKER_BUILDKIT=0 docker compose -f deploy/docker-compose.yml build dsh
+```
+
+**判据（三条，都实读到）**：
+
+| 判据 | classic（好） | BuildKit（坏） |
+| :--- | :--- | :--- |
+| `docker build` 参数里 | ★ **`--network=host`** ✅ | 无 |
+| 日志首行 | `…configured to build using Bake, but **buildkit isn't enabled**` | （BuildKit 输出） |
+| DNS 失败频率 | **1 次/分钟** | **14 次/5 分钟** |
+| 耗时 | ★ **约 4 分钟** | **卡 24 分钟无进展** |
+
+⇒ ★★ **同一个改动，慢 6 倍以上，而且是"卡死"与"跑完"的区别。**
+这条**必须**写进部署流程 —— 否则下一个人会以为"构建就是慢"。
+
+**部署后的验证判据**（D7 真正的验收）：下一次沉降循环的日志里应当出现
 **「碎片计数 200 已达上限 50 条，但占比 0.5% 远低于上限 20% ⇒ 按 §5.3-2 的「或」继续碎片化」**，
 并且 **`long_memory_entries` 开始从 400 继续增长**。
+★ 循环 `schedule()` 只在启动时排一次（`runtime.ts:2250`）⇒ **第一轮要等满 30 分钟**，
+所以验收时间点是 **22:32 + 30min ≈ 23:02**。
+
 
 
 
