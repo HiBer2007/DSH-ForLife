@@ -72,6 +72,10 @@ import { queryStickers, readStickerBytes } from './queries-stickers.ts'
 import { queryStorage } from './queries-storage.ts'
 import type { LogBuffer } from './log-buffer.ts'
 import { LOG_LEVELS, isLogLevel, type LogLevel } from './log-levels.ts'
+// ★ 「开始投喂」那一条（`FIX_PLAN.md` §23）：模型驱动投喂的入口
+import { listFeedFiles } from '../feed-ingest.ts'
+import { startFeedRunFromFiles } from '../feed-run-start.ts'
+import { readFeedCursor } from '../feed-cursor.ts'
 import { openLogStream } from './sse.ts'
 import type { PortService } from '../port-service.ts'
 import { enqueueOutbound } from '../outbox.ts'
@@ -1190,6 +1194,77 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
       // 子系统会自己切分、自己分批、批间让出控制权（大输入不再被"一口气灌进去"）。
       // 校验失败一律 400（带原因），不是 500 —— 抛异常会变成"服务器内部错误"，
       // 用户看不出是自己传错了还是系统坏了。
+      // ★★ 「**开始投喂**」—— 模型驱动投喂的入口（`FIX_PLAN.md` §23 那个洞）。
+      //
+      //   为什么单独一个端点、而不是复用 `/feed`：
+      //   `/feed` 是**内容驱动**（调用方把 items 交上来，我们直接写库）；
+      //   这一条是**模型驱动** —— 我们只登记"要喂这份素材"（每段一个可读路径），
+      //   真正写库的是**模型自己**读完之后调的 `feed_memory`。
+      //   两者的"谁在喂"根本不同，混在一个端点上会让两边的参数互相污染。
+      //
+      //   ⚠️ **必须放在 `/feed` 分支之前**：TS 会在 `route === '/feed'` 那个分支里
+      //   把 `route` 收窄成 `'/feed'`，之后再比 `'/feed-run'` 会被判成"不可能相等"
+      //   （TS2367）—— `/logs` 与 `/logs/stream` 那里踩过同一个坑。
+      if (route === '/feed-run' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const as = body['as']
+        if (!isFeedKind(as)) { json(res, 400, { error: 'as 必须是 knowledge 或 experience' }); return true }
+        const source = typeof body['source'] === 'string' ? body['source'].trim() : ''
+        if (source === '') { json(res, 400, { error: 'source 不能为空（游标与会话都靠它关联）' }); return true }
+        const dir = typeof body['dir'] === 'string' ? body['dir'].trim() : ''
+        if (dir === '') { json(res, 400, { error: 'dir 不能为空（指向装着分段素材的目录）' }); return true }
+        const perTurn = Number(body['perTurn'] ?? 0)
+
+        // 枚举素材。用 `listFeedFiles`（它已经懂"哪些扩展名算文本、哪些目录要跳过"），
+        // 而不是自己 `readdirSync` —— 自己写会把二进制文件也列进来。
+        let files: readonly string[]
+        try {
+          files = listFeedFiles(dir)
+        } catch (error: unknown) {
+          json(res, 400, { error: `读不了这个目录：${String(error).slice(0, 160)}` })
+          return true
+        }
+        if (files.length === 0) {
+          json(res, 400, { error: `这个目录里没有可分段的文本素材：${dir}` })
+          return true
+        }
+
+        let started
+        try {
+          started = startFeedRunFromFiles(db, { source, kind: as, perTurn, files })
+        } catch (error: unknown) {
+          json(res, 400, { error: String(error instanceof Error ? error.message : error).slice(0, 200) })
+          return true
+        }
+
+        // 顺带把"已经喂到哪"一起回：面板要显示"已投喂 N/M 段"（断点续传的可见形式）
+        const cursor = readFeedCursor(db, source)
+        // ⚠️ 动作用已有的 `'api'` 而不是往 `AuditAction` 里加 `'feed-run'`：
+        //   那个联合类型别处也在用（改它会牵动审计界面与它的测试），
+        //   而"是哪一条接口"在 `detail` 里写得清楚。
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          detail: `feed-run ${source}（${String(started.segments.length)} 段）`,
+        })
+        json(res, 200, {
+          source: started.source,
+          kind: started.kind,
+          perTurn: started.perTurn,
+          segments: started.segments.length,
+          first: started.segments[0]?.path ?? null,
+          fedThrough: cursor?.fedThrough ?? 0,
+        })
+        return true
+      }
+
       if (route === '/feed' && method === 'POST') {
         const guard = checkStateChange(req)
         if (guard !== undefined) { json(res, 400, { error: guard }); return true }

@@ -1276,10 +1276,29 @@ turn/end   ─▶ 按实际喂入段数推进游标 ─▶ 解除掩码 ─▶ �
 | 我接的东西 | 它读什么 | 上游谁写 | 判定 |
 | :--- | :--- | :--- | :--- |
 | `failover-hooks` 的候选链 | `model_routes` | `seedOpenCodeGoRoutes` / `seedDeepSeekFallback` **真的会写** | ⚠️ **已修**（断言改用宿主给的路由，不再取 `candidates()[0]`；commit `93fa2f2`） |
-| `feed-turn-hook` 的**运行登记** | `forlife_state` 的 `feed_run` 键 | ★ **没有任何生产调用方调 `startFeedRun()`**（全仓只有两个测试文件调它） | ❌ **洞还在** |
+| `feed-turn-hook` 的**运行登记** | `forlife_state` 的 `feed_run` 键 | ★ 原来**零生产调用方** | ✅ **已补**（见下） |
 | 工具掩码 | `ctx.tools` | 宿主提供 | ✅ |
-| 崩溃守卫 | `process` | —— | ✅ |
+| 崩溃守卫 | `process` | —— | —— |
 | 日志落点 | 谁调 `createLogger` | 已迁移的文件 | 🟡 长尾未迁完（见 §21） |
+
+### ✅ 那个洞已补（2026-10-10，两个提交 + 一条守卫）
+
+1. `de80a91` 写了入口函数 `startFeedRunFromFiles()`（把文件清单 → 运行登记）——
+   ⚠️ **但它当时也是零调用方**，我在那个提交里如实写了"这只补了一半"
+2. `api.ts` 加了 `POST /api/admin/feed-run`：
+   `{source, as, perTurn, dir}` → `listFeedFiles(dir)` → `startFeedRunFromFiles(...)`
+   ⇒ **生产路径上真的有调用方了**
+3. **接线守卫**（`test/feed-run-endpoint-wiring.test.ts`，6 条，读源码）钉住：
+   真的有调用方 · 端点**必须排在 `/feed` 之前**（TS 收窄 + 顺序匹配两个理由）·
+   枚举用 `listFeedFiles` 而不是自己 `readdirSync`（否则二进制文件会进清单）·
+   回包里带 `fedThrough`（断点续传对用户可见）· 空目录/空来源/空目录名明确拒绝 ·
+   危险动作走 `checkStateChange` + 审计
+
+⚠️ **仍差一步（面向前端）**：面板还没有调这个端点的界面。
+所以"用户能点一下开始投喂"这件事**还没通** —— 但**机制这一侧通了**
+（HTTP 调它即可，`curl` 就能启动一次投喂）。
+**不要因为 §23 打了勾就以为面板上能点了。**
+
 
 ### ❌ 还没补的那个洞：`startFeedRun()` 零生产调用方
 
