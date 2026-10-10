@@ -208,6 +208,9 @@ export {
   startFeedRun,
 } from './feed-run.ts'
 export type { FeedRun, FeedRunSegment } from './feed-run.ts'
+// ★ 「开始投喂」的入口 —— `FIX_PLAN.md` §23 那个洞（`startFeedRun` 此前零生产调用方）
+export { planSegmentsFromFiles, startFeedRunFromFiles } from './feed-run-start.ts'
+export type { StartFeedRunOptions } from './feed-run-start.ts'
 // ── 「投喂前更新」（源刷新）────────────────────────────────────────────
 // 任何入口（工具 / HTTP / CLI）在写入之前都必须经过这道闸（闸门在 `feedInput()` 里）；
 // 命令与凭据由**部署**给（环境变量 `FORLIFE_FEED_REFRESH_COMMAND`），**不进仓库**。
