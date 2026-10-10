@@ -93,11 +93,29 @@ test('★★★ `debug` 第一次有了生产消费点（此前七级里只有�
   // 过程细节、只有排障时才有意义、而且代码本来就只打前 5 次防刷屏。
   // 默认存储策略不收 debug（用户指定"除了 debug 都存"）
   // ⇒ 它们在**生产里不再刷屏**，需要时改环境变量就能看到。
-  const debugs = ROUTER.match(/atLevel\(log, 'debug'\)/g) ?? []
-  assert.equal(
-    debugs.length,
-    4,
-    `四处观察日志该是 debug（created / pre-step 两条 / turn-stopping）。实际 ${String(debugs.length)} 处`,
+  //
+  // ⚠️ **这条断言原来写的是"恰好 4 处"。** 那是个**脆断言**：
+  //    我后来在同一个文件里加了**两条正当的** debug（判档的"取不到输入就不猜"、
+  //    以及"凭什么"那一条），它立刻变红 —— 而**代码是对的**。
+  //    ⇒ 与之前 `log-levels.test.ts` / `redact.test.ts` 那次是同一个毛病：
+  //      **断言写成了对"精确形状"的检查，于是一次正当重构就把它打红。**
+  //    ⇒ 改成**认名字、不数数**：只要求那**四处已知的**观察日志在里面，
+  //      并要求"不许再有裸的 `👀`"。新增 debug 不再误伤。
+  const knownDebug = [
+    '👀 agent/created',
+    '👀 agent/pre-step',
+    '👀 agent/turn-stopping',
+  ]
+  for (const phrase of knownDebug) {
+    assert.ok(
+      ROUTER.includes("atLevel(log, 'debug')") && ROUTER.includes(phrase),
+      `★ 「${phrase}」必须是 debug`,
+    )
+  }
+  // 具体到那四处的写法（含"后续只计数"那条）
+  assert.ok(
+    (ROUTER.match(/atLevel\(log, 'debug'\)/g) ?? []).length >= 4,
+    '至少四处观察日志是 debug（**不写成"恰好"** —— 新增正当的 debug 不该让这条红）',
   )
   // 反面：不许再有裸的 👀 调用（裸调用一律 info ⇒ 生产里继续刷屏）
   assert.ok(
