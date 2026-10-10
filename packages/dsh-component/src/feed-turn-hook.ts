@@ -53,7 +53,7 @@ import {
   type FeedRun,
 } from '@forlife/gateway'
 
-import { FEED_ALLOWED_TOOLS, type ToolRestrictHost } from './feed-restrict.ts'
+import { restrictToolsForFeed, type ToolRestrictHost } from './feed-restrict.ts'
 
 /** 依赖（全部注入，便于在无 DSH 环境里测）。 */
 export interface FeedTurnHookDeps {
@@ -123,11 +123,19 @@ export function createFeedTurnHook(deps: FeedTurnHookDeps): FeedTurnHook {
     releaseMask()
     if (deps.tools === undefined) return
     try {
-      const handle = deps.tools.restrict({ allow: new Set(FEED_ALLOWED_TOOLS) })
-      mask = () => {
-        handle.dispose()
-      }
-      log(`投喂期工具已收窄：只保留 ${String(FEED_ALLOWED_TOOLS.length)} 个（记忆 + 文件读写）`)
+      // ★★ 2026-10-10：**改成调用 `restrictToolsForFeed()`**，不再内联抄一遍。
+      //
+      //   原来这里自己写了 `deps.tools.restrict({ allow: new Set(FEED_ALLOWED_TOOLS) })` ——
+      //   与 `feed-restrict.ts:136` **一模一样的一份**。于是那个导出函数
+      //   **零外部引用**（扫出来的），两处并行演化。
+      //
+      //   ⚠️ 而两处**并不等价**：包装那份**处理了幂等**
+      //   （`disposed` 标志，注释写着"`finally` 和超时路径各调一次，第二次不许炸"），
+      //   内联这份**没有** ⇒ 解除被调两次时 `handle.dispose()` 抛异常 ⇒
+      //   正好落进下面那句「解除工具掩码失败」的日志里。
+      //
+      //   ⇒ 抄一份的代价不只是"重复"，而是**抄的那份少了后来补上的修正**。
+      mask = restrictToolsForFeed(deps.tools, log)
     } catch (error: unknown) {
       log(`⚠️ 收窄工具失败（这一轮不做限制，但**不假装成功了**）：${String(error).slice(0, 120)}`)
     }
