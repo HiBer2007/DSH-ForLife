@@ -161,7 +161,32 @@ export type { FeedPiece } from './feed-chunk.ts'
 export { FEED_FRAME_PLACEHOLDERS, feedDigestNote, feedKindLabel, feedModeText, renderFeedFrame } from './feed-frame.ts'
 export { FEED_READ_CHUNK_CHARS, FEED_SKIP_DIRS, FEED_TEXT_EXTENSIONS, FeedBinaryError, listFeedFiles, readFeedFilePieces, sourceOfFeedFile } from './feed-ingest.ts'
 export { FEED_SESSION_KEY, advanceFeedSession, beginFeedSession, endFeedSession, readFeedSession, sessionRefreshOf } from './feed-session.ts'
-export type { FeedSession, FeedSessionRefresh } from './feed-session.ts'
+export type { FeedSession, FeedSessionRefresh, FeedSessionBatch } from './feed-session.ts'
+
+// ── 投喂：断点续传 / 一轮一批 / 模型驱动（用户 2026-10-10 指定）───────────────
+export {
+  FEED_CURSOR_PREFIX,
+  advanceFeedCursor,
+  clearFeedCursor,
+  feedCursorKey,
+  listFeedCursors,
+  readFeedCursor,
+  writeFeedCursor,
+} from './feed-cursor.ts'
+export type { FeedCursor } from './feed-cursor.ts'
+export { describeFeedPlan, nextFeedTurn, pendingFeedTurns } from './feed-plan.ts'
+export type { FeedPlan, FeedPlanOptions, FeedTurnRange } from './feed-plan.ts'
+export { DEFAULT_FEED_TURN_TIMEOUT_MS, runFeedTurn } from './feed-turn.ts'
+export type { FeedBatchFn, FeedTurnOptions, FeedTurnOutcome, FeedTurnTools } from './feed-turn.ts'
+export {
+  FEED_RUN_KEY,
+  describeFeedRunBatch,
+  endFeedRun,
+  readFeedRun,
+  sliceSegments,
+  startFeedRun,
+} from './feed-run.ts'
+export type { FeedRun, FeedRunSegment } from './feed-run.ts'
 // ── 「投喂前更新」（源刷新）────────────────────────────────────────────
 // 任何入口（工具 / HTTP / CLI）在写入之前都必须经过这道闸（闸门在 `feedInput()` 里）；
 // 命令与凭据由**部署**给（环境变量 `FORLIFE_FEED_REFRESH_COMMAND`），**不进仓库**。
