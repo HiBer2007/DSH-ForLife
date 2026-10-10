@@ -1923,6 +1923,71 @@ npm warn install-scripts   koffi@3.1.1 / node-pty / @google/genai / protobufjs �
 （要收口就得显式 `--allow-scripts=...`，而那等于**信任这几个包**，属于要单独决定的事。）
 
 
+---
+
+## 33. ★★ **P3 被自己的闸门拦住了 —— 而且它是对的**（2026-10-10 实查）
+
+> P3 是「彻底清空记忆 → 重新检查更新 → **重新导入**」。
+> 我按纪律**先验证恢复路径再动破坏性操作** —— 结果**恢复路径是断的**。
+> ⇒ **没有清空任何东西。** 这一节记下断在哪、为什么断、以及要补什么。
+
+### 断点：投喂前的**源刷新闸门**（用户 2026-10-09 裁定的机制）
+
+代码位置：`feed-batch.ts:471-485`
+```
+闸门一：**投喂前必须先刷新源**
+  resolveFeedRefresh(...) → 不通过 ⇒ return failure
+  runFeedRefresh(...)     → 不 ok ⇒ `投喂前的源刷新未通过：…` ⇒ **不写任何记忆**
+```
+
+刷新的实现在 `.runtime/chat-segv2-tool/refresh.mjs`（3.1 KB），它**只做一件事**：
+读段包里的 **`SOURCE.json`**（`preparedAt` / `segments` / `seg1Items` / `seg2Items`），
+**超过 `FEED_STALE_MINUTES`（默认 1440 = 24 小时）就拒绝喂**。
+
+它自己的注释把理由写得很好：
+> 段包是源的快照。用几天前的快照重喂是**破坏性**的：同一 `--source` 重导会按
+> "更新那一份东西"处理，源里新增的内容不在快照里 ⇒ **那段新记忆永远不会进来**，
+> 而且**没有任何报错** —— 看起来一切正常。
+
+### 实查：三道都不通
+
+| # | 事实 | 证据 |
+| :--- | :--- | :--- |
+| ① | ★ **`SOURCE.json` 全 `.runtime` 里都不存在** | 段包里只有 `MANIFEST.json`（**是数组**，没有 `preparedAt`）；备份目录 `chat-feed-v2-bak-396` 里也只有 `MANIFEST.json` ⇒ `refresh.mjs` 会判「**这份段包不是 feed-prepare.ps1 产出的**」 |
+| ② | ★★ **`feed-prepare.ps1` 根本不存在** | `refresh.mjs:55` 让你回 Windows 跑它 —— **而它没被写出来**。`.runtime` 里只有 `fetch-deepseek-chat.ps1`（4.9 KB，拉源）与 `feed-all.sh`（4.7 KB） |
+| ③ | ★ **段包已经 26 小时** | 段文件时间 `10-09 15:52`，现在 `10-10 17:55` ⇒ **超过 24 小时上限**（就算 ① 补上也会被拒） |
+
+### ⇒ 判决：**不清空**
+
+清空 = 毁掉**唯一的加工品**（10,914 条 mid / 1.52M token），而**恢复路径不通**。
+备份（`forlife-before-p3-2026-10-10T09-51-08.sqlite`）能兜底，
+但**兜底是最后手段，不是第一手段**。
+⇒ **闸门存在的意义正是拦住我刚才要做的事，它生效了。**
+
+### 要补什么才能做 P3（按依赖顺序）
+
+1. **写 `feed-prepare.ps1`**（**缺的就是它**）。它要串起：
+   `fetch-deepseek-chat.ps1`（重新拉源）→ `chat-segv2-tool/generate.py`（重新切分）
+   → **写 `SOURCE.json`**（`preparedAt` = 现在、`segments` = 实际段数、`seg1Items`/`seg2Items`）
+   → 打包。★ **闸门要的 `items=<n>` 标记来自基线 `feed.refresh.itemsMarker`**，别改格式。
+2. **拉源要凭据**：`refresh.mjs:6-8` 写明源是 DeepSeek **网页端**导出，
+   只能从"有登录态的那一侧"拉（`HWWAFSESID` / `ds_session_id` cookie）——
+   **容器里没有、也不该有**。⇒ **这一步必须用户在场**（或者给一份新鲜快照）。
+3. `SOURCE.json` 到位且新鲜之后，再按 P3 走：清空 → 重导。
+
+### 顺带解开的两个旧谜
+
+- ★ **`compaction_runs: 0` 的谜底**（`feed-batch.ts:13-18` 原文）：
+  `renderView()` 曾把**整张中期记忆表**（10,794 条 / **1,504,850 token**）全量渲染进提示词
+  ⇒ `CONTEXT_WINDOW_EXCEEDED` ⇒ **压缩永远不触发**（压缩看上下文占比，而上下文一开始就爆）
+  ⇒ `compaction_epoch` 恒 0、`long_memory_entries` 恒 0 ⇒ **四层流水线第一层就堵死**。
+- ★ **重导**大概率**不用模型**（与"71 轮 × 24k token"的担心相反）：
+  `feed-batch.ts:29-34` 写明每批走 `feedMemory()`（`insertLongEntry` / `appendMidEntry` /
+  检索判重 / 归档），那是**写库**，本模块只做调度。
+  ⚠️ 但**这一条我还没实读到 `feedMemory` 内部**，所以先记为"大概率"、不当作结论。
+
+
+
 
 
 
