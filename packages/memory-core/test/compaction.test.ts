@@ -6,6 +6,7 @@
  * 测试是第三方见证，不能跟着实现一起漂。
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import {
@@ -254,13 +255,63 @@ test('碎片 §5.3：总量限制 —— 占比越过上限即停止新增，并
   assert.equal(over.toArchive[0], 'M1', '淘汰最久未访问的')
 })
 
-test('碎片 §5.3：绝对上限 50 条', () => {
+test('★★ 碎片 §5.3-2：两个上限是「或」，不是「且」—— 计数到顶但占比很低时**继续**碎片化', () => {
+  // `FIX_PLAN.md` §44 / D7：PLAN.MD §5.3-2 原文「≤ 15-20%，**或**绝对上限 50 条」。
+  // 这个用例钉住的是**或**：计数已 ≥ 50，但占比 1/100001 ≈ 0.001% 远低于 20% ⇒ 应当继续。
   const candidates = [
     { id: 'M1', summary: 'a', entities: [], tokenCount: 1, lastAccessedAt: null, createdAt: '2026-01-01T00:00:00.000Z' },
   ]
   const plan = planFragmentation(candidates, { activeTokens: 100000, fragmentTokens: 1, fragmentCount: 50 })
+  assert.deepEqual(plan.toFragment, ['M1'], '计数到顶但占比远低 ⇒ 按「或」必须继续（原实现会错误地一条都不给）')
+  assert.ok(
+    plan.notes.some((n) => n.includes('50') && n.includes('继续')),
+    '要说明"为什么这里没停"（可观测性）',
+  )
+})
+
+test('★★ 碎片 §5.3-2：「且」的时候必须停 —— 计数与占比**双双**到顶', () => {
+  const candidates = [
+    { id: 'M1', summary: 'a', entities: [], tokenCount: 1, lastAccessedAt: null, createdAt: '2026-01-01T00:00:00.000Z' },
+  ]
+  // 占比 90/(10+90) = 90% ≥ 20% **且** 计数 50 ≥ 50 ⇒ 两个都满 ⇒ 停
+  const plan = planFragmentation(candidates, { activeTokens: 10, fragmentTokens: 90, fragmentCount: 50 })
+  assert.deepEqual(plan.toFragment, [], '双满时必须停')
+  assert.ok(
+    plan.notes.some((n) => n.includes('双重')),
+    '要指出是"双重上限"（否则读日志的人会以为只是其中一个到顶）',
+  )
+  assert.ok(plan.toArchive.length > 0, '超限时仍要给出淘汰候选')
+})
+
+test('碎片 §5.3：独立预算 —— 碎片与活跃分别计量', () => {
+  const plan = planFragmentation([], { activeTokens: 800, fragmentTokens: 200, fragmentCount: 5 })
+  // 200/1000 = 20% 恰好到顶 ⇒ 不该再加
   assert.deepEqual(plan.toFragment, [])
-  assert.ok(plan.notes.some((n) => n.includes('50')))
+  assert.ok(plan.notes.some((n) => n.includes('占比')))
+})
+
+// ── 接线守卫：读源码、**去注释后**断言语义（`FIX_PLAN.md` §11 的硬约束）──────────
+test('★★ 接线守卫：`planFragmentation` 里两个上限必须是「且才停」，不许退回"任一就停"', () => {
+  const src = readFileSync(new URL('../src/compaction.ts', import.meta.url), 'utf8')
+  // 去掉块注释与行注释 —— 否则注释里引用的旧写法会让守卫假绿
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  const start = code.indexOf('export function planFragmentation(')
+  assert.ok(start > 0, '找不到 planFragmentation —— 函数被改名/搬走了？')
+  const body = code.slice(start, code.indexOf('\nexport ', start + 10) + 1 || code.length)
+
+  assert.match(body, /const countFull = stats\.fragmentCount >= maxCount/, '计数上限要先算成一个布尔')
+  assert.match(body, /const ratioFull = currentRatio >= maxAreaRatio/, '占比上限要先算成一个布尔')
+  assert.match(body, /if \(countFull && ratioFull\) \{/, '★ 必须是「两个都满才停」—— 这里是 D7 的要害')
+  assert.ok(
+    !/if \(stats\.fragmentCount >= maxCount\) \{/.test(body),
+    '★ 不许退回"计数一到顶就独立 return"（那就是 §44 修掉的「且」语义）',
+  )
+  assert.ok(
+    !/if \(currentRatio >= maxAreaRatio\) \{/.test(body),
+    '★ 不许退回"占比一到顶就独立 return"（同上；占比要留到下面那道 `if (ratioFull)`）',
+  )
 })
 
 test('碎片 §5.3：合并规则 —— entities 重叠的碎片成组', () => {

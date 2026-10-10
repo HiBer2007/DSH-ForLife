@@ -385,11 +385,45 @@ export function planFragmentation(
 
   const totalTokens = stats.activeTokens + stats.fragmentTokens
   const currentRatio = totalTokens === 0 ? 0 : stats.fragmentTokens / totalTokens
-  if (stats.fragmentCount >= maxCount) {
-    notes.push(`碎片已达绝对上限 ${String(maxCount)} 条，不再新增（应先淘汰或合并）`)
+
+  // ★★ 2026-10-10（`FIX_PLAN.md` §44 / D7）：PLAN.MD §5.3-2 的原文是
+  //   「**总量限制**：碎片索引占中期记忆区 ≤ 15-20%，**或**绝对上限 50 条。」
+  //   —— 两个上限是**或**关系，**不是且**。
+  //
+  //   原实现是两道各自 `return` 的早退（任一超了就停）⇒ 实际语义是"且"。
+  //   代价在线上显现了：真机 **200 条碎片 / 占比 0.53%**，
+  //   却因为"计数 ≥ 50"被拦住 ⇒ **沉降循环每 30 分钟空转一次，`long_memory_entries` 冻结在 400**
+  //   （`FIX_PLAN.md` §40 记的就是这个现象）。
+  //
+  //   ★ 为什么"或"才是本意（两条互相独立的证据）：
+  //   ① 姊妹键 `memory.midWindow.maxCount` 的 `src` 写明计数上限
+  //      「**只在畸形表上生效，不会误伤**」—— 要满足这句，它在正常运行时就不能生效；
+  //   ② 算术对不上：占比上限 20% × `memory.midBudgetTokens`（500k）÷ `fragment.maxHintTokens`（80）
+  //      ≈ **1,250 条**。若 50 是硬上限，占比上限**永远到不了**（50×80 = 4,000 token = 0.8%）
+  //      ⇒ 规格里的两个数会有一个变成死条文。
+  //
+  //   ⇒ 计数上限是「超短条目导致写入侧失控」的**防呆信号**，不是正常运行的容量上限。
+  //     真正的容量约束是占比，而它**在下面的逐候选循环里仍然逐条把关**（含投影占比）。
+  const countFull = stats.fragmentCount >= maxCount
+  const ratioFull = currentRatio >= maxAreaRatio
+  if (countFull && ratioFull) {
+    notes.push(
+      `碎片已达**双重**上限（计数 ${String(stats.fragmentCount)} ≥ ${String(maxCount)} 条，` +
+        `且占比 ${(currentRatio * 100).toFixed(1)}% ≥ ${(maxAreaRatio * 100).toFixed(0)}%），` +
+        '不再新增（应先淘汰或合并）',
+    )
     return { toFragment: [], mergeGroups: [], toArchive: pickEvictions(candidates), notes }
   }
-  if (currentRatio >= maxAreaRatio) {
+  if (countFull) {
+    // ★ 只是计数到顶、占比还远 ⇒ 按 §5.3-2 的「或」**继续**碎片化。
+    //   但要**说出来**：这条 note 就是"为什么这里没停"的凭据（可观测性）。
+    notes.push(
+      `碎片计数 ${String(stats.fragmentCount)} 已达上限 ${String(maxCount)} 条，` +
+        `但占比 ${(currentRatio * 100).toFixed(1)}% 远低于上限 ${(maxAreaRatio * 100).toFixed(0)}%` +
+        ' ⇒ 按 §5.3-2 的「或」继续碎片化（计数上限是畸形表的防呆信号，非容量上限）',
+    )
+  }
+  if (ratioFull) {
     notes.push(
       `碎片占比 ${(currentRatio * 100).toFixed(1)}% 已达上限 ${(maxAreaRatio * 100).toFixed(0)}%，不再新增（应先淘汰或合并）`,
     )
