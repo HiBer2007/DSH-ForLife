@@ -1332,3 +1332,69 @@ turn/end   ─▶ 按实际喂入段数推进游标 ─▶ 解除掩码 ─▶ �
 第一种至少函数会报错，第二种**表现完全等同于"这个功能没启用"**。
 
 
+---
+
+## 24. 部署拓扑实查（2026-10-10）：**没部署过**，以及"部署要做什么"
+
+> 用户问：「面板没有更新，你真的部署了吗？」
+> ⇒ **没有。** 用户原话是「**部署稍后，把所有东西修完先**」，本会话一直照此执行。
+> 这一节把**实查到的证据**与**部署的实际形状**记下来，
+> 免得下次（包括我自己）重新推一遍、或者以为"改了就会生效"。
+
+### 证据：今天的工作**一行都不在容器里**
+
+| 查什么 | 结果 |
+| :--- | :--- |
+| 容器创建时间 | `gateway` = 2026-10-09 11:13 · `dsh` = 10-09 14:30 · `caddy`/`qq` = 10-08 10:00 —— **都早于今天** |
+| 镜像 | `forlife-app:local` 构建于 **2026-10-09 22:30** |
+| 今天新增的代码 | `grep -rl startFeedRunFromFiles /app/packages` ⇒ **零命中** |
+| 今天新增的面板文案 | `grep -rl '开始投喂（一段一段来）'` ⇒ **零命中** |
+
+（本会话最后一个提交是 **2026-10-10 13:29**，当天共 45 个提交。）
+
+### 部署的实际形状（查出来的，不是猜的）
+
+- **`/opt/forlife`** —— compose 工程 `forlife`，工作目录 `/opt/forlife/deploy`
+- ★ **它不是 git 仓库**（是**拷贝**，最后更新 2026-10-09 15:54）⇒ 部署**不是 `git pull`**
+- ★ **`/app` 不是挂载**（挂载只有 `/data`、`/data/dsh`、`/cold`、`/run/caddy` 四个数据卷）
+  ⇒ **源码烤在镜像里，必须重建镜像**；面板产物也要重新 build
+- 进程是 `node packages/gateway/src/server.ts`（Node 24 strip-types 直接跑 TS）
+
+⇒ 部署大致是：**同步仓库树 → 重建 `forlife-app` 镜像 → `up -d --no-deps` 点名重建
+（★ **除了 `qq`**）→ 比对容器 ID（`qq` 那个必须不变）**。
+
+### ★ `docker-compose.override.yml` 的实查结论：**没生效，而且是多余的**
+
+`/opt/forlife/deploy/` 里有一个**不在仓库里**的 `docker-compose.override.yml`，
+它自己的注释写着两条理由，**其中第一条现在已经不成立**：
+
+> 「仓库的 `deploy/docker-compose.yml` **全篇没有** `FORLIFE_ROOT_*` ⇒ 冷热会落在同一个卷上」
+
+实查：仓库的 `docker-compose.yml` **有**（`:103-105`、`:135`、`:180-182`、`:249`），
+而且带着注释「★ **2026-10-07 真机部署发现**：原来一个 tier 根都没设」——
+**说明后来补上了，而 override 的注释停在补之前**。
+
+| 文件 | `FORLIFE_ROOT_*` / `ARCHIVE` / `BACKUP` |
+| :--- | :--- |
+| `docker-compose.yml`（仓库） | **有**（4 处） |
+| `docker-compose.dev.yml` | 无 |
+| `docker-compose.override.yml` | 有（4 处，**与主文件重复**） |
+
+⇒ **结论**：四个容器的 `com.docker.compose.project.config_files` 都只有
+`docker-compose.yml` + `docker-compose.dev.yml` ⇒ **override 没被加载**；
+而它的内容主文件都有 ⇒ **用硬约束那条命令部署不会丢任何东西**（冷层设置来自主文件）。
+⚠️ 反过来说：**不带 `-f` 跑 `docker compose up` 会自动捡起它** —— 两处同名设置是个**陷阱**
+（"我改的东西没生效"那一类）。**部署时始终显式列 `-f`。**
+
+### ★★ 一个部署后会立刻显形的默认值
+
+`docker-compose.yml` 里：`FORLIFE_ROUTER_MODE: ${FORLIFE_ROUTER_MODE:-observe}` ——
+**容器里的默认是 `observe`，不是 `off`**（`resolveRouterMode()` 在未设时才默认 `off`）。
+
+⇒ 部署之后：`installModelRouter` 与**新接的 `installFailoverHooks`**
+都会**订阅并打日志、但不改模型**（failover 的 `👀 failover(observe)` 那一行会出现在日志里）。
+**这正是"先 observe 再 apply"那条纪律要的效果** —— 它会让新接线**可见**，
+而不是静默生效或静默失效。
+
+
+
