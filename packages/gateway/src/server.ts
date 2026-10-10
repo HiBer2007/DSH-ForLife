@@ -30,6 +30,8 @@ import { disabledLevelsFromEnv } from './admin/log-levels.ts'
 import { installLogSink } from './admin/log.ts'
 // ★ 落盘 + 保留期（用户 2026-10-10「可以设置保留事件」）
 import { createLogStore, resolveLogDir, retentionDaysFromEnv } from './admin/log-store.ts'
+// ★ 进程级失败守卫：让 `crash` 那一级真的有内容（此前全仓没有任何处理器）
+import { installCrashGuard } from './admin/crash-guard.ts'
 import { redact } from './redact.ts'
 import { serveStatic } from './admin/static.ts'
 import { startGatewayRuntime, type RunningGatewayRuntime } from './runtime.ts'
@@ -388,6 +390,13 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env): {
 
 /** CLI 入口：`node --experimental-strip-types packages/gateway/src/server.ts`。 */
 async function main(): Promise<void> {
+  // ★★ **第一件事**：装上进程级守卫（用户 2026-10-10 的七级里，`crash` 那一级
+  //    此前**永远是空的** —— 全仓没有任何 uncaughtException/unhandledRejection 处理器）。
+  //
+  //    必须在其它一切之前：装在后面的话，启动阶段崩了照样没有日志。
+  //    从**入口**装而不是从 `start()`：后者会被测试反复调用 ⇒ 处理器叠一堆。
+  installCrashGuard()
+
   const config = resolveRuntimeConfig()
   const log = (message: string): void => {
     process.stdout.write(`${message}\n`)
