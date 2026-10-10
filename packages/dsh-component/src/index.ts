@@ -53,6 +53,8 @@ import { startWakeHost } from './wake-host.ts'
 import { createFeedTurnHook } from './feed-turn-hook.ts'
 // ★ 日志汇（`FIX_PLAN.md` §26）：让插件的日志能进网关的日志库 ⇒ 面板可见
 import { createPluginLogSink } from './log-sink.ts'
+// ★ 宿主契约探针：在启动路径上跑一次（`doctor.mjs` 自己说这才是可行做法）
+import { runDoctor } from './host-contract.ts'
 import { guessLevel, type LogLevel } from '@forlife/gateway'
 import type { ToolRestrictHost } from './feed-restrict.ts'
 import { registerLoopGuard } from './loop-guard-register.ts'
@@ -634,6 +636,42 @@ export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}):
   })
   pluginLog = sink
   always(`插件日志汇：写入 ${sink.dir}（与网关的日志库同一个目录 ⇒ 面板可见）`)
+
+  // ★★ 2026-10-10：**在启动路径上跑一次宿主契约探针**。
+  //
+  //   为什么必须在这里跑：`scripts/doctor.mjs` 自己写着 ——
+  //   「`ctx` 是宿主的，**不外传**……真宿主探测的**可行做法**是在插件 apply 时
+  //    **顺手跑一次**并写日志」。**而那件事从来没做** ⇒
+  //   `runDoctor` 只有 CLI 脚本会用 ⇒ **契约探针在生产里从不运行**。
+  //
+  //   后果正是 `host-contract.ts` 模块头点名要防的那件事：
+  //   「升级 DSH 版本后，`forlife doctor` 明确报出契约不匹配点」——
+  //   而没人会记得在升级后手动去跑那个脚本。
+  //
+  //   ⚠️ 它是**纯读**（不注册、不订阅、不改状态 —— 模块头的纪律）⇒ 放启动路径上安全。
+  //   ★ 放在**日志汇建好之后**：这样契约报告会进日志库、**在面板上看得到**，
+  //     而不只是 `docker logs` 里的一行。
+  try {
+    const report = runDoctor(ctx as never)
+    if (report.verdict === 'ok') {
+      always(`宿主契约：${report.summary}`)
+    } else if (report.verdict === 'degraded') {
+      // 缺 optional **不等于坏** —— 是"降级可用"，所以 warn 而不是 fault
+      pluginLog.write('warn', `宿主契约：${report.summary}`)
+      for (const row of report.missingOptional) {
+        pluginLog.write('note', `   ↳ 缺（降级）：${row.id} —— ${row.what}`)
+      }
+    } else {
+      // 缺 required ⇒ 记忆本体不可用 ⇒ **一个子系统不可用** = fault
+      pluginLog.write('fault', `宿主契约：${report.summary}`)
+      for (const row of report.missingRequired) {
+        pluginLog.write('error', `   ↳ 缺（必需）：${row.id} —— ${row.what}`)
+      }
+    }
+  } catch (error: unknown) {
+    // ★ 诊断自己绝不能把启动搞崩（`safeProbe` 已兜一层，这里再兜一层）
+    log(`宿主契约探针自身出错（已忽略）：${String(error).slice(0, 160)}`)
+  }
   let runtime: MemoryRuntime
   try {
     runtime = new MemoryRuntime({ config, dbPath, log })

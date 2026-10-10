@@ -175,4 +175,22 @@ test('★★★ 接线守卫：`log` **和** `always` 都必须把日志写进�
   )
   // ★ 目录必须与网关同源：`FORLIFE_LOG_DIR` 优先
   assert.match(src, /FORLIFE_LOG_DIR/, '★ 目录要认 `FORLIFE_LOG_DIR` —— 两边必须算出同一个目录，否则写进没人读的地方')
+
+  // ★★ 2026-10-10 顺带钉住**同一段启动路径**上的另一件事：
+  //   `scripts/doctor.mjs` 自己写着「真宿主探测的**可行做法**是在插件 apply 时
+  //   **顺手跑一次**并写日志」，而那件事**从来没做** ⇒ 契约探针在生产里从不运行。
+  //   ⇒ 现在它在 `apply()` 里跑了；这条钉住它别再被摘掉。
+  //   （放在这个文件里是因为它已经在读 `src/index.ts` 的启动路径；
+  //    语义上属于"启动路径接线"，与日志汇是同一段代码。）
+  assert.match(src, /runDoctor\(ctx as never\)/, '★★ 启动路径必须跑一次宿主契约探针（否则升级 DSH 后没人会知道契约断了）')
+  assert.match(
+    src,
+    /pluginLog\.write\('fault', `宿主契约：/,
+    '★ 缺 `required` ⇒ 记忆本体不可用 ⇒ **一个子系统**不可用 ⇒ 必须是 `fault`（不是 info）',
+  )
+  assert.match(
+    src,
+    /pluginLog\.write\('warn', `宿主契约：/,
+    '★ 只缺 `optional` ⇒ 降级可用 ⇒ warn；这与上一条的**分界**正是 host-contract 的三档结论',
+  )
 })
