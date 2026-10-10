@@ -82,11 +82,6 @@ export interface InstallFailoverOptions {
   readonly candidates: RouterHookOptions['candidates']
   readonly record: RouterHookOptions['record']
   readonly log: (message: string) => void
-  /** 按档位判定"这一步该用谁"（缺省 = 候选链第一个）。 */
-  readonly assertRoute?: (input: {
-    readonly turn: number
-    readonly step: number
-  }) => { readonly provider: string; readonly model: string } | undefined
 }
 
 /** 装上之后拿到的东西。 */
@@ -127,37 +122,45 @@ export function installFailoverHooks(ctx: HostLike, options: InstallFailoverOpti
     return { dispose: () => undefined, swaps: () => 0 }
   }
 
-  const assertRoute =
-    options.assertRoute ??
-    ((): { provider: string; model: string } | undefined => {
-      const first = options.candidates()[0]
-      return first === undefined ? undefined : { provider: first.provider, model: first.model }
-    })
-
   const stepKeyOf = (turn: number, step: number): string => `${String(turn)}:${String(step)}`
 
   // ── ① agent/request：每步重新断言（防粘性）────────────────────────────
+  //
+  // ★★ **断言的就是"宿主自己给的那条路"，不是候选链第一个。**
+  //
+  //   第一版我用了 `assertRoute ?? candidates()[0]`，那是**错的**，而且错得和
+  //   用户的目标相反：`seedOpenCodeGoRoutes()`（`route-seed.ts:162-165`）把
+  //   **L2/L3 的 rank 0 种成 `opencode-go`** —— 而那正是用户说的
+  //   「GO 额度实际上只有百分之 9」那家。于是只要有人开 `apply`，
+  //   这一层就会把**每一个**请求从（P2-b 刚倾过去的）DS 官方换到快没额度的 GO 上。
+  //
+  //   ⇒ 正确的语义是：**failover 只在"宿主那条路失败"之后才偏离它**。
+  //     `beginStep` 断言宿主给的那条路 ⇒ 新的一步回到基线（**防粘性**），
+  //     而同一步内重跑保持已换的路由（**幂等**，`assertRouteForStep` 保证）。
+  //     两件事都还在，只是"基线"改用宿主自己的选择。
   const requestDisposer = on('agent/request', async (payload, next) => {
     const config = (await next()) as LlmCallConfigLike
     const input = (payload ?? {}) as { turn?: unknown; step?: unknown }
     const turn = typeof input.turn === 'number' ? input.turn : 0
     const step = typeof input.step === 'number' ? input.step : 0
 
-    const asserted = assertRoute({ turn, step })
-    if (asserted === undefined) return config
     if (options.mode !== 'apply') {
-      // observe：**只说不做** —— 但要说清"如果开了会换成谁"
+      // observe：**只说不做** —— 但要说清"如果降级，会换到谁"
+      const next0 = options.candidates()[0]
       log(
-        `👀 failover(observe) 第 ${stepKeyOf(turn, step)} 步：宿主给的是 ${config.provider}/${config.model}，` +
-          `若开启会断言成 ${asserted.provider}/${asserted.model}`,
+        `👀 failover(observe) 第 ${stepKeyOf(turn, step)} 步：宿主给的是 ${config.provider}/${config.model}` +
+          (next0 === undefined ? '' : `；若这一步失败，候选链下一个是 ${next0.provider}/${next0.model}`),
       )
       return config
     }
 
-    const effective = options.failover.beginStep(stepKeyOf(turn, step), asserted)
+    const effective = options.failover.beginStep(stepKeyOf(turn, step), {
+      provider: config.provider,
+      model: config.model,
+    })
     if (effective.provider === config.provider && effective.model === config.model) return config
     log(
-      `🔀 failover：第 ${stepKeyOf(turn, step)} 步改用 ${effective.provider}/${effective.model}` +
+      `🔀 failover：第 ${stepKeyOf(turn, step)} 步继续用换过的 ${effective.provider}/${effective.model}` +
         `（宿主原本给的是 ${config.provider}/${config.model}）`,
     )
     return withRoute(config, effective.provider, effective.model)

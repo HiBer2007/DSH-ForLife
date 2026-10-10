@@ -75,60 +75,60 @@ function setup(options: { mode: 'off' | 'observe' | 'apply'; candidates?: readon
   return { host, rows: rec.rows, logs, hooks, failover, candidates }
 }
 
-test('★★★ 接管与否**与裁决逐字一致**：裁决是 swap ⇒ `{kind:"retry"}` 且 next 一次都没调', async () => {
+test('★★★ **没换过路由时，宿主给什么就是什么** —— 这一层不许自己挑模型', async () => {
+  // ⚠️ 这条测试替换掉了一条**测错行为**的旧断言（它要求"断到候选链第一个"）。
+  //
+  //   旧行为是**真 bug**，而且方向与用户的目标相反：
+  //   `seedOpenCodeGoRoutes()`（`route-seed.ts:162-165`）把 **L2/L3 的 rank 0 种成
+  //   `opencode-go`** —— 正是用户说的「GO 额度实际上只有百分之 9」那家。
+  //   于是只要开 `apply`，这一层会把**每一个**请求从（P2-b 刚倾过去的）DS 官方
+  //   换到快没额度的 GO 上。
+  //
+  //   ⇒ 正确语义：**只在宿主那条路失败之后才偏离它**。
+  const s = setup({ mode: 'apply' })
+  const req = s.host.handlers.get('agent/request')
+  assert.ok(req !== undefined)
+
+  // 宿主（= profile 的 `agent-default-model`，P2-b 把它倾到了 DS 官方）
+  const host = { provider: 'deepseek-official', model: 'deepseek-flash', temperature: 0.3, maxTokens: 4096 }
+  const first = (await req({ turn: 1, step: 1 }, async () => ({ ...host }))) as Record<string, unknown>
+
+  assert.equal(first['provider'], 'deepseek-official', '★ 一个失败都还没发生 —— 不许把它换到候选链第一个（那是 GO）')
+  assert.equal(first['model'], 'deepseek-flash')
+  assert.equal(first['temperature'], 0.3, '其余字段原样带过去')
+
+  // 新的一步（`1:2`）同样必须是宿主给的那条 —— 每一步都重新断言
+  const second = (await req({ turn: 1, step: 2 }, async () => ({ ...host }))) as Record<string, unknown>
+  assert.equal(second['provider'], 'deepseek-official', '★ 每一步都重新断言回宿主的选择（防粘性）')
+})
+
+test('★★★ 降级之后：**同一步**保留换过的路由，**新的一步**回到宿主的选择', async () => {
   const s = setup({ mode: 'apply' })
   const req = s.host.handlers.get('agent/request')
   const err = s.host.handlers.get('agent/request-error')
   assert.ok(req !== undefined && err !== undefined)
 
-  // ① 先跑一步 `agent/request`，把这一步的当前路由定下来（真实流程就是这样）
-  const config = (await req({ turn: 1, step: 1 }, async () => ({
-    provider: 'opencode-go',
-    model: 'deepseek-v4.1-flash',
-    temperature: 0.3,
-    maxTokens: 4096,
-  }))) as Record<string, unknown>
-  assert.equal(config['provider'], 'deepseek-official', '断言应当把第一步换成候选链第一个')
-  assert.equal(config['temperature'], 0.3, '★ 其余字段必须原样带过去（不许顺手抹掉）')
-  assert.equal(config['maxTokens'], 4096)
+  const host = { provider: 'deepseek-official', model: 'deepseek-flash' }
+  await req({ turn: 2, step: 1 }, async () => ({ ...host }))
 
-  // ② 喂**到阈值**（默认 3）：前两次该委托，第三次该我们自己接管。
-  //    ★ 只喂一次是测不到接管路径的 —— 那正是我上一轮判断错的地方。
-  const message = '500 server error'
-  const current = s.failover.currentRoute()
-  assert.ok(current !== undefined)
-
-  let nextCalled = 0
-  const results: unknown[] = []
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    results.push(
-      await err(
-        { turn: 1, step: 1, provider: current.provider, failure: { message, code: 'probe' } },
-        async () => {
-          nextCalled += 1
-          return undefined
-        },
-      ),
+  // 喂到阈值（3 次）让它真的换家
+  for (let i = 0; i < 3; i += 1) {
+    await err(
+      { turn: 2, step: 1, provider: host.provider, failure: { message: '500 server error', code: 'probe' } },
+      async () => undefined,
     )
   }
+  const swapped = s.failover.currentRoute()
+  assert.ok(swapped !== undefined)
+  assert.notEqual(swapped.provider, host.provider, '前置：到阈值之后应当已经换到别家')
 
-  // 前两次：裁决是 keep ⇒ **把裁决权交回宿主**（必须调 next()）
-  assert.equal(nextCalled, 2, '★ 前两次必须委托 —— 放弃裁决权又不调 next() 会让宿主卡在那里')
-  assert.deepEqual(results.slice(0, 2), [undefined, undefined], '委托时返回宿主的决定（这里是 undefined）')
+  // ① **同一步**再请求 ⇒ 沿用换过的路由（不然重试又回坏掉的那家）
+  const sameStep = (await req({ turn: 2, step: 1 }, async () => ({ ...host }))) as Record<string, unknown>
+  assert.equal(sameStep['provider'], swapped.provider, '★ 同一步重跑必须**保持**已换的路由（否则重试白重试）')
 
-  // 第三次：裁决是 swap ⇒ **自己接管**
-  assert.deepEqual(results[2], { kind: 'retry' }, '★ 到阈值必须回 `{kind:"retry"}` 自己接管')
-  assert.equal(
-    nextCalled,
-    2,
-    '★★★ 接管那一次**绝不调 next()** —— 调了就等于把裁决权交回去，新路由永远不生效，' +
-      '而日志里却写着"已降级"（最坏的一种谎）',
-  )
-  assert.ok(
-    s.logs.some((line) => line.includes('换到')),
-    `降级必须留痕（否则"为什么这次答得不一样"无从查起）：${s.logs.join(' | ')}`,
-  )
-  assert.ok(s.rows.some((row) => row['source'] === 'failover-swap'), '降级要真的写进路由日志')
+  // ② **新的一步** ⇒ 回到宿主的选择（防粘性：只锁不重断言 ⇒ 一次降级之后永远粘住）
+  const newStep = (await req({ turn: 2, step: 2 }, async () => ({ ...host }))) as Record<string, unknown>
+  assert.equal(newStep['provider'], host.provider, '★ 新的一步必须重新断言回宿主的选择（防粘性）')
 })
 
 /**
@@ -230,14 +230,28 @@ test('★ `observe` 下失败事件**必须委托** `next()`（那是宿主的�
   assert.equal(nextCalled, 1, '★ observe 不许接管 —— 放弃裁决权就必须把 next() 调掉')
 })
 
-test('★ 每步**重新断言**（防粘性）：第 2 步仍然断到候选链第一个', async () => {
-  const s = setup({ mode: 'apply' })
-  const req = s.host.handlers.get('agent/request')
-  assert.ok(req !== undefined)
-  const first = (await req({ turn: 1, step: 1 }, async () => ({ provider: 'x', model: 'y' }))) as Record<string, unknown>
-  const second = (await req({ turn: 1, step: 2 }, async () => ({ provider: 'x', model: 'y' }))) as Record<string, unknown>
-  assert.equal(first['provider'], 'deepseek-official')
-  assert.equal(second['provider'], 'deepseek-official', '★ 换过的路由会粘住 ⇒ 每个 step 必须重新断言')
+test('★★★ 反面守卫：**不许**再出现"断言成候选链第一个"（那会把流量拽回 GO）', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/failover-hooks.ts', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n')
+
+  // 断言必须是"宿主给的那条路"
+  assert.match(
+    src,
+    /options\.failover\.beginStep\(stepKeyOf\(turn, step\), \{\s*provider: config\.provider,\s*model: config\.model,/,
+    '★ `beginStep` 断言的必须是**宿主给的那条路**',
+  )
+  // ★ 反面：不许拿候选链第一个当断言目标
+  assert.ok(
+    !/candidates\(\)\[0\][\s\S]{0,80}beginStep/.test(src),
+    '★★★ **不许**把 `candidates()[0]` 当断言目标 —— `route-seed.ts:162-165` 把 L2/L3 的 rank 0 ' +
+      '种成 `opencode-go`（用户说"额度只有 9%"那家），那样开 apply 会把**每一个**请求从 DS 官方换过去',
+  )
+  // 断言目标里不许出现 `assertRoute`（那个选项已删）
+  assert.ok(!/assertRoute/.test(src), '`assertRoute` 选项应当已经删掉（它默认取候选链第一个，是那条 bug 的来源）')
 })
 
 test('★★ `dispose` 真的退订（不退订 = 一堆死监听器，内存与 CPU 双漏）', () => {
