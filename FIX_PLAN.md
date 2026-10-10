@@ -1981,6 +1981,68 @@ npm warn install-scripts   koffi@3.1.1 / node-pty / @google/genai / protobufjs �
 ★ 顺带一个**可操作的细节**：`feed-all.sh` 期望段包在 `/tmp/feed`、`refresh.mjs` 在 `/tmp/feed-tools`
 （我这次放的是 `/data/dsh/forlife/feed-v2`）⇒ 真要跑时要么按它的路径摆好，要么改脚本里的变量。
 
+### ★★ 2026-10-10 补：那次用的**是什么刷新命令**，已从真库反查出来
+
+`feed-refresh.ts` 的两条事实决定了怎么找：
+
+| 事实 | 位置 |
+| :--- | :--- |
+| 源 key = **`sha1(刷新命令行)` 的前 10 位** | `feed-refresh.ts:144`（`feed_source:<10位>`） |
+| `{kind:'default'}` 读**部署环境变量** `FORLIFE_FEED_REFRESH_COMMAND`；没配就报「**部署没配刷新命令**」 | `feed-refresh.ts:282` / `feed-batch.ts:303` |
+
+**真机实查**：
+
+| 查什么 | 结果 |
+| :--- | :--- |
+| `.env` 里 `FORLIFE_FEED_REFRESH_COMMAND` | **0 次** |
+| compose 里 | **没有** |
+| 两个容器 `printenv` | **都没设** |
+| ★ 真库 `forlife_state` 里的投喂源记录 | `feed_source:1d53c989e2` = `{"at":"2026-10-09T08:02:13.761Z","items":283,"label":"node"}` |
+
+⇒ **结论**：那次**不是** `{kind:'default'}`，而是**在请求里显式传了命令**。
+对照 `feed-all.sh:34,38`：
+
+```sh
+TOOLS=/tmp/feed-tools
+REFRESH="node $TOOLS/refresh.mjs"     # ← 与真库里 label="node" 完全吻合
+…
+--refresh "$REFRESH"                  # 每次投喂都显式带上
+```
+
+⇒ **它就是 `node /tmp/feed-tools/refresh.mjs`**，`items=283` 也对上了这份段包的 283 段。
+
+★ **它当时能过，是因为 `/tmp/feed/SOURCE.json` 存在且新鲜** —— `/tmp` 是临时的，过后就没了；
+而**产出它的 `feed-prepare.ps1` 又不存在**（本节开头那条）。
+⇒ **判决不变，但路径现在完全清楚了。**
+
+### ⇒ 用户要做的四步（精确到路径）
+
+1. 更新 `.runtime/fetch-deepseek-chat.ps1` 里的凭据（cookie/token 是会话级的）
+2. 跑 **`pwsh -File .runtime\feed-prepare.ps1`** ⇒ 段包带上新鲜的 `SOURCE.json`
+3. 把**段包**放进容器的 `/tmp/feed`、把 **`refresh.mjs`** 放进 `/tmp/feed-tools`
+   （`docker cp` 即可；`.runtime/chat-segv2-tool/refresh.mjs` 就是那个文件）
+4. 在容器里跑 **`bash /tmp/feed-all.sh`**（它自己会先单独跑一次刷新校验，**不过就一段都不喂**）
+
+★ 第 3 步的路径是 `feed-all.sh` 里写死的（`FEED=/tmp/feed`、`TOOLS=/tmp/feed-tools`）。
+
+### ★ 顺带：面板那四块在真库上的**真实数字**（用户最初的抱怨）
+
+按 `repository.ts:270-287` 的 `midStats()` **逐字照抄**在真库上算：
+
+| 口径 | 值 |
+| :--- | :--- |
+| 活跃条目 | **10,714** |
+| **长期碎片** | **200** |
+| 中期条目（面板主数字 = 活跃 + 长期碎片） | **10,914** ✅ 相加吻合 |
+| 活跃 token | 1,515,642 |
+| 碎片 token | 8,138 |
+| ★ **长期条目** | **400**（用户看到的是 **0**，现在不再是 0） |
+
+★ 顺带纠正一个我自己的误解：**「长期碎片」不是一张表** ——
+它是 `sum(CASE WHEN status='fragmented' THEN 1 ELSE 0 END)`（`repository.ts:275`），
+**按状态数出来的**。中期表里只有 `active`(10714) 与 `fragmented`(200) 两种状态，**没有第三种会被漏掉**。
+
+
 
 ### 要补什么才能做 P3（按依赖顺序）
 
