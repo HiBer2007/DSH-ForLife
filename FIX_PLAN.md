@@ -1964,6 +1964,24 @@ npm warn install-scripts   koffi@3.1.1 / node-pty / @google/genai / protobufjs �
 但**兜底是最后手段，不是第一手段**。
 ⇒ **闸门存在的意义正是拦住我刚才要做的事，它生效了。**
 
+### ★★ 自我更正：断的不是"喂入器"，只是"新鲜度证明"
+
+我上面那句「恢复路径不通」**说粗了**。读完 `.runtime/feed-all.sh`（125 行）之后要分清：
+
+| 组件 | 状态 |
+| :--- | :--- |
+| **喂入器** `feed-all.sh` | ✅ **存在且是完整的** —— 逐段 `feed-memory.ts <file> --as experience --source chat/<base> --refresh …`；**顺序 seg2（较早）→ seg1（较新）**；**稳定 `--source` ⇒ 幂等重导**（改过的段走"更新"而不是"又插一份"）；末尾还会打印库里结果 |
+| **单段喂入** `scripts/feed-memory.ts` | ✅ 在镜像里（我实查过 `/app/scripts/`） |
+| **刷新校验** `refresh.mjs` | ✅ 存在 |
+| ★ **`SOURCE.json`（闸门要的"新鲜度证明"）** | ❌ **没有**，而且**产出它的 `feed-prepare.ps1` 不存在** |
+
+⇒ 准确的说法是：**喂入这条路是通的，缺的是"这份快照是刚拉下来的"这个证明**。
+而那个证明**必须在有登录态的一侧产生**（`refresh.mjs:6-8`），容器里做不到。
+
+★ 顺带一个**可操作的细节**：`feed-all.sh` 期望段包在 `/tmp/feed`、`refresh.mjs` 在 `/tmp/feed-tools`
+（我这次放的是 `/data/dsh/forlife/feed-v2`）⇒ 真要跑时要么按它的路径摆好，要么改脚本里的变量。
+
+
 ### 要补什么才能做 P3（按依赖顺序）
 
 1. **写 `feed-prepare.ps1`**（**缺的就是它**）。它要串起：
