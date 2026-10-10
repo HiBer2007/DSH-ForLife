@@ -43,16 +43,95 @@ FROM node:24-alpine AS build
 #
 # 用 `--global`（落 `/usr/local/etc/npmrc`）而不是写 `~/.npmrc`：
 # 镜像里跑构建的用户可能不是 root，写文件容易写错位置。
-RUN npm config set --global registry https://registry.npmmirror.com
+#
+# ★★ 2026-10-10 真机实测：**这台 VM 的 DNS 会间歇性 `EAI_AGAIN`**。两个叠加的原因：
+#
+#   ① **宿主没有 IPv6 默认路由**（`ip -6 route show default` → **空**），
+#      而 `cdn.npmmirror.com` / `registry.npmmirror.com` **都答 AAAA**
+#      （`2404:2280:…`）⇒ 每次连接都要先白等一次 IPv6 尝试。
+#   ② DNS 上游是那台路由器（`192.168.1.1`）—— 实测偶尔解析超时。
+#      同一分钟内连试三次都成功、构建里那一次就是失败 ⇒ **不是"通不通"，是"稳不稳"**。
+#
+#   ⇒ 两条对策（都不改宿主、不重启任何容器）：
+#     - **强制 IPv4 优先**，绕开那条不存在的 IPv6 路
+#     - **把重试调厚**（npm 默认才 2 次）
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 
-# pnpm 用 corepack（与根 package.json 的 packageManager 字段一致）
-RUN corepack enable
+RUN npm config set --global registry https://registry.npmmirror.com \
+ && npm config set --global fetch-retries 10 \
+ && npm config set --global fetch-retry-mintimeout 5000 \
+ && npm config set --global fetch-retry-maxtimeout 120000 \
+ && npm config set --global fetch-timeout 600000
 
-# ⚠️ `pnpm` 到**这一步**才存在（上一行 corepack 装出来的）——
-#   所以 registry 要**分两次设**：`npm config set` 在第一个 FROM 之后就行，
-#   `pnpm config set` 必须在这里。
-#   （我第一次把两条写在一起 ⇒ `/bin/sh: pnpm: not found`、构建 exit 127。）
-RUN pnpm config set --global registry https://registry.npmmirror.com
+# ★★ 2026-10-10 真机实测：**corepack 这条路在这个环境里走不通**，改成用 npm 装。
+#
+# ── 现象（四种都试过，全部失败）────────────────────────────────────────
+#
+#   | 试法 | 结果 |
+#   | :--- | :--- |
+#   | 原样（corepack，无镜像配置） | `getaddrinfo EAI_AGAIN registry.npmjs.org` |
+#   | + `npm config set registry` | 同上（**对 corepack 无效**） |
+#   | + `COREPACK_NPM_REGISTRY=npmmirror` | 改成 `EAI_AGAIN cdn.npmmirror.com`（**进了一步，仍失败**） |
+#   | 直接让它下仓库钉的 `12.3.4` | 依然是 Node 异常栈 |
+#
+# ── 但同一个网络下，换成 npm 就通 ──────────────────────────────────────
+#
+#   实测（`--network=host` 的一次性容器里）：
+#     - `npm i -g pnpm@12.3.4`                          ✅ 成功
+#     - 装完 `pnpm add is-odd@3.0.1`                    ✅ 真的装上
+#     - `node -e "require('is-odd')(3)"`                ✅ 返回 true
+#   ⇒ **不是网络不通**，是 **corepack 自己的二进制下载走不通**：
+#     它下的是 `@pnpm/exe.linux-x64-musl` 这个**平台包**，
+#     与"走 npm registry 装一个普通包"**不是同一条路**。
+#
+# ── ⚠️ 顺带一个**版本陷阱**（就算 corepack 能下也会踩）─────────────────
+#
+#   corepack 在 `/`（**那里没有 package.json**）下会退回**它自己的默认最新版**
+#   —— 实测它要下的是 **`12.10.1`**，而仓库钉的是 **`12.3.4`**。
+#   ⇒ 它装的会是**错的版本**。
+#
+# ── ★★ 所以：装**分毫不差**的那一版 ────────────────────────────────────
+#
+#   版本号**必须与根 `package.json` 的 `packageManager` 字段完全一致**。
+#   为什么不是"差不多就行"：pnpm 12 有 `manage-package-manager-versions`，
+#   装的版本与 `packageManager` **不一致时它会自己去下那一版**
+#   ⇒ **又踩回同一个网络坑**。这个 12.3.4 与 `package.json` 是一对，改一处要改两处。
+#
+# `--allow-scripts=pnpm`：npm 11+ **默认拦截**依赖的生命周期脚本，
+#   而 pnpm 靠 `install.js` 落**平台二进制** ⇒ 不放行的话装出来的是个**空壳**。
+#   ⚠️ 而且它的失败**很难看出来**：实测不放行时 `pnpm --version` **照样打印 12.3.4**
+#   —— 那是它念了 `package.json` 里的版本号，不是真二进制在回答。
+#   （真二进制在干活的判据是 `pnpm add <包>` 能真的装上东西。）
+# ── ★★ 2026-10-10：pnpm 的源改用 Huawei（而 npm 仍留 npmmirror）────────────
+#
+#   为什么：`pnpm install` 卡在**同一个包**上反复失败 ——
+#     `@esbuild/linux-x64@0.25.12`（4.19 MB）：报 `operation timed out`（读响应体超时）。
+#   而**同一台宿主、同一个 URL**，直连只要 **9.3 秒**就下完了。
+#   ⇒ 不是"拉不到"，是**这一条链路上它会被卡住**（其余几十个包全都下好了）。
+#
+#   实测四个源对**这一个包**：
+#     | 源 | 结果 |
+#     | :--- | :--- |
+#     | npmmirror | 宿主 9.3s ✓，但构建里反复超时 ❌ |
+#     | registry.npmjs.org | ✖ 连不上（宿主的 DNS 只回 IPv6 记录，而**这台机器没有 IPv6 路由**） |
+#     | 腾讯 | ✓ 但 21.6s（更慢） |
+#     | **Huawei** | ✓ **0.5s**（≈8 MiB/s） |
+#
+#   ⚠️ 为什么**只换 pnpm、不换 npm**：`npm` 那条路要装 `@deepseek-ai/dsh`（786 MB），
+#     而 Huawei 上**这个包的元数据实测失败过一次** ⇒ 关键路径不拿它赌。
+#     npmmirror 装 `pnpm` 与 `dsh` **都验证过**（19 小时前那个镜像就是这么建出来的）。
+#
+#   另外两条配套（针对"读响应体超时"）：
+#     - `fetch-timeout 600000`：pnpm 默认 60 秒，卡一下就判超时
+#     - `network-concurrency 4`：默认 16，并行太多时**每个连接都变慢**，
+#       慢到一定程度就集体超时 —— 少一点并发反而更快拿到东西
+RUN npm i -g --allow-scripts=pnpm pnpm@12.3.4 \
+ && pnpm config set --global registry https://mirrors.huaweicloud.com/repository/npm/ \
+ && pnpm config set --global fetch-retries 10 \
+ && pnpm config set --global fetch-retry-mintimeout 5000 \
+ && pnpm config set --global fetch-retry-maxtimeout 120000 \
+ && pnpm config set --global fetch-timeout 600000 \
+ && pnpm config set --global network-concurrency 4
 
 WORKDIR /build
 
@@ -78,13 +157,31 @@ RUN pnpm -F @forlife/admin-ui build
 # ── 阶段 2：运行 ────────────────────────────────────────────────────────
 FROM node:24-alpine AS runtime
 
-RUN corepack enable
-
+# ★ **同样绕开 corepack** —— 理由见 build 阶段那段长注释（这里不重复）。
+#   而**这个阶段也真的用 pnpm**：下面 `pnpm install --frozen-lockfile --prod` 就是。
+#   ⚠️ 版本号必须与 build 阶段、以及根 `package.json` 的 `packageManager` **三处一致**。
+#
 # ★★ **runtime 阶段必须自己设一遍** —— `FROM` 会开一个**新阶段**，
 #   build 阶段的 `npm config set` **不会带过来**。
 #   而**最慢的那一步**（`npm i -g @deepseek-ai/dsh`，786 MB、≈15 分钟）就在**这个阶段**。
-RUN npm config set --global registry https://registry.npmmirror.com \
- && pnpm config set --global registry https://registry.npmmirror.com
+# ★ 与 build 阶段同样的两条对策（**强制 IPv4 优先 + 加厚重试**）——
+#   理由见 build 阶段那段（宿主机没有 IPv6 路由，而镜像源会答 AAAA）。
+#   ⚠️ 这里**不用 `ENV`**：runtime 是**生产镜像**，
+#   不想让 `NODE_OPTIONS` 跟着 dsh / gateway 的进程跑一辈子。
+#   只在这几条**要联网的** RUN 上临时用。
+RUN export NODE_OPTIONS=--dns-result-order=ipv4first \
+ && npm config set --global registry https://registry.npmmirror.com \
+ && npm config set --global fetch-retries 10 \
+ && npm config set --global fetch-retry-mintimeout 5000 \
+ && npm config set --global fetch-retry-maxtimeout 120000 \
+ && npm config set --global fetch-timeout 600000 \
+ && npm i -g --allow-scripts=pnpm pnpm@12.3.4 \
+ && pnpm config set --global registry https://mirrors.huaweicloud.com/repository/npm/ \
+ && pnpm config set --global fetch-retries 10 \
+ && pnpm config set --global fetch-retry-mintimeout 5000 \
+ && pnpm config set --global fetch-retry-maxtimeout 120000 \
+ && pnpm config set --global fetch-timeout 600000 \
+ && pnpm config set --global network-concurrency 4
 
 WORKDIR /app
 
@@ -160,11 +257,15 @@ COPY --from=build /build/profiles ./profiles
 #   用 `--prefer-offline` 而不是 `--offline`：万一真有一个包 store 里没有，
 #   它会**回退到联网**而不是直接报错。宁可慢一点，不要因为一个包就建不出来。
 #
-#   ★ **不用 `COPY --from=build /build/node_modules`**（那是另一种写法）：
+#   ★ 不用 `COPY --from=build /build/node_modules`（那是另一种写法）：
 #   那样会把 **devDependencies 也带进运行镜像**，镜像变大得多。
 #   复制 store 只多几十 MB，而且 store 在后面 `pnpm store prune` 时会被清掉。
+#
+# ★ `NODE_OPTIONS=...ipv4first`：这一步是 `--prefer-offline`，**多数包不该联网**，
+#   但万一 store 里缺一个，它会**回退到联网**（见上）—— 那就同样会撞上 IPv6 那个坑。
 COPY --from=build /root/.local/share/pnpm/store /root/.local/share/pnpm/store
-RUN pnpm install --frozen-lockfile --prod --prefer-offline && pnpm store prune
+RUN NODE_OPTIONS=--dns-result-order=ipv4first pnpm install --frozen-lockfile --prod --prefer-offline \
+ && pnpm store prune
 
 # ★ **让 /app 下的包能解析到宿主 DSH 的包树**（2026-10-07 真机部署实测踩到）。
 #

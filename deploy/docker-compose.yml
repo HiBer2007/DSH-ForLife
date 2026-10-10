@@ -52,6 +52,26 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.app
+      # ★★ 2026-10-10 真机实测：**构建容器拿不到可用的 DNS**，必须走宿主网络。
+      #
+      #   现象：`pnpm install` / `corepack` 报 `getaddrinfo EAI_AGAIN`，
+      #   连 `registry.npmmirror.com`（**镜像源**）都解析不了 —— 不只是 npmjs。
+      #
+      #   根因（对照实验做出来的）：
+      #   | 容器 | resolv.conf 里的 nameserver | 能解析吗 |
+      #   | :--- | :--- | :--- |
+      #   | **现在新建**的 | `192.168.1.1`（来自 `/run/systemd/resolve/resolv.conf`） | ❌ **不能** |
+      #   | **已有**的四个（`forlife-*`） | `127.0.0.11`（Docker 内嵌解析器） | ✅ 能 |
+      #
+      #   ⇒ 宿主 systemd-resolved 的上游指向了那台路由，而**它解析不了这些域名**；
+      #     早先创建的容器碰巧用的是 Docker 内嵌解析器，所以一直没事。
+      #   ⇒ 构建走 **host 网络**：实测同一个镜像 + `--network=host` **能解析**。
+      #
+      #   ⚠️ 为什么不去改 `/etc/docker/daemon.json` 加 `"dns"`：
+      #   那要**重启 Docker 守护进程** ⇒ 会**停/起所有容器（含 `qq`）**，
+      #   而硬约束是**绝不重启 qq 容器**（重启一次就要重新扫码登录）。
+      #   ⇒ 用**只影响构建**的这条，绕开那个代价。
+      network: host
     image: forlife-app:local
     restart: unless-stopped
     working_dir: /app

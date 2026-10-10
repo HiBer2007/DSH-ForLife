@@ -1855,6 +1855,74 @@ agent/request 瀑布：
 ⇒ **这两条要用户点头（或给出权重来源）之后我才动。**
 在它们定下来之前，判档继续走"守卫 → 启发式兜底" —— 那是**可以用的**，只是不如小模型准。
 
+> ✅ 用户 2026-10-10 已裁定：**「授权我联网下」** ⇒ 权重来源这一条解决了。
+> 但**先做部署**（用户裁定「现在部署」）—— 小模型排在其后。
+
+
+---
+
+## 32. ✅ **部署已执行**（2026-10-10），以及真机上踩到的**三个坑**
+
+### 结果（逐条用真实产物核实，不是看"容器 healthy"）
+
+| 项 | 结果 |
+| :--- | :--- |
+| **qq 容器 ID** | `22c73c283b3f9577a3425be6` —— ★ **部署前后一字未变**（启动时间仍是 `02:33:50`） |
+| dsh / gateway | 重建为新 ID（`5fc0c4e3645c` / `4e531fb001ca`），`running` + `healthy` + **重启次数 0** |
+| caddy | 未动（镜像与配置都没变） |
+| **`FORLIFE_LOG_DIR`** | ★ 两边都是 `/data/dsh/forlife/logs` —— **部署的核心目的** |
+| 新代码在镜像里 | 读**容器内**文件核实：`wake-spawn.ts` / `feed-run-start.ts` / `log-sink.ts` / `log-store.ts` / `admin-ui/dist/index.html` 全在 |
+| 网关在服务 | `http://127.0.0.1:8081/admin/` 真的返回 HTML，`health: healthy` |
+| **§26 的判据** | ★ 日志文件 `forlife-2026-10-10.jsonl` 里 **37 条 `module=dsh-plugin`**（+16 条 `gateway`）；等级 `info 49 / warn 3 / note 1` |
+| **契约探针**（§29 那轮接的） | ★ **真的在跑**，日志里是：`宿主契约：**降级可用**：7/8 齐全，缺 1 项**加固**功能（记忆本体正常）` |
+| 面板日志接口 | 有**会话鉴权**（`api.ts:261` 的 401）⇒ 未登录读不到是**预期的**；**数据链路**已由上面的文件内容证明 |
+
+### ⚠️ 坑 1：`npm config set registry` **管不到 corepack**
+
+现象：构建在 `pnpm config set` 那一步 `EAI_AGAIN registry.npmjs.org`。
+Dockerfile 里**早就写了**这个坑的注释（`:32-35` 记着"corepack 下 `pnpm-12.3.4.tgz`"），
+但当时的对策（`npm config set registry`）**对 corepack 无效** —— 它读 `COREPACK_NPM_REGISTRY`。
+★ 加了那个变量后**进了一步**（改成 `EAI_AGAIN cdn.npmmirror.com`），**仍然失败**；
+而且 corepack 在 `/`（**没有 package.json**）下会退回**它自己的最新版 `12.10.1`**，
+**不是**仓库钉的 `12.3.4` ⇒ 就算下载成功也是**错的版本**。
+⇒ **正解：绕开 corepack**，用 `npm i -g --allow-scripts=pnpm pnpm@12.3.4`。
+⚠️ `--allow-scripts` 不能省：npm 11+ 默认拦截生命周期脚本，而 pnpm 靠 `install.js` 落平台二进制
+—— **不放行时 `pnpm --version` 照样打印 12.3.4**（它念的是 package.json），**看起来是对的**。
+
+### ⚠️ 坑 2：**新建容器拿到的是路由器 DNS，而它在并发下会丢查询**
+
+| 解析器 | 60 并发 × 3 轮 |
+| :--- | :--- |
+| 宿主 / `--network=host` 容器（`127.0.0.53`，systemd-resolved） | **0 失败** |
+| **默认 bridge** 容器（`192.168.1.1`，**那台路由器**） | **13 / 18 / 11 次失败**（`EAI_AGAIN`） |
+
+⇒ 构建步骤容器**默认走 bridge** ⇒ 用路由器 DNS ⇒ 下载大文件时随机超时/解析失败。
+⇒ 对策两条（**都不重启任何容器**）：构建加 **`--network=host`**；宿主给 `systemd-resolved`
+**加一个冗余上游**（`119.29.29.29`，实测会应答；`223.5.5.5` 在这条链路上**不应答**）并重启该服务
+—— ★ 重启后**四个容器启动时间一字未变**（`02:33:50Z`）⇒ **qq 没有被重启**。
+
+### ⚠️ 坑 3：`pnpm install` 卡在**同一个包**上反复超时
+
+`@esbuild/linux-x64@0.25.12`（4.19 MB）报 `operation timed out`（读响应体超时），
+而**同一台宿主直连同一 URL 只要 9.3 秒**；其余几十个包全都下好了。
+四个源实测这一个包：npmmirror 宿主 9.3s ✓ / npmjs ✖（**这台机器没有 IPv6 路由**，而它只回 IPv6）/
+腾讯 21.6s / **Huawei 0.5s（≈8 MiB/s）**。
+⇒ **pnpm 换 Huawei**，并加 `fetch-timeout 600000` + `network-concurrency 4`。
+⚠️ **npm 那条路仍留 npmmirror** —— 它要装 `@deepseek-ai/dsh`（786 MB），
+而 Huawei 上**这个包的元数据实测失败过一次** ⇒ 关键路径不拿它赌。
+
+### ⚠️ 坑 4（**未收口，如实记**）：`npm i -g @deepseek-ai/dsh` 的生命周期脚本被拦
+
+构建日志里有：
+```
+npm warn install-scripts   koffi@3.1.1 / node-pty / @google/genai / protobufjs 被拦
+```
+⇒ 那些原生模块的 `install` 脚本**没跑**。19 小时前那个镜像**也是这样**建出来的，
+而 dsh 容器一直 `healthy`、模型列表与面板接口都正常注册
+⇒ **当前功能上没看出问题**，但这是个**已知的未收口点**：真要依赖 `node-pty` 之类的功能时可能才发现。
+（要收口就得显式 `--allow-scripts=...`，而那等于**信任这几个包**，属于要单独决定的事。）
+
+
 
 
 
