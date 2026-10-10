@@ -30,6 +30,8 @@
  * @module forlife-memory/wake-bridge-endpoint
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+// ★ 迁移到七级：`atLevel` 是那个桥（注入普通函数时退化成调它自己，**不碰调用方**）
+import { atLevel } from '@forlife/gateway'
 
 /** 桥要用的宿主能力（窄接口，便于注入与测试）。 */
 export interface WakeHost {
@@ -102,12 +104,21 @@ export async function handleWakeRequest(
   //    所以校验必须由我们加 —— 而"叫醒模型并让它执行提示词"的端点
   //    没有认证就是本机任何进程都能利用的提权入口。
   if (options.secret.trim() === '') {
-    log('唤醒桥拒绝：未配置密钥（空密钥等于没有认证）')
+    // ★★ **fault**：这不是"某一次请求被拒"，而是**这一整个端点处于禁用状态** ——
+    //   唤醒桥这一子系统不可用（谁也唤不醒她），而且**会一直这样**直到有人配密钥。
+    //   ⚠️ 它以前是裸 `log(...)` ⇒ 面板上显示成 **info**，而 `guessLevel` 也救不了它
+    //   （文本里没有"失败/异常"字样）—— 也就是**一条安全相关的禁用状态，
+    //   在日志里长得像普通信息**。
+    atLevel(log, 'fault')('唤醒桥拒绝：未配置密钥（空密钥等于没有认证）—— 端点已禁用（503）')
     return { status: 503, body: { ok: false, reason: '唤醒桥未配置密钥，已禁用' } }
   }
   const provided = headers['x-forlife-wake-secret']
   if (provided !== options.secret) {
-    log('唤醒桥拒绝：密钥不匹配')
+    // ★ **warn**：**有东西在敲门而钥匙不对** —— 可能是配置漂移（客户端与容器不同步），
+    //   也可能是有人在试。它被**拒绝了**（兜住了）⇒ warn，不是 error。
+    //   ⚠️ 以前也是裸调用 ⇒ 面板上是 **info**：**一次安全拒绝显示成普通信息**
+    //   ⇒ 排障时"为什么唤醒没生效"与"有人在爆破"这两种情形**在面板上分不出来**。
+    atLevel(log, 'warn')('唤醒桥拒绝：密钥不匹配（401）')
     // 不回显期望值，也不区分"没给"与"给错了" —— 那会给爆破提供信息
     return { status: 401, body: { ok: false, reason: '密钥不正确' } }
   }
