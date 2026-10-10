@@ -2179,6 +2179,8 @@ store/src/media.ts 之外的其余零引用符号（共 37 个，已裁定 8 个
 
 ⇒ **接手的人从这两个开始**，其余大多是格式化 helper 或 composable（属于"库里有、没人用"的正常情形）。
 
+---
+
 ## 35. ✅ `compaction_epoch = 0` **是对的**，不是故障（2026-10-10 实算）
 
 > 环境的症状清单里一直挂着「`compaction_runs: 0`；epoch 0」。
@@ -2291,6 +2293,3 @@ if (!tokenOk || !turnsOk || !toolsOk) {
   `feed-batch.ts:29-34` 写明每批走 `feedMemory()`（`insertLongEntry` / `appendMidEntry` /
   检索判重 / 归档），那是**写库**，本模块只做调度。
   ⚠️ 但**这一条我还没实读到 `feedMemory` 内部**，所以先记为"大概率"、不当作结论。
-
-
----
