@@ -92,20 +92,45 @@ test('★★★ 判档**真的被调用了**（不是只 import 了 `initialRout
   assert.match(ROUTER, /decided\.alternatives\.length/, '备选数也要报出来（判档可见才有意义）')
 })
 
-test('★★★ `apply` 分支**仍然写着"尚未实现"** —— 别把 observe 当成 apply', () => {
-  // 这一步刻意只做 observe：判档算出来只打日志，**不改模型**。
-  // 若哪天有人把 apply 分支的警告删了却没真的实现 apply，那才是"谎报接线"。
+test('★★★ `apply` **真的落地**了 —— 而且只改该改的那几个字段', () => {
+  // ⚠️ 这条测试**替换掉了上一轮的一条守卫**。那条写的是：
+  //   「`apply` 分支仍然写着"尚未实现" —— 别把 observe 当成 apply」。
+  //   它当时的用意是**防止谎报接线**（把 observe 说成 apply）。
+  //   ★ 现在 apply 真的实现了，所以那条守卫的**事实基础变了** ——
+  //   但它要防的东西没变，只是换了形状：**"订阅了但没改 config"** 才是新的谎报。
   assert.match(
     ROUTER,
-    /apply 模式：initialRoute\(\) 接线\*\*尚未实现\*\*/,
-    '★ `apply` 还没实现 —— 这条警告必须留着（判档可见 ≠ 模型被换了）',
+    /on\('agent\/request',[\s\S]{0,200}?const config = \(await next\(\)\)/,
+    '★ `agent/request` 是瀑布事件 —— 必须先 `await next()`（少了它会把整轮干掉）',
+  )
+  assert.match(ROUTER, /if \(mode !== 'apply'\) return config/, '★ observe/off 一个字都不改')
+  assert.match(ROUTER, /provider: locked\.provider/, '★ 要真的把 provider 换成判档选的')
+  assert.match(ROUTER, /model: locked\.model/, '★ model 同理')
+  assert.match(ROUTER, /reasoningEffort: locked\.effort/, '★ 强度也要落下去（档位的意义一半在这里）')
+  // ★ 反面：**不许把整个 config 换掉** —— 那样会丢掉 temperature/maxTokens 等宿主设定
+  assert.match(
+    ROUTER,
+    /\.\.\.\(config as Record<string, unknown>\)/,
+    '★★ 要**spread 宿主原本的 config 再改三个字段**；整体替换会悄悄丢掉 temperature/maxTokens/stop',
+  )
+  // ★ 出错必须放行，不许因为路由的问题让这一轮跑不起来
+  assert.match(
+    ROUTER,
+    /agent\/request 路由装配出错（已放行宿主的配置）/,
+    '★ 装配失败 ⇒ 放行宿主原本的配置（宁可路由不生效，也不能让轮次跑不起来）',
   )
 })
 
-test('★ 判档只在前几步打（与 `👀` 观察日志同一个节流，免得刷屏）', () => {
-  assert.match(
-    ROUTER,
-    /input\.getCatalog !== undefined && preStepCount <= 5/,
-    '★ 判档日志要跟着 `preStepCount` 节流，否则每一步一条会淹没日志',
+test('★★★ 判档**每一步都算**（节流只管日志）—— 只算前 5 步会让 apply 半路失灵', () => {
+  // ⚠️ 这条也替换掉了上一轮的一条守卫（原来断言 `preStepCount <= 5` 包着**计算**）。
+  //   当时的想法是"跟观察日志一样节流"，但那会让 **`apply` 从第 6 步起没有路由可用**
+  //   —— 而**日志上看不出任何异常**（正好是本仓最贵的那类问题）。
+  //   ⇒ 现在节流只包日志，计算照常。
+  assert.match(ROUTER, /if \(input\.getCatalog !== undefined\) \{/, '★ 计算的条件里**不许**再带 `preStepCount`')
+  assert.ok(
+    !/input\.getCatalog !== undefined && preStepCount <= 5/.test(ROUTER),
+    '★★★ 计算不许被步骤节流包住 —— apply 需要每一步都有路由',
   )
+  // 而日志**要**保留节流（不然每一步一条会淹没日志）
+  assert.match(ROUTER, /if \(preStepCount <= 5\) \{\s*atLevel\(log, 'debug'\)/, '日志仍然节流')
 })

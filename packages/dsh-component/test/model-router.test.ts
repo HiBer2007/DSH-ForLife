@@ -57,12 +57,12 @@ test('★ off 模式：一个监听器都不装', () => {
   assert.deepEqual(f.events, [], 'off 模式不该订阅任何事件')
 })
 
-test('★ observe 模式：订阅三个事件（created / pre-step / turn-stopping）', () => {
+test('★ observe 模式：订阅**四个**事件（created / pre-step / request / turn-stopping）', () => {
   const f = fakeCtx()
   const handle = installModelRouter(f.ctx, { log: () => {}, env: { FORLIFE_ROUTER_MODE: 'observe' } })
   assert.equal(handle.mode, 'observe')
-  assert.equal(handle.listeners, 3)
-  assert.deepEqual(f.events, ['agent/created', 'agent/pre-step', 'agent/turn-stopping'])
+  assert.equal(handle.listeners, 4)
+  assert.deepEqual(f.events, ['agent/created', 'agent/pre-step', 'agent/request', 'agent/turn-stopping'])
 })
 
 test('★★ 一个监听器都没装上时要喊出来（那等于路由没生效）', () => {
@@ -213,7 +213,7 @@ test('★★ 回归：pre-step 里"观察"抛错也不能把决定吞掉', async
 test('dispose 之后不再持有监听器', () => {
   const f = fakeCtx()
   const handle = installModelRouter(f.ctx, { log: () => {}, env: { FORLIFE_ROUTER_MODE: 'observe' } })
-  assert.equal(handle.listeners, 3)
+  assert.equal(handle.listeners, 4)
   handle.dispose()
   assert.doesNotThrow(() => { handle.dispose() }) // 幂等
 })

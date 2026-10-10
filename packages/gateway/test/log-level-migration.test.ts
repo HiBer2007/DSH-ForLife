@@ -125,12 +125,27 @@ test('★★★ `debug` 第一次有了生产消费点（此前七级里只有�
 })
 
 test('★★★ 「尚未实现」不许压成 debug —— 那正是"写了没接而日志一片安静"的形状', () => {
-  // 这两条说的是**实情**："你开了 apply，但这个功能还没实现"。
+  // 那条说的是**实情**："你开了 apply，但这个功能还没实现"。
   // 压成 debug ⇒ 默认不存 ⇒ 开了 apply 什么都没发生时，日志里**一个字都没有**。
   // 本仓栽过 18 次"写好了没接上/接错了"，其中最难查的正是"安静地什么都没发生"。
-  const warnings = ROUTER.match(/atLevel\(log, 'warn'\)/g) ?? []
-  assert.equal(warnings.length, 2, '两条"尚未实现"都该是 warn')
-  assert.ok(!/log\('   ↳ apply 模式/.test(ROUTER), '★ 那两条不许再是裸调用')
+  //
+  // ⚠️ **这条断言原来写的是"恰好 2 处"** —— 而我这一轮真的把 `apply` 实现了，
+  //    于是其中一条「尚未实现」**被删掉是应该的**，它却红了。
+  //    ★ **同一个脆断言毛病，我在同一个文件里犯了第三次**
+  //      （前两次：`debug` 恰好 4 处、以及更早的 `log-levels.test.ts`）。
+  //    ⇒ 这次改成**认内容、不数数**：断言**剩下的那条**在、且是 warn。
+  assert.match(
+    ROUTER,
+    /atLevel\(log, 'warn'\)\(/,
+    '★ 还存在的「尚未实现」必须是 warn（现在只剩 `agent/created` 里那条 ModelSelectionRef）',
+  )
+  assert.match(
+    ROUTER,
+    /装配 ModelSelectionRef 的逻辑\*\*尚未实现\*\*/,
+    '★ 那条必须还在 —— 它说的仍然是实情（那个 ref 从来没被实现过，见 FIX_PLAN §25）',
+  )
+  // ★ 反面：不许再是裸调用（那才是要防的回归）
+  assert.ok(!/\n\s*log\('   ↳ apply 模式/.test(ROUTER), '★ 不许再有裸调用')
 })
 
 test('★★★ 「只装上 N 个监听器」是 `fault` —— 路由这一子系统实际不工作', () => {
@@ -141,8 +156,18 @@ test('★★★ 「只装上 N 个监听器」是 `fault` —— 路由这一子
   )
   // 而"订阅单个事件失败"是**一次操作**没兜住 ⇒ error（与上面那条形成分界）
   assert.match(ROUTER, /atLevel\(log, 'error'\)\('订阅 '/, '单次订阅失败 ⇒ error')
-  const errors = ROUTER.match(/atLevel\(log, 'error'\)/g) ?? []
-  assert.equal(errors.length, 4, '四个错误处理点都该是 error（订阅 / created / pre-step / turn-stopping）')
+  // ⚠️ 这里原来写的是"恰好 4 处"，同样被一次正当新增打破（多了 `agent/request` 的装配失败）
+  // ⇒ 改成**认那几处关键的**，不数数。
+  for (const what of ['订阅 ', 'agent/created 处理出错', 'agent/pre-step 处理出错', 'agent/turn-stopping 处理出错']) {
+    assert.ok(
+      ROUTER.includes("atLevel(log, 'error')('" + what),
+      `★ 「${what}」应当是 error（一次操作没兜住）`,
+    )
+  }
+  assert.ok(
+    ROUTER.includes("atLevel(log, 'error')('agent/request 路由装配出错"),
+    '★ 新增的那处也应当是 error —— 但**不写成"恰好 N 处"**（新增正当的 error 不该让这条红）',
+  )
 })
 
 test('★ 反面：`model-router.ts` 里两句纯事实**保持裸调用**（info 就是对的）', () => {

@@ -252,6 +252,45 @@ export function installModelRouter(
   //    而且症状（一开回合就 UNKNOWN）离原因（少了个 next）十万八千里。
   //    **凡是接瀑布事件，就必须把决定原样传下去。**
   let preStepCount = 0
+
+  // ── 轮次路由锁（`apply` 才用）────────────────────────────────────────────
+  //
+  // ⚠️ **刻意放在函数内部**，不是模块级常量：本仓的测试是**单进程共享**的
+  //   （`node --test --experimental-test-isolation=none`）——
+  //   模块级的可变 `Map` 会**在测试文件之间串味**（`installLogSink` 那次栽过：
+  //   一个测试的 sink 顶掉了另一个的，症状是"e2e 莫名其妙 0 !== 8192"）。
+  //
+  // 键是 `sessionId:turn`：同一轮里**只认第一次判出来的那条**（§8.6 轮次内不换档），
+  // 换轮时才丢。**不用 TTL** —— 投喂那种长轮次里 TTL 会让同一轮中途悄悄换档，
+  // 而那正是"轮次内不换档"要防的。
+  //
+  // ⚠️ 上限 `MAX_LOCKED`：`agent/turn-stopping` 不一定每轮都到（进程被杀、轮次中断），
+  //   只靠它清理会让这张表慢慢长大 ⇒ 再加一道"最多留这么多轮"的兜底。
+  const MAX_LOCKED = 64
+  const lockedRoutes = new Map<string, { readonly provider: string; readonly model: string; readonly effort: string }>()
+  const routeKey = (sessionId: string, turn: unknown): string => sessionId + ':' + String(turn ?? '?')
+
+  const forgetRoutesExcept = (sessionId: string, turn: unknown): void => {
+    const keep = routeKey(sessionId, turn)
+    for (const key of [...lockedRoutes.keys()]) {
+      if (key !== keep) lockedRoutes.delete(key)
+    }
+  }
+
+  const rememberRoute = (
+    sessionId: string,
+    turn: unknown,
+    decided: { readonly provider: string; readonly model: string; readonly reasoningEffort: string },
+  ): void => {
+    const key = routeKey(sessionId, turn)
+    if (lockedRoutes.has(key)) return // ★ 同一轮里**只认第一次**（轮次内不换档）
+    lockedRoutes.set(key, { provider: decided.provider, model: decided.model, effort: decided.reasoningEffort })
+    while (lockedRoutes.size > MAX_LOCKED) {
+      const oldest = lockedRoutes.keys().next().value
+      if (oldest === undefined) break
+      lockedRoutes.delete(oldest)
+    }
+  }
   on('agent/pre-step', async (payload, next) => {
     // ★ `next()` 放在 try **外面**：链上后面那几环抛错时，
     //   必须让异常穿过去，不能被我们"观察失败"的 catch 吞掉。
@@ -272,47 +311,53 @@ export function installModelRouter(
       } else if (preStepCount === 6) {
         atLevel(log, 'debug')('👀 agent/pre-step  （后续不再逐条打，只计数）')
       }
-      if (mode === 'apply' && input.getCatalog !== undefined) {
-        // ★ 真正的路由在这里（尚未实现 —— 先过 observe）
-        atLevel(log, 'warn')('   ↳ apply 模式：initialRoute() 接线**尚未实现**（先过 observe）')
-      }
-      // ★★ **判档**（中介层第 ① 块）：真的算一遍，并**让它可见**。
+      // ★ 新的一轮 ⇒ **丢掉别的轮次**（防粘性）。
+      //   只锁不清 ⇒ 某轮判成 L3 之后所有轮次都粘在 L3，成本悄悄翻倍而没人发现
+      //   （`routes.ts:163-164` 那句注释说的就是这个）。
+      forgetRoutesExcept(id, p.turn)
+      // ★★ **判档**（中介层第 ① 块）：真的算一遍。
       //
-      //   为什么先只打日志、不改模型：本文件的头写得很清楚 ——
-      //   本仓栽过 18 次"写好了但没接上/接错了"，最惨的一次是 `profile patch` 的
-      //   `id` 写成包名 ⇒ **整段被静默丢弃**，而容器一直 healthy。
-      //   ⇒ 先把"**判成哪一档、凭什么**"打出来，确认它真的响、真的合理，
-      //     再让 `ref.current` 生效。
-      //
-      //   ★ 而且容器里 `FORLIFE_ROUTER_MODE` 的默认就是 `observe`
-      //   （`deploy/docker-compose.yml` 的 `${FORLIFE_ROUTER_MODE:-observe}`）
-      //   ⇒ 这一段在真机上**会先以 observe 跑起来**，正好是需要的那一步。
+      //   ⚠️⚠️ 这里**不再有 `preStepCount <= 5` 的节流**：
+      //   原来那个节流同时管着"打日志"和"算"，而 `apply` 需要**每一步**都有路由
+      //   ⇒ 第 6 步之后会没有路由可用，**而日志上看不出任何异常**
+      //   （正好是本仓最贵的那类问题）。现在**照常算**（纯函数，便宜），只把日志节流。
       //
       //   ⚠️ 取不到这一轮的输入 ⇒ **跳过判档，不猜**。档位决定用哪个模型，
       //   用错模型是花钱的事，而且**从结果上很难看出来**（她照样会回话）。
-      if (input.getCatalog !== undefined && preStepCount <= 5) {
+      if (input.getCatalog !== undefined) {
         const turnText = extractTurnText(p.messages)
         if (turnText === undefined) {
-          atLevel(log, 'debug')('   ↳ 判档跳过：这一轮的 messages 里取不到 user 文本（**不猜**）')
+          if (preStepCount <= 5) {
+            atLevel(log, 'debug')('   ↳ 判档跳过：这一轮的 messages 里取不到 user 文本（**不猜**）')
+          }
         } else {
           const catalog = await input.getCatalog()
           if (catalog === undefined) {
-            atLevel(log, 'note')('   ↳ 判档跳过：模型表还没就绪（getCatalog() 给了 undefined）')
+            if (preStepCount <= 5) {
+              atLevel(log, 'note')('   ↳ 判档跳过：模型表还没就绪（getCatalog() 给了 undefined）')
+            }
           } else {
             // 纯函数、不碰网络：守卫 → 预评分（没接）→ 启发式兜底
             const decided = initialRoute({ turnText, catalog })
             if (decided === undefined) {
-              atLevel(log, 'note')(
-                '   ↳ 判档**没得出结果**：模型表里没有可达的模型 —— ' +
-                  '注意这不是"这一轮简单"，而是"**没人可用**"（路由会静默不生效）',
-              )
+              if (preStepCount <= 5) {
+                atLevel(log, 'note')(
+                  '   ↳ 判档**没得出结果**：模型表里没有可达的模型 —— ' +
+                    '注意这不是"这一轮简单"，而是"**没人可用**"（路由会静默不生效）',
+                )
+              }
             } else {
-              log(
-                '🎚️ 判档（observe，**不改模型**）：' + decided.tier +
-                  '（来源 ' + decided.tierSource + '）⇒ 会选 ' + decided.provider + '/' + decided.model +
-                  '（强度 ' + decided.reasoningEffort + '，' + String(decided.alternatives.length) + ' 个备选）',
-              )
-              atLevel(log, 'debug')('   ↳ 凭什么：' + decided.why)
+              rememberRoute(id, p.turn, decided)
+              if (preStepCount <= 5) {
+                log(
+                  '🎚️ 判档（' + (mode === 'apply' ? 'apply' : 'observe，**不改模型**') + '）：' + decided.tier +
+                    '（来源 ' + decided.tierSource + '）⇒ ' +
+                    (mode === 'apply' ? '本轮就用 ' : '会选 ') +
+                    decided.provider + '/' + decided.model +
+                    '（强度 ' + decided.reasoningEffort + '，' + String(decided.alternatives.length) + ' 个备选）',
+                )
+                atLevel(log, 'debug')('   ↳ 凭什么：' + decided.why)
+              }
             }
           }
         }
@@ -322,6 +367,40 @@ export function installModelRouter(
     }
     // ★ 只观察 ⇒ 决定**一个字都不改**地传回去
     return decision
+  })
+
+  // ── ④ agent/request：**真正落地的地方**（只有 `apply` 会改东西）
+  //
+  //   为什么判档在 `pre-step`、落地在 `request`：
+  //   **只有 `pre-step` 的载荷里有 `messages`**（判档要的那一轮输入），
+  //   而**只有 `request` 的 `next()` 给得出 `LlmCallConfig{provider, model, …}`**
+  //   （改它 = 改这一请求用哪个模型）。
+  //   两个条件凑不到一个事件上 ⇒ 中间靠那个轮次路由锁连着。
+  //
+  //   ⚠️ 这是**瀑布**事件：必须 `await next()` 并把它的结果**原样**带下去
+  //   （除非我们要改）—— 少了 `next()` 会把整轮干掉，
+  //   `dsh-plan-mode` 那次 `decision.kind` 的 TypeError 就是这么来的。
+  on('agent/request', async (payload, next) => {
+    const config = (await next()) as { readonly provider?: unknown; readonly model?: unknown }
+    try {
+      // observe / off ⇒ **一个字都不改**（这是"先 observe 再 apply"的全部意义）
+      if (mode !== 'apply') return config
+      const p = (payload ?? {}) as AgentPayload
+      const locked = lockedRoutes.get(routeKey(sessionIdOf(p.agent), p.turn))
+      if (locked === undefined) return config
+      // 已经是那个模型 ⇒ 原样返回（少造一个对象，也让日志干净）
+      if (config.provider === locked.provider && config.model === locked.model) return config
+      return {
+        ...(config as Record<string, unknown>),
+        provider: locked.provider,
+        model: locked.model,
+        reasoningEffort: locked.effort,
+      }
+    } catch (error) {
+      // ★ 路由装配失败 ⇒ **放行宿主原本的配置**（绝不因为我们的问题让这一轮跑不起来）
+      atLevel(log, 'error')('agent/request 路由装配出错（已放行宿主的配置）：' + String(error).slice(0, 120))
+      return config
+    }
   })
 
   // ── ③ agent/turn-stopping：轮次即将结束（收"建议下次用什么"）
@@ -338,8 +417,8 @@ export function installModelRouter(
     }
   })
 
-  log('模型路由：已订阅 ' + String(disposers.length) + ' 个事件（期望 3 个）')
-  if (disposers.length < 3) {
+  log('模型路由：已订阅 ' + String(disposers.length) + ' 个事件（期望 4 个）')
+  if (disposers.length < 4) {
     // ★★ **fault**：这不是"一次订阅失败"（那是 error），而是
     //   **路由这一整个子系统实际不工作** —— 事件名与宿主对不上时，
     //   它会**安静地什么都不做**，而外面看起来一切正常。这正是本仓
