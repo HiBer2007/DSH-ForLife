@@ -238,15 +238,30 @@ function matches(record: LogRecord, filter: LogQuery): boolean {
 }
 
 /**
- * 数据目录下日志的默认位置（与 `forlife.sqlite` 同级，**可移植**：
- * 只认显式给的 `FORLIFE_DB_PATH` / `FORLIFE_LOG_DIR` 那一族，绝不碰宿主 `~`）。
+ * 日志目录的解析（**可移植**：只认显式给的东西，绝不碰宿主 `~`）。
+ *
+ * 优先级：
+ *  1. `FORLIFE_LOG_DIR`（显式指定，最高）
+ *  2. **`dbPath` 参数**（调用方已知的数据库路径 ⇒ 日志放它旁边）
+ *  3. `FORLIFE_DB_PATH` 环境变量（同上，只是从环境来）
+ *  4. 进程目录下的 `.forlife/logs`（最后的兜底）
+ *
+ * ## ★ 为什么要收 `dbPath` 参数（2026-10-10 修的）
+ *
+ * 第一版只看环境变量。而 `createAdminServer({ dbPath })` 是**按参数**拿路径的
+ * （测试就是这么用的），于是环境变量没有 ⇒ 一路掉到兜底 ⇒
+ * **测试把日志写进了仓库根目录的 `.forlife/logs/`**，还被 `git add -A` 收进了提交。
+ *
+ * ⇒ 调用方**已经知道**库在哪，日志就该放它旁边 ——
+ *   这也是容器里的正确行为（`/data/dsh/forlife/db/` 旁边的 `logs/`，
+ *   与库同卷、一起被备份、一起被清理）。
  */
-export function resolveLogDir(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveLogDir(env: NodeJS.ProcessEnv = process.env, dbPath?: string | undefined): string {
   const explicit = env['FORLIFE_LOG_DIR']
   if (explicit !== undefined && explicit.trim() !== '') return explicit.trim()
-  const dbPath = env['FORLIFE_DB_PATH']
-  if (dbPath !== undefined && dbPath.trim() !== '') {
-    const dir = dbPath.trim().replace(/[/\\][^/\\]*$/, '')
+  const fromDb = (dbPath ?? env['FORLIFE_DB_PATH'] ?? '').trim()
+  if (fromDb !== '') {
+    const dir = fromDb.replace(/[/\\][^/\\]*$/, '')
     return join(dir === '' ? '.' : dir, 'logs')
   }
   return join(process.cwd(), '.forlife', 'logs')

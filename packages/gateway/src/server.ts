@@ -139,7 +139,10 @@ export function createAdminServer(options: AdminServerOptions): {
    * 关掉哪些等级：`FORLIFE_LOG_DISABLE`（默认只关 `debug`）。
    */
   const logStore = createLogStore({
-    dir: resolveLogDir(process.env),
+    // ★ 传 `options.dbPath`：调用方**已经知道**库在哪，日志就放它旁边 ——
+    //   不看参数只看环境变量会让测试掉到兜底，把日志写进仓库根目录
+    //   （2026-10-10 真踩过：`git add -A` 把那个文件收进了提交）。
+    dir: resolveLogDir(process.env, options.dbPath),
     retentionDays: retentionDaysFromEnv(process.env['FORLIFE_LOG_RETENTION_DAYS']),
     disabledLevels: disabledLevelsFromEnv(process.env['FORLIFE_LOG_DISABLE']).disabled,
     onError: (message) => {
@@ -294,7 +297,7 @@ export function createAdminServer(options: AdminServerOptions): {
       //    而**不引入一个定时器**（一个为清理日志而常驻的定时器，本身就是新的故障源）。
       const pruned = logStore.prune()
       if (pruned > 0) log(`日志保留期：已清理 ${String(pruned)} 个过期日志文件（保留 ${String(retentionDaysFromEnv(process.env['FORLIFE_LOG_RETENTION_DAYS']))} 天）`)
-      log(`日志落盘：${resolveLogDir(process.env)}`)
+      log(`日志落盘：${resolveLogDir(process.env, options.dbPath)}`)
 
       return {
         server,
