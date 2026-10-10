@@ -306,7 +306,22 @@ test('提示词预览：给出最终拼装结果、token 数与"会不会造成�
   assert.equal(changed.status, 200)
   assert.equal(changed.body['ok'], true)
   assert.equal(changed.body['willChange'], true, '内容变了就要明说会造成一次缓存未命中')
-  assert.match(String(changed.body['rendered']), /叫对方主人/, '预览里变量必须已被替换（这才是"最终拼装结果"）')
+  // ★ 2026-10-10：**空值变量不许让预览报错**（这是本轮修的一个真回归）。
+  //
+  //   背景：`prompt.variables.personaName` / `ownerName` 的值按裁定被**清空**
+  //   （示例值泄漏）。而 `api.ts` 原先把空配置值当 `''` 传进 `renderPromptPreview`
+  //   ⇒ 走进 `prompt-text.ts:187` 的「变量没有取值」分支 ⇒ **预览报错，而那是误报**。
+  //   ⇒ 已改成"空值 ⇒ 整个键不传"，走它**文档写明**的回退（`provided ?? spec.sample`）。
+  assert.equal(changed.body['ok'], true, '★ 空值变量不该让预览失败 —— 试渲染该用示例值把格式显示出来')
+  assert.match(
+    String(changed.body['rendered']),
+    /叫对方主人/,
+    '预览里变量必须已被替换（缺省走白名单的 `sample`，那是 `renderPromptPreview` 写明的行为）',
+  )
+  assert.ok(
+    !String(changed.body['rendered']).includes('{{'),
+    '★ 渲染结果里不该留下任何未替换的占位符',
+  )
   assert.ok(Number(changed.body['tokenCount']) > 0)
   const diff = changed.body['diff'] as Record<string, unknown>[]
   assert.ok(diff.some((d) => d['kind'] === 'added') && diff.some((d) => d['kind'] === 'removed'), '要给出 diff')

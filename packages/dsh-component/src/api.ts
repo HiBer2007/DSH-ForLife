@@ -1106,13 +1106,30 @@ export function buildPanelRoutes(runtime: MemoryRuntime): readonly PanelRoute[] 
 
 /** 提示词变量的当前取值（面板预览要用真实值）。 */
 function defaultPromptVariables(): Record<string, string> {
-  return {
+  const raw: Record<string, string> = {
     persona_name: defaultFor<string>('prompt.variables.personaName'),
     owner_name: defaultFor<string>('prompt.variables.ownerName'),
     language: defaultFor<string>('prompt.variables.language'),
     persona_role: defaultFor<string>('prompt.variables.personaRole'),
     style_notes: defaultFor<string>('prompt.variables.styleNotes'),
   }
+  // ★★ 2026-10-10：**空值 ⇒ 整个键不传**，让 `renderPromptPreview` 走它自己
+  //   **文档写明**的那条回退：`const value = provided ?? spec.sample`
+  //   （"缺省用白名单里的示例值"，`store/src/prompt-text.ts:170`）。
+  //
+  //   背景：`prompt.variables.personaName` / `ownerName` 的值**按裁定被清空**
+  //   （示例值泄漏，理由写在 `plan-baseline.json` 那两条的 `src` 里）。
+  //   而传 `''` 会走进 `prompt-text.ts:187` 那个「变量没有取值」的报错分支
+  //   ⇒ **面板预览对任何用了 `{{persona_name}}` / `{{owner_name}}` 的提示词都报错** ——
+  //   而那是**误报**：预览本来就是"**试渲染**"，它的职责是用示例值把**格式**显示出来。
+  //
+  //   ⇒ 这也是"清空值"与"预览可用"能同时成立的做法：**生产提示词**里没有一处
+  //     引用这两个变量（已 grep 核实），所以示例值只在**预览**里当占位符出现。
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(raw)) {
+    if (value.trim() !== '') out[name] = value
+  }
+  return out
 }
 
 /** QQ 侧统计（面板概览用）。 */

@@ -722,8 +722,8 @@
       "src": "用户 2026-10-09 裁定 6（design：**值清空**，键保留。为什么清空：它的旧值「团子」**同时是 `store/src/prompt-text.ts:47` 的 `sample`** —— 一个**示例值**溜进了生产配置，于是系统提示词一开始就自称「团子」，而记忆里是「呆肥鱼」，模型拿到两份打架的身份信息。用户裁定：**名字是人格，必须由记忆承担**，不由提示词预设。为什么保留键而不是删键：它还在变量白名单里（`admin-api.test.ts:287` 断言白名单含 `persona_name`），删键要连白名单与校验一起动，属于另一件事；清空值即可拆掉地雷 —— 谁在面板里写 `{{persona_name}}` 也插不出任何名字了。）"
     },
     "prompt.variables.ownerName": {
-      "v": "主人",
-      "src": "EXECUTION_PLAN §2.8（可编辑提示词的变量白名单）"
+      "v": "",
+      "src": "用户 2026-10-09 裁定 6 的**对称补做**（design：**值清空**，键保留 —— 与 `prompt.variables.personaName` 同一个处理）。为什么当时漏了它：`personaName` 那一条的 `src` 写着裁定理由，而这一条的 `src` 一直是通用样板「EXECUTION_PLAN §2.8（可编辑提示词的变量白名单）」——**清 personaName 时没顺手处理它**。为什么它也属于同一类：它的值「主人」**同时是 `store/src/prompt-text.ts:48` 的 `sample`**（`description: 主人的称呼`）—— 与「团子」一样是**示例值溜进了生产配置**；而记忆里对用户的称呼是「小猫」，于是又是一份打架的身份信息。✅ 清空的安全性已核实：全仓 grep `{{owner_name}}` ⇒ **生产提示词里没有一处渲染它**（`plan-baseline.json:709` 的人格段只用 `{{persona_role}}`；`prompt-text.ts` 的 `sample` 是**面板占位符**，保留）。键保留的理由同 personaName：它在变量白名单里，删键要连白名单与校验一起动。"
     },
     "prompt.variables.language": {
       "v": "中文",
