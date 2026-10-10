@@ -85,6 +85,31 @@ export function sessionRefreshOf(refresh: FeedRefreshOutcome | undefined): FeedS
   }
 }
 
+/**
+ * **本轮的批次指针**（用户 2026-10-10：「以**单个轮次**为界，每一个轮次结束就传输下一批次」）。
+ *
+ * ## 为什么是指针，不是内容
+ *
+ * 模型驱动路径里，素材是**模型自己去 `read`** 的（`feed_memory` 的描述就写着
+ * "模型自己 read 完一坨资料再喂"；用户指定的白名单里也正好有 `read`/`write`/`edit`
+ * —— 那是它**取素材的手**）。所以系统每轮只需告诉它「**下一段是哪一段**」，
+ * 而**不是**把内容塞进提示词。
+ *
+ * 这与那条边界一致（`feed-frame.ts` 头里写的）：投喂只产出**提示词文本**，
+ * 不碰消息流 —— 而"指针"就是最轻的那种文本。
+ *
+ * ⚠️ 指针是**给人看与给模型看**的进度说明，**不是正确性机制**：
+ * 真正决定"哪些已喂"的是游标（`feed-cursor.ts`），而重复投喂是幂等的。
+ */
+export interface FeedSessionBatch {
+  /** 本轮该喂的起始段（含）。 */
+  readonly from: number
+  /** 本轮该喂的结束段（含）。 */
+  readonly to: number
+  /** 这份素材一共几段。 */
+  readonly total: number
+}
+
 /** 一次投喂会话的现状（落库的 JSON 就是它）。 */
 export interface FeedSession {
   /** 当前正在喂的来源（目录扫描时每个文件一个来源）。 */
@@ -99,6 +124,8 @@ export interface FeedSession {
   readonly updatedAt: string
   /** ★ 这次投喂基于**哪个版本的源**（CLI 上那行"旧 N → 新 M"就是它）。 */
   readonly refresh?: FeedSessionRefresh
+  /** ★ 本轮该喂第几到第几段（提示段用它告诉模型"接下来读哪一段"）。 */
+  readonly batch?: FeedSessionBatch
 }
 
 /** 写一行会话状态（`forlife_state` 是 key/value 表，没有别的字段）。 */
@@ -112,7 +139,13 @@ function write(db: DatabaseSync, session: FeedSession): void {
 /** 开一次投喂会话（同一进程重复开 = 覆盖上一条，见模块头的取舍）。 */
 export function beginFeedSession(
   db: DatabaseSync,
-  input: { readonly source: string; readonly as: FeedKind; readonly now?: Date; readonly refresh?: FeedRefreshOutcome | undefined },
+  input: {
+    readonly source: string
+    readonly as: FeedKind
+    readonly now?: Date
+    readonly refresh?: FeedRefreshOutcome | undefined
+    readonly batch?: FeedSessionBatch | undefined
+  },
 ): FeedSession {
   const at = (input.now ?? new Date()).toISOString()
   const refresh = sessionRefreshOf(input.refresh)
@@ -125,6 +158,7 @@ export function beginFeedSession(
     startedAt: at,
     updatedAt: at,
     ...(refresh === undefined ? {} : { refresh }),
+    ...(input.batch === undefined ? {} : { batch: input.batch }),
   }
   write(db, session)
   return session
@@ -140,10 +174,14 @@ export function advanceFeedSession(
     readonly batches: number
     readonly tokens: number
     readonly now?: Date
+    /** 本轮该喂第几到第几段（不给 = 沿用上一条会话里的指针）。 */
+    readonly batch?: FeedSessionBatch | undefined
   },
 ): FeedSession {
   const previous = readFeedSession(db, { now: patch.now, ignoreStale: true })
   const at = (patch.now ?? new Date()).toISOString()
+  // 指针：本次没给就沿用上一次的（"轮次之间只在结束那一刻推进"很常见）
+  const batch = patch.batch ?? previous?.batch
   const session: FeedSession = {
     source: patch.source,
     as: patch.as,
@@ -152,6 +190,7 @@ export function advanceFeedSession(
     tokens: patch.tokens,
     startedAt: previous?.startedAt ?? at,
     updatedAt: at,
+    ...(batch === undefined ? {} : { batch }),
   }
   write(db, session)
   return session
@@ -227,6 +266,7 @@ export function readFeedSession(db: DatabaseSync, options: ReadFeedSessionOption
 
   const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0)
   const sessionRefresh = readSessionRefresh(record['refresh'])
+  const sessionBatch = readSessionBatch(record['batch'])
   return {
     source,
     as,
@@ -236,7 +276,27 @@ export function readFeedSession(db: DatabaseSync, options: ReadFeedSessionOption
     startedAt,
     updatedAt,
     ...(sessionRefresh === undefined ? {} : { refresh: sessionRefresh }),
+    ...(sessionBatch === undefined ? {} : { batch: sessionBatch }),
   }
+}
+
+/**
+ * 读会话里那个**批次指针**（同样是"坏数据当没有"）。
+ *
+ * 为什么不让坏指针把整条会话判死：指针是**进度说明**，
+ * 它坏掉不该让"我正在消化记忆"这件事也一起消失（与 `readSessionRefresh` 同一条理由）。
+ */
+function readSessionBatch(value: unknown): FeedSessionBatch | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  const num = (raw: unknown): number | undefined =>
+    typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : undefined
+  const from = num(record['from'])
+  const to = num(record['to'])
+  const total = num(record['total'])
+  if (from === undefined || to === undefined || total === undefined) return undefined
+  if (to < from) return undefined
+  return { from, to, total }
 }
 
 /**
