@@ -51,6 +51,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { decideWake } from './wake.ts'
+import { atLevel } from './admin/log.ts'
 
 /** 存活判定结论。 */
 export type LivenessState = 'alive' | 'offline' | 'unknown'
@@ -247,12 +248,21 @@ export function createLivenessMonitor(options: LivenessOptions = {}): LivenessMo
   const observeTransport = (connected: boolean, detail?: string): void => {
     transportConnected = connected
     if (connected) botOfflineReason = undefined
-    log(`反向 WS ${connected ? '已连接' : '已断开'}${detail === undefined ? '' : `（${detail}）`}`)
+    // ★ 反向 WS 是**唤醒链路这一个子系统**的全部 —— 它断了就是"一部分功能不可用"，
+    //   也就是 `fault` 那一级（进程还活着，但她叫不醒了）。
+    //   连着的时候只是 `info`（一次事实）。
+    //   `atLevel` 让"只注入普通函数的调用方"照旧能跑（见 `log.ts` 里那个桥的说明）。
+    atLevel(log, connected ? 'info' : 'fault')(
+      `反向 WS ${connected ? '已连接' : '已断开'}${
+        detail === undefined ? '' : `（${detail}）`
+      }${connected ? '' : ' —— 唤醒链路不可用（进程还活着，但她叫不醒了）'}`,
+    )
   }
 
   const observeBotOffline = (reason: string, at: Date = now()): LivenessVerdict => {
     botOfflineReason = reason
-    log(`收到 bot_offline 通知：${reason}`)
+    // 协议端主动报掉线：同样是**唤醒链路**这一子系统不可用 ⇒ fault
+    atLevel(log, 'fault')(`收到 bot_offline 通知：${reason}`)
     return check(at)
   }
 

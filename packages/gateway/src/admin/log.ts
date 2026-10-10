@@ -109,6 +109,40 @@ export function logSinkCount(): number {
 }
 
 /**
+ * 「可能是带级别的 logger，也可能只是普通函数」——**迁移期的桥**。
+ *
+ * ## 为什么需要它（不是过渡期的将就，是一条设计）
+ *
+ * 本仓大量函数把日志**注入**进来（`createWakeLiveness({ log })` 这种），
+ * 测试就靠注入捕获具体的行。若直接把注入类型改成 `Logger`，
+ * 所有只传 `(m) => …` 的调用方与测试**全部编译不过** ——
+ * 那就又变成"不改完 127 处就不能跑"，正是要避免的事。
+ *
+ * ⇒ 而 `createLogger('x')` 的返回值**本身就是可调用的**
+ *   （`log('一句话')` ≡ `log.info('一句话')`），所以：
+ *
+ * | 调用方传的东西 | `atLevel(log,'fault')` 的结果 |
+ * | :--- | :--- |
+ * | `createLogger('m')` | 真的走 `.fault(...)`（级别是**真的**） |
+ * | 普通 `(m) => …` | 退化成调它自己（级别丢失，但**功能不变**） |
+ *
+ * ⇒ **级别可以一个一个文件地补上**，不需要一次性改完。
+ */
+export type LoggerLike = ((message: string) => void) & Partial<Record<LogLevel, (message: string) => void>>
+
+/**
+ * 取"以某一级说话"的那个函数（见 {@link LoggerLike}）。
+ *
+ * @param log - 注入进来的日志函数（可能带级别，也可能不带）。
+ * @param level - 想用的级别。
+ */
+export function atLevel(log: LoggerLike, level: LogLevel): (message: string) => void {
+  const fn = log[level]
+  // 绑一下：这些方法是挂在 logger 上的，脱开对象调用在别处可能丢 `this`
+  return typeof fn === 'function' ? fn.bind(log) : log
+}
+
+/**
  * 建一个模块 logger。
  *
  * ★ **没装落点时的兜底是写 stdout，不是丢弃。**
