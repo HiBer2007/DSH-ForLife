@@ -51,6 +51,9 @@ import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
 import { startWakeHost } from './wake-host.ts'
 // ★ 投喂的轮次钩子（用户 2026-10-10：「以单个轮次为界」）
 import { createFeedTurnHook } from './feed-turn-hook.ts'
+// ★ 日志汇（`FIX_PLAN.md` §26）：让插件的日志能进网关的日志库 ⇒ 面板可见
+import { createPluginLogSink } from './log-sink.ts'
+import { guessLevel, type LogLevel } from '@forlife/gateway'
 import type { ToolRestrictHost } from './feed-restrict.ts'
 import { registerLoopGuard } from './loop-guard-register.ts'
 import { registerToolResultSpill } from './tool-spill.ts'
@@ -593,14 +596,44 @@ export function registerTurnAccounting(
 export function apply(ctx: ContextLike, rawConfig: Partial<ForlifeConfig> = {}): void {
   // volatile 字段在解析结果里是引用对象，必须先取快照再当纯数据用
   const config = resolveConfig(rawConfig)
+  // ★★ 日志要**写到网关读得到的那个文件里**（`FIX_PLAN.md` §26）。
+  //
+  //   原来这两条只是 `console.log` ⇒ 面板上**看不到插件的任何活动**
+  //   （记忆写入/沉降/投喂/判档/唤醒**全在这里**发生）。
+  //   现在先建一个**文件汇**；目录由 `dshHome` 决定，所以它得等下面解析完再建
+  //   ⇒ 用一个 `let`，建好之前 `?.` 跳过（那几百毫秒的启动日志只进 stdout）。
+  //
+  //   ⚠️ 级别用 `guessLevel`：与网关那边**同一套猜测规则**，
+  //   于是插件日志的级别口径与管理面板**逐字一致**（不会一边叫 error、一边叫 info）。
+  let pluginLog: { write(level: LogLevel, text: string, module?: string): void } | undefined
   const log = (message: string): void => {
+    pluginLog?.write(guessLevel(message), message)
     if (config.verbose) console.log(`[forlife] ${message}`)
   }
-  const always = (message: string): void => console.log(`[forlife] ${message}`)
+  const always = (message: string): void => {
+    pluginLog?.write(guessLevel(message), message)
+    console.log(`[forlife] ${message}`)
+  }
 
   // ① 打开记忆库
   const dshHome = resolveDshHome()
   const dbPath = resolveDbPath(config, dshHome)
+
+  // ★ 目录：`FORLIFE_LOG_DIR` 优先（与网关的 `resolveLogDir()` 同一条规则），
+  //   否则与网关的兜底同构 —— **两边必须算出同一个目录**，
+  //   否则插件写 A、网关读 B，**两边都"正常"而面板上永远是空的**。
+  const sink = createPluginLogSink({
+    dir:
+      (process.env['FORLIFE_LOG_DIR'] ?? '').trim() !== ''
+        ? (process.env['FORLIFE_LOG_DIR'] ?? '').trim()
+        : join(dshHome, 'forlife', 'logs'),
+    // ★ 汇自己出错也只打 stdout —— 绝不让它反过来递归写日志
+    onError: (m: string) => {
+      console.error(`[forlife] ${m}`)
+    },
+  })
+  pluginLog = sink
+  always(`插件日志汇：写入 ${sink.dir}（与网关的日志库同一个目录 ⇒ 面板可见）`)
   let runtime: MemoryRuntime
   try {
     runtime = new MemoryRuntime({ config, dbPath, log })
