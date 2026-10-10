@@ -2402,6 +2402,70 @@ agentDefaultModel=✅ current=deepseek-official/deepseek-flash:high
 ★ 我把它从待办里划掉。**教训与 §7 同类：清单上的"待办"也要去真机核对，它会过期。**
 
 
+---
+
+## 39. ✅ **P0-b / D1 验完了**：三条★或★真的成立，而且**占比那条就是供货的那条**（2026-10-10）
+
+> D1 的原话：PLAN.MD:119 的「中期占比／访问频率／定时」是**三条件★或★**，
+> 而原实现只做了"定时"，还把它当成**前置过滤器** ⇒ 另两条连求值机会都没有；
+> "中期占比"更是**从未实现**（`fragment.activeBudgetRatioMin/Max` 全仓零生产消费点）。
+
+### 代码（`runtime.ts:1662-1703`，读的是**部署的镜像**）
+
+三条各自算出一个集合，然后**取并集**：
+
+| 条件 | 算式 | 行 |
+| :--- | :--- | :--- |
+| **定时** | `(last_accessed_at ?? created_at) < now - tiering.settleAfterDays` | `:1682` |
+| **访问频率** | `(last_accessed_at ?? created_at) < now - tiering.frequencyIdleDays` | `:1683` |
+| ★ **中期占比** | `midRatio = activeTokens / memory.midBudgetTokens`，`>= ratioMin` 时**取全部 active** | `:1680,1684` |
+
+```ts
+const pool = byRatio.length > 0
+  ? allActive                                        // 占比成立 ⇒ 并集就是全表
+  : [...new Set([...byFrequency, ...byTimer].map(e => e.id))].map(id => merged.get(id)!)  // 否则两批去重合并
+```
+
+★ 注释自己写明「三条是**或**关系 ⇒ 候选是**并集**」，并记下**哪几条触发了**（`fired`）。
+
+### 阈值（基线逐条读出）
+
+| 键 | 值 | 来源 |
+| :--- | :--- | :--- |
+| `memory.midBudgetTokens` | **500000** | ★ **决定 A（用户拍板）** —— 基线 `src` 里写着它是那对 ratio 的**分母** |
+| `fragment.activeBudgetRatioMin` | **0.8** | PLAN.MD §5.3 |
+| `tiering.frequencyIdleDays` | **30** | ★ **用户裁定 ⑥** |
+| `tiering.settleAfterDays` | **90** | —— |
+| `tiering.settleBatchSize` | **200** | —— |
+
+### ★★ 用真数据实算（口径逐字来自 `:1680-1684`）
+
+```
+activeTokens    = 1,515,642
+midBudgetTokens = 500,000
+midRatio        = 3.031
+ratioMin        = 0.8
+byRatio 成立？   ★ 成立
+```
+
+⇒ **候选 = 全部 active 条目（含今天刚写入的）** ⇒ **这就是 `long_memory_entries` 从 0 变 400 的直接原因。**
+
+★★ 而**"访问频率"那条只给出 0 条**（数据全是 2026-10-09 写的，才 1.5 天，够不着 30 天）。
+⇒ **没有占比这条，"或"里另外两条到现在都还是空的 —— 沉降依然是 0。**
+这正是 D1 的要害：**漏掉的那一条，恰好是唯一能供货的那条。**
+
+★ 另一处对得上的细节：`tiering.settleBatchSize = 200`，而 long 正好 **400 = 2 批 × 200**。
+
+### 容器内实查（读**部署的镜像**）
+
+| 检查 | 结果 |
+| :--- | :--- |
+| `byTimer` / `byFrequency` / `byRatio` | **各 3 处** ✅ 三条都在 |
+| `memory.midBudgetTokens` 的消费点 | **1 处** ✅（D1 说它此前语义不明） |
+| `tiering.frequencyIdleDays` 的消费点 | **2 处** ✅（裁定 ⑥ 的阈值真的被读） |
+
+
+
 
 
 
