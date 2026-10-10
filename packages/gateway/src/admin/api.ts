@@ -76,6 +76,8 @@ import { LOG_LEVELS, isLogLevel, type LogLevel } from './log-levels.ts'
 import { listFeedFiles } from '../feed-ingest.ts'
 import { startFeedRunFromFiles } from '../feed-run-start.ts'
 import { readFeedCursor } from '../feed-cursor.ts'
+import { readFeedRun } from '../feed-run.ts'
+import { nextFeedTurn } from '../feed-plan.ts'
 import { openLogStream } from './sse.ts'
 import type { PortService } from '../port-service.ts'
 import { enqueueOutbound } from '../outbox.ts'
@@ -1205,6 +1207,44 @@ export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage,
       //   ⚠️ **必须放在 `/feed` 分支之前**：TS 会在 `route === '/feed'` 那个分支里
       //   把 `route` 收窄成 `'/feed'`，之后再比 `'/feed-run'` 会被判成"不可能相等"
       //   （TS2367）—— `/logs` 与 `/logs/stream` 那里踩过同一个坑。
+      // ★ 进度读数（**GET**，同一个路径）。
+      //
+      //   为什么必须有它：投喂是**以轮次为界**推进的，一次 POST 只返回
+      //   "**开始那一刻**"的快照 —— 面板据此显示"已投喂 N 段"的话，
+      //   喂了几轮之后那个数字**是不动的**，而用户会以为卡住了。
+      //   ⇒ 给它一个能问"现在到哪了"的只读端点（面板轮询它）。
+      //
+      //   ⚠️ 放在 POST 之前：TS 会在 `method === 'POST'` 那个分支里把 `method`
+      //   收窄成 `'POST'`，之后再比 `'GET'` 会被判成"不可能相等"。
+      if (route === '/feed-run' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const run = readFeedRun(db)
+        if (run === undefined) {
+          json(res, 200, { active: false })
+          return true
+        }
+        const cursor = readFeedCursor(db, run.source)
+        const plan = nextFeedTurn({
+          total: run.segments.length,
+          fedThrough: cursor?.fedThrough ?? 0,
+          perTurn: run.perTurn,
+        })
+        json(res, 200, {
+          active: true,
+          source: run.source,
+          kind: run.kind,
+          perTurn: run.perTurn,
+          segments: run.segments.length,
+          fedThrough: plan.fed,
+          pending: plan.pending,
+          done: plan.done,
+          next: plan.next ?? null,
+          lastSegment: run.segments[run.segments.length - 1]?.label ?? null,
+        })
+        return true
+      }
+
       if (route === '/feed-run' && method === 'POST') {
         const guard = checkStateChange(req)
         if (guard !== undefined) { json(res, 400, { error: guard }); return true }
