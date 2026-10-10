@@ -2355,6 +2355,54 @@ if (!tokenOk || !turnsOk || !toolsOk) {
 现在两条都在部署的镜像里 ✅ —— 那 94% 从"静默消失"变成"**会被点名、且能按 id 捞回来**"。
 
 
+---
+
+## 38. ✅ **P2-b 两边都验过了（数据侧根本不是"待办"）** —— 2026-10-10 实查
+
+> §9 里 P2-b 记的是「额度路由往 `deepseek-official` 倾」，
+> 而我的待办清单上一直写着「**P2-b 数据侧：`model_routes` 必须重新播种**」。
+> **查了真库才知道那条待办是错的 —— 数据侧已经是好的。**
+
+### `model_routes` 的真实内容（只有 2 行）
+
+| id | role | **rank** | provider | model | note（行里自带） |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `mr_l1_ds_official` | L1 | **0** | ★ **deepseek-official** | `deepseek-flash` | ★「**P2-b**：DS 主账户还有额度 ⇒ **L1 优先它**；`opencode-go`(月剩 9%) 降」 |
+| `mr_l1_free_fallback` | L1 | 3 | `opencode-go` | `longcat-2.5-preview-free` | 「最后兜底：限时免费，随时可能消失（复核期一到自动踢出）」 |
+
+⇒ **`rank=0` 就是 `deepseek-official`** ✅ —— 正是用户要的"往 DS 主账户倾"，
+而且 `note` 把**理由写在了数据行里**（`updated_by=manual`，`updated_at=2026-10-09T10:02`）。
+
+### ★ 活的证据（比读表更硬）
+
+dsh 启动日志里那行 LLM 探针：
+
+```
+LLM 探针：llm=✅ providers=3(opencode-go,deepseek-official,deepseek-account) models=6
+agentDefaultModel=✅ current=deepseek-official/deepseek-flash:high
+```
+
+★★ **`current=deepseek-official/deepseek-flash:high`** ⇒ **系统真的在走 DS 主账户**，
+不是"表里写对了但没人用"。
+
+### 顺带查出来的两件事（都支持这个决定）
+
+| 事实 | 数据 |
+| :--- | :--- |
+| ★ `opencode-go` 这个端点**现在是不健康的** | `health_ok=0`，`health_note=TypeError: fetch failed`，`health_latency_ms=5010` |
+| 它**历史成功率也只有一半** | `endpoint_probe_log`：**探测 327 次 / 成功 173 次（53%）**，最后一次 `2026-10-10T12:03` |
+| `deepseek-account` 这个 provider | **0 个模型** ⇒ 不可用（日志里那行 `❌ deepseek-account/(无可用模型)` 是如实回答） |
+
+⇒ 所以"往 `deepseek-official` 倾"**不只是"因为它还有额度"，也是因为兜底那家本身在掉**。
+
+### ⇒ 更正我的待办清单
+
+「P2-b 数据侧：`model_routes` 必须重新播种」**这条待办是错的** ——
+真库里已经播种过（`2026-10-09T10:02`，`updated_by=manual`），而且**正在生效**。
+★ 我把它从待办里划掉。**教训与 §7 同类：清单上的"待办"也要去真机核对，它会过期。**
+
+
+
 
 
 
