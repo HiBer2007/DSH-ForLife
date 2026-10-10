@@ -37,6 +37,8 @@ import { getWakeTrigger, markSystemTriggersDue, recoverPendingCompactions, updat
 import { onCompactionFailure } from './compaction-engine.ts'
 import { buildWakeTools, type WakeToolHost } from './wake-tools.ts'
 import { registerWakeEndpoint, type WakeHost } from './wake-bridge-endpoint.ts'
+// ★ D7 / D-B：唤醒桥的**自建宿主**（DSH 的 webServer 只绑回环，gateway 够不到）
+import { startWakeHost } from './wake-host.ts'
 import { registerLoopGuard } from './loop-guard-register.ts'
 import { registerToolResultSpill } from './tool-spill.ts'
 import { createToolLoopGuard } from './tool-loop-guard.ts'
@@ -246,6 +248,27 @@ function registerWakeBridge(
   ctx.inject(['webServer', 'sessionController', 'sessions', 'agents'], (ready) => {
     mountWakeEndpoint(ready, secret, disposers, log)
   })
+
+  // ★★ 2026-10-10（D7 / 用户裁定 D-B）：**并行**再起一条我们自己的监听。
+  //
+  //   为什么必须有它：DSH 的 webServer **只绑回环** ⇒ 同网络的 gateway 够不到
+  //   （面板那张卡一直显示"未配置/连接超时"的根因）。DSH 硬禁 `--host 0.0.0.0`
+  //   （理由是 /api 暴露 = RCE），**那是它的边界，该尊重** ⇒ 我们自己起一个。
+  //
+  //   ⚠️ **不是降级**：上面那条继续服务 DSH 自己的 UI 面板，两条互不影响。
+  //   ⚠️ 端口来自环境变量（与 secret 同一套 fail-closed 风格）——
+  //      **不在代码里写 magic number**，没配就明确说没起、而不是偷偷用一个默认口。
+  const port = Number(process.env.FORLIFE_WAKE_BRIDGE_PORT ?? '')
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    log(
+      '⚠️ 未配置 FORLIFE_WAKE_BRIDGE_PORT（或不是合法端口）：唤醒桥**自建监听**未起' +
+        '（gateway 仍够不到 DSH 的回环 webServer ⇒ 面板会显示"DSH 后端未配置/连接超时"）。',
+    )
+    return
+  }
+  ctx.inject(['sessionController', 'sessions', 'agents'], (ready) => {
+    mountOwnWakeHost(ready, secret, port, disposers, log)
+  })
 }
 
 /**
@@ -268,6 +291,54 @@ function mountWakeEndpoint(
     return
   }
 
+  const host = wakeHostOf(ctx, log)
+  if (host === undefined) return
+
+  const dispose = registerWakeEndpoint(webServer as never, { secret, log, host })
+  disposers.push(dispose)
+  log(
+    `✅ 唤醒桥端点已挂载（DSH webServer / **只绑回环**）：${process.env.FORLIFE_WAKE_BRIDGE_PATH ?? '/forlife/wake'}`,
+  )
+}
+
+/**
+ * ★★ 2026-10-10（`FIX_PLAN.md` D7，用户裁定 **D-B**）：起**我们自己的**监听。
+ *
+ * ## 为什么另起一条，而不是"修好 webServer 那条"
+ *
+ * DSH 的 `webServer` **只绑回环** —— 它的作者在代码里硬禁了 `--host 0.0.0.0`
+ * （理由：`/api` 被网络上任何东西碰到 = 交出 RCE）。**那是 DSH 的边界，该尊重。**
+ * 于是同在一个 docker 网络里的 gateway **也够不到它**。
+ *
+ * ⇒ 所以这一条**与 webServer 那条并行**、互不影响：
+ *   webServer 继续服务 DSH 自己的 UI 面板（回环），这条只服务 gateway 的唤醒（容器网卡）。
+ *   ⚠️ **不是 if/else 降级** —— 上面那条的失败分支（没 webServer / 缺服务）**一句没改**。
+ */
+function mountOwnWakeHost(
+  ctx: ContextLike,
+  secret: string,
+  port: number,
+  disposers: (() => void | Promise<void>)[],
+  log: (message: string) => void,
+): void {
+  // 与 webServer 那条**共用同一份宿主适配**（`wakeHostOf`）—— 绝不复制粘贴，那会漂移
+  const host = wakeHostOf(ctx, log)
+  if (host === undefined) return
+
+  const own = startWakeHost({ port, log })
+  disposers.push(() => own.close())
+  // 鉴权/幂等/唤醒逻辑全在 `registerWakeEndpoint` 里 —— **这里没有第二套**
+  disposers.push(registerWakeEndpoint(own, { secret, log, host }))
+}
+
+/**
+ * 解析唤醒要用的宿主能力。
+ *
+ * **两条路共用这一份**（webServer 与自建监听）—— 复制粘贴会让两边的
+ * `createMessage` / `withoutInitiator` 适配漂移，而漂移的那一套就是
+ * "唤醒发不出去"或"归因到错误的人"的根源。
+ */
+function wakeHostOf(ctx: ContextLike, log: (message: string) => void): WakeHost | undefined {
   const sessionController = ctx.get('sessionController') as
     | { resolveAgent(sessionId: string): Promise<unknown> }
     | undefined
@@ -280,40 +351,34 @@ function mountWakeEndpoint(
   ]
   if (missing.length > 0) {
     log(`⚠️ 缺少服务 ${missing.join('、')}：唤醒桥端点未挂载（挂上去也只会让 gateway 收到一堆 500）。`)
-    return
+    return undefined
   }
 
-  const dispose = registerWakeEndpoint(webServer as never, {
-    secret,
-    log,
-    host: {
-      // 冷会话会被 resume —— 这是"给一个很久没说话的会话安排唤醒"能工作的前提
-      resolveAgent: async (sessionId: string) => {
-        const resolved = (await sessionController!.resolveAgent(sessionId)) as
-          | { agent?: { status?: string; followup?: (m: unknown) => void; session?: unknown } }
-          | undefined
-        const agent = resolved?.agent
-        if (agent === undefined || typeof agent.followup !== 'function') return undefined
-        return {
-          agent: {
-            status: String(agent.status ?? 'idle'),
-            followup: agent.followup.bind(agent),
-            session: agent.session,
-          },
-        }
-      },
-      flush: (session: unknown) => sessions!.flush(session),
-      // **构造一条"不是用户发的"消息** —— sourceKind 由调用方给（wake-timer 等）。
-      // 绝不用 sessionController.prompt()：它把 source 硬编码成 {kind:'user'}。
-      createMessage: (input) => ({
-        text: input.text,
-        source: { kind: input.sourceKind, summary: input.summary },
-      }),
-      withoutInitiator: (fn) => agents!.withoutInitiator(fn),
+  return {
+    // 冷会话会被 resume —— 这是"给一个很久没说话的会话安排唤醒"能工作的前提
+    resolveAgent: async (sessionId: string) => {
+      const resolved = (await sessionController!.resolveAgent(sessionId)) as
+        | { agent?: { status?: string; followup?: (m: unknown) => void; session?: unknown } }
+        | undefined
+      const agent = resolved?.agent
+      if (agent === undefined || typeof agent.followup !== 'function') return undefined
+      return {
+        agent: {
+          status: String(agent.status ?? 'idle'),
+          followup: agent.followup.bind(agent),
+          session: agent.session,
+        },
+      }
     },
-  })
-  disposers.push(dispose)
-  log(`✅ 唤醒桥端点已挂载：${process.env.FORLIFE_WAKE_BRIDGE_PATH ?? '/forlife/wake'}`)
+    flush: (session: unknown) => sessions!.flush(session),
+    // **构造一条"不是用户发的"消息** —— sourceKind 由调用方给（wake-timer 等）。
+    // 绝不用 sessionController.prompt()：它把 source 硬编码成 {kind:'user'}。
+    createMessage: (input: { readonly text: string; readonly sourceKind: string; readonly summary: string }) => ({
+      text: input.text,
+      source: { kind: input.sourceKind, summary: input.summary },
+    }),
+    withoutInitiator: (fn) => agents!.withoutInitiator(fn),
+  }
 }
 
 /** 会话事件信封的最小形状：**载荷在 `data` 里**（宿主 `Session.append` 造的是 `{type, seq, time, data}`）。 */
