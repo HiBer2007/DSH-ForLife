@@ -112,6 +112,17 @@ export interface FeedRequest {
   /** 整份输入共用的实体（`items` 自带的优先）。 */
   readonly entities?: readonly string[]
   /**
+   * **整块投喂**：不把每个 item 的正文按空行/标题行拆段，**一个 item = 一段**。
+   *
+   * 用户裁定 C-② / D5：条目化/总结化/印象化该由**模型**做，喂食只负责把
+   * 「10k–50k token 等级的原始片段」整块交给它。默认 `false` = 按段落拆（历史行为）。
+   *
+   * ⚠️ 它**只关段落切分**；`feed.chunkMaxTokens` 那道天花板照旧生效（那是防撑爆）。
+   * ⚠️ 它也**不影响来源派生**（`deriveSourceOfItems` 始终按段落切）——
+   *    同一份内容整块喂与分段喂必须落在**同一个来源**，否则会变成两份互相不覆盖的记忆。
+   */
+  readonly whole?: boolean
+  /**
    * ★ **投喂前更新**（源刷新）的声明 —— 见模块头那张表。
    *
    *  - **不给**：`text`/`items` 自动算「无源」；`paths`/`stream` **直接打回**（必须先说清源怎么刷）；
@@ -219,9 +230,19 @@ async function* planFromItems(
   items: readonly FeedItem[],
   entities: readonly string[] | undefined,
   maxTokens: number,
+  whole = false,
 ): AsyncGenerator<PlannedChunk> {
   for (const item of items) {
-    for (const paragraph of splitIntoFeedChunks(item.content)) {
+    // ★ `whole`（用户裁定 C-② / D5）：**不切段落** —— 一个 item 就是一段。
+    //   用户的判断：条目化/总结化/**印象化**该由**模型**做，喂食只负责把
+    //   「10k–50k token 等级的原始片段」整块交出去。
+    //   ⚠️ **天花板那一步照旧**（下面 `refineFeedChunk` 不动）：那是**防撑爆上下文**。
+    //   ⚠️ 也**不许**影响 `deriveSourceOfItems()`：同一份内容整块喂与分段喂必须派生
+    //      同一个来源，否则会变成两份互相不覆盖的记忆。
+    //   ⚠️ **核心层也必须收到 `whole`**（见 `feedUnit` 里 `feedMemory` 的调用）——
+    //      只改这一层的话，核心会把这"一片整块"再切开（实测 `actual: 3`）。
+    const paragraphs = whole ? [item.content] : splitIntoFeedChunks(item.content)
+    for (const paragraph of paragraphs) {
       const pieces = refineFeedChunk(paragraph, maxTokens)
       const split = pieces.length > 1
       for (const piece of pieces) {
@@ -271,6 +292,14 @@ interface UnitContext {
   readonly signal?: AbortSignal | undefined
   readonly onBatch: (progress: FeedProgress & { readonly label: string }) => void
   readonly label: string
+  /**
+   * ★ **整块投喂**（用户裁定 C-②）。**两层都要知道它**：
+   *  - 规划层（`planFromItems`）拿它决定"一个 item 切不切段"；
+   *  - **核心层**（下面 `feedMemory` 的调用）也必须收到它 ——
+   *    否则核心会把"那一片整块"**再切一次**，于是计划 1 段、实际落库 3 段。
+   *    （2026-10-10 实测栽过：只传规划层 ⇒ 守卫测试报 `actual: 3, expected: 1`。）
+   */
+  readonly whole: boolean
 }
 
 /**
@@ -330,6 +359,8 @@ async function feedUnit(context: UnitContext, chunks: AsyncGenerator<PlannedChun
       source,
       ...(dryRun ? { dryRun: true } : {}),
       indexOffset: from,
+      // ★ 核心层也必须收到 whole（见 `UnitContext.whole` 的说明）
+      ...(context.whole ? { whole: true } : {}),
       // tail 归档由本函数在全部喂完之后统一做（每批都做会把别批的段判成"多出来的"）
       archiveLeftovers: false,
     })
@@ -562,7 +593,7 @@ export async function feedInput(db: DatabaseSync, request: FeedRequest): Promise
       }
       const chunks =
         unit.items !== undefined
-          ? planFromItems(unit.items, request.entities, maxTokens)
+          ? planFromItems(unit.items, request.entities, maxTokens, request.whole === true)
           : planFromPieces((unit.pieces as () => AsyncIterable<string> | Iterable<string>)(), request.entities, maxTokens)
       try {
         const result = await feedUnit(
@@ -571,6 +602,10 @@ export async function feedInput(db: DatabaseSync, request: FeedRequest): Promise
             as,
             source: unit.source,
             dryRun,
+            // ★ 整块投喂：**规划层与核心层都要收到**（见 `UnitContext.whole`）。
+            //   ⚠️ 目前只对 `items` 形态生效（`planFromPieces` 那条流式/路径的路
+            //   还没有整块语义）—— 这是**已知边界**，不是漏了。
+            whole: request.whole === true,
             batchSize,
             intervalMs,
             yieldBetween,

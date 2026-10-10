@@ -272,6 +272,54 @@ test('★ 铁律 1：喂食**影响模型记得什么** ⇒ 必须记一笔后�
   assert.equal(feed.affects_model, 1, 'affects_model 必须为 1（它决定要不要向模型报告）')
 })
 
+// ── 接线守卫：`whole`（整块投喂，用户裁定 C-②）─────────────────────────────
+
+test('★★ `whole`：粒度由模型决定 —— 传了就落**一条**，且来源不受它影响', async () => {
+  const { ctx, registered } = fakeCtx()
+  quiet(() => apply(ctx, resolveConfig({ storageRoot: dir, verbose: false })))
+  await delay(40)
+  const tool = feedTool(registered)
+
+  // ⚠️ 三个用例必须用**互不相干的内容**：库里有**跨来源判重**（`feed.dedupeSimilarity`），
+  //    同一段内容第二次喂（哪怕换个来源）会被判成重复 ⇒ `inserted: 0`，
+  //    那样测的就不是 `whole` 而是判重了。（第一版我就这么写错了，被这条断言当场抓住。）
+  const blockSplit = '甲段：猫在窗台上。\n\n乙段：外面下雨了。\n\n丙段：她把窗关上。'
+  const split = (await tool({ as: 'knowledge', content: blockSplit, source: 'whole/split' })) as {
+    inserted: number
+  }
+  assert.ok(
+    split.inserted >= 2,
+    `**不传** whole ⇒ 应按段落拆成多条（实际 ${String(split.inserted)}）—— ` +
+      '若这里也是 1，说明段落切分整体没生效，那条"whole 落一条"的断言就什么都没证明',
+  )
+
+  // ★ 这一条是本测试的**核心**：它曾经报 `actual: 3` ——
+  //   因为 `whole` 只传到了**规划层**（`planFromItems`），而**核心层**
+  //   （`feedMemory`）没收到 ⇒ 它把这"一片整块"又切成了 3 段。
+  //   ⇒ **两层必须同时知道 `whole`**。
+  const blockWhole = '丁段：她在修机器人。\n\n戊段：电机烧了。\n\n己段：换了个新的。'
+  const one = (await tool({ as: 'knowledge', content: blockWhole, source: 'whole/one', whole: true })) as {
+    inserted: number
+  }
+  assert.equal(
+    one.inserted,
+    1,
+    'whole: true ⇒ 这一整块必须记成**一条**（规划层与核心层都要收到 whole，缺一层就会变成 3 条）',
+  )
+
+  // ★ 来源派生**不受** `whole` 影响：同一份内容两种模式必须落**同一个来源**，
+  //   否则"整块喂一次"与"分段喂一次"会变成两份互相不覆盖的记忆（而不是更新）。
+  //   （这里第二次喂必然被判重，但那不影响 `source` 的取值 —— 它照常返回。）
+  const blockSource = '庚段：周末去了趟图书馆。\n\n辛段：借了三本书。'
+  const bySplit = (await tool({ as: 'knowledge', content: blockSource })) as { source: string }
+  const byWhole = (await tool({ as: 'knowledge', content: blockSource, whole: true })) as { source: string }
+  assert.equal(
+    byWhole.source,
+    bySplit.source,
+    '整块喂与分段喂必须派生**同一个来源** —— 否则同一份内容会变成两份互相不覆盖的记忆',
+  )
+})
+
 // ── DB 路径推导：与插件自己的 storageRoot / dbFile 默认值一致 ─────────────────
 
 test('★ DB 路径：feed 脚本的 DSH_HOME 推导 == 插件配置的 storageRoot/dbFile 解析结果', () => {

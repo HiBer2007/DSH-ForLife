@@ -113,6 +113,14 @@ export function buildFeedTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         items: { type: 'string' },
         description: '可选：关键实体（人名/项目/技术名），最多 5 个。',
       },
+      whole: {
+        type: 'boolean',
+        description:
+          '可选：**整块投喂** —— 不把这段内容按空行/标题行拆成多条，它就记成**一条**。' +
+          '何时用：你判断「这一整段该被当成**一件事**」（一整段对话、一整篇笔记、一份完整资料）。' +
+          '默认 false = 按段落拆（每段一条）。' +
+          '⚠️ 即使用它，单条仍有 **token 天花板**保护：超了会被按句子边界机械切开（那是防撑爆上下文，不是替你决定粒度）。',
+      },
     },
     output: {
       schema: {
@@ -148,6 +156,7 @@ export function buildFeedTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         summary?: unknown
         source?: unknown
         entities?: unknown
+        whole?: unknown
       }
       runtime.recordToolCall()
 
@@ -203,6 +212,9 @@ export function buildFeedTools(defineTool: DefineToolLike, runtime: MemoryRuntim
         as: a.as,
         items,
         ...(source === undefined ? {} : { source }),
+        // ★ 整块投喂（用户裁定 C-②）：粒度交给你（模型）决定，切分那层让开。
+        //   ⚠️ 天花板照旧 —— 它只关「段落切分」，不关「防撑爆上下文」。
+        ...(a.whole === true ? { whole: true } : {}),
       })
       const result = firstFeedResult(run)
       if (result === undefined || !result.ok) {
