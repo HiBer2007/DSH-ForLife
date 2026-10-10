@@ -1207,5 +1207,54 @@ turn/end   ─▶ 按实际喂入段数推进游标 ─▶ 解除掩码 ─▶ �
   ⇒ **P3（清空重导）现在还不能做**，它必须在**新镜像上线之后**
 - 日志线：落盘+保留时间 / 面板按等级·模块筛选 / 把 `server.ts` 汇聚点接到新 sink / 127 处分批迁移
 - P2-a 面板四块 · P2-b 额度路由
+
+
+---
+
+## 22. 中介层现状核对（2026-10-10）：**降级接上了，判档没接**
+
+> 这一节是**把事实钉住**，不是计划。写它的原因：这一轮我给用户报过一句
+> 「`model_routes` 那张表现在谁也读不到」—— 那种"结构性缺口"如果只留在对话里，
+> 下一轮就会有人（包括我自己）重新推一遍、或者更糟：**以为它已经通了**。
+
+### 已经接上的（有接线守卫）
+
+| 能力 | 落在哪 | 门控 |
+| :--- | :--- | :--- |
+| **跨模型 failover**（失败时换 provider） | `dsh-component/src/failover-hooks.ts`，在 `index.ts` 里装上；订阅 `agent/request-error` + `agent/request` | **复用** `FORLIFE_ROUTER_MODE` |
+| 候选链来源 | `listModelRoutes(runtime.db, 'L2')`（只取 `enabled`） | —— |
+| 降级留痕 | `runtime.recordRoutingDecision(...)` → `routing_log` | —— |
+
+### **没有**接上的（三处零调用方，2026-10-10 复核仍然如此）
+
+| 符号 | 定义在 | 它是干什么的 |
+| :--- | :--- | :--- |
+| `new Router(...)` | `router/src/pipeline.ts:105` | 整条判档流水线（评分 → 判 L1/L2/L3 → 选模型） |
+| `defaultRouteEntries(...)` | `router/src/routes.ts:112` | 从 provider/model 三元组造**默认路由表**（纯构造函数） |
+| `lockTierForTurn(...)` | `router/src/routes.ts:152` | 轮次内锁档 + 每轮重新断言（**纯函数**，13 行） |
+
+⇒ **后果（必须说清）**：
+
+1. 「**轮次开始时按档位选模型**」这条链路不通 ⇒ **`switch_model` 这个工具当前还没有
+   真正改变过任何一次请求的模型**（它只写 `tierOverride` + `routing_log`）。
+2. **`model_routes` 表在判档链路上没人读** —— 目前唯一的读点是 failover 的候选链。
+3. 刚接上的 failover **只在请求失败时**才动路由，**不构成轮次开始时的档位选择**。
+   两件事不能混为一谈。
+4. P2-b（额度往 `deepseek-official` 倾）**是靠 profile 的 `agent-default-model` 生效的**
+   —— 那确实是启动模型的**真源**，所以 P2-b 本身达成；但"档位切换"整体不通。
+
+### 接线它需要什么（**不是一轮的事**，先记下来）
+
+- `new Router(...)` 需要：模型目录（`getCatalog`，`installModelRouter` 已经在拿）、
+  评分器（`router.minimum.*` 那一族基线键 + `minimum` 角色的模型）、
+  以及承载 `routing_log` 的库
+- 三个**时序**要点（`deviations.ts` 与 `PLAN.MD §8.6` 都强调过）：
+  ① 同一轮内不换档（`lockTierForTurn`）；
+  ② 每轮**重新断言**（只锁不重断言 ⇒ 判过一次 L3 就永久粘在 L3，**成本悄悄翻倍而没人发现**）；
+  ③ 评分在同步路径上 50ms 未返回就降级到启发式（**已有**预评分路径，
+  见 `deviations.ts` 里那条 50ms 的登记）
+- ⚠️ 而且 `FORLIFE_ROUTER_MODE` **默认 `off`** ⇒ 接上也不会立刻改变行为。
+  **先接、再 `observe`、最后才 `apply`** —— 这是 `model-router.ts:742` 那条注释定的顺序
+
 - 两处未收口：`router-hooks.ts`（死模块，接线或删）、`prompt.variables.personaName` 仍在白名单里
 
