@@ -1,0 +1,141 @@
+﻿---
+title: Windows 手动部署
+description: 在原生 Windows 上直接运行 SnowLuma，hook 自动注入桌面版 QQ（QQ.exe）
+---
+
+在 Windows 上 SnowLuma **原生运行**，不需要 Docker、不需要 WSL2。你只要装好桌面版 QQ，下载对应的 SnowLuma 发行包解压，运行即可——SnowLuma 会自动发现 `QQ.exe` 并注入 hook。
+
+> 想用容器跑？见 [Windows · Docker Desktop](/zh/guide/deploy/windows-docker)（注意：镜像是 Linux 的，跑的是 Linux QQ）。
+
+## 准备工作
+
+### 1. 安装桌面版 QQ（NTQQ）
+
+从腾讯官网下载并安装 Windows 桌面版 QQ（NT 架构），装好后能正常打开 `QQ.exe`。SnowLuma 注入的是这个正在运行的 NTQQ 进程。
+
+> [!WARNING]
+> 版本匹配很重要。SnowLuma 的 native hook 是按 QQ 版本对齐的。如果 QQ 自动升到了一个 SnowLuma 还不支持的新版本，hook 可能加载失败——遇到问题先看 WebUI / README 里的版本兼容说明。
+
+### 2. 下载 SnowLuma 发行包
+
+到 [GitHub Releases](https://github.com/SnowLuma/SnowLuma/releases) 选 `win-x64`，两种风味二选一：
+
+| 包                                       | 说明                                                         |
+| ---------------------------------------- | ------------------------------------------------------------ |
+| `SnowLuma-<TAG>-win-x64.tar.gz`          | **完整版**，内置 Node.js 运行时，不用单独装 Node，包体较大。 |
+| `SnowLuma-<TAG>-win-x64-lite.tar.gz`     | **精简版**，不含 Node.js，需要你自己先装好 Node，体积小很多。 |
+
+把 `<TAG>` 换成你要的版本号（例如 `v1.10.0`）。
+
+> [!TIP]
+> 不想折腾就选**完整版**，自带 Node，解压即用。
+
+### 3.（仅精简版）安装 Node.js
+
+SnowLuma 需要 **Node.js ≥ 22**。截至 2026 年，**Node 24（“Krypton”）是 Active LTS**，22（“Jod”）是 Maintenance LTS。精简版请安装 **Node 24 LTS**（22 也能跑）。
+
+到 [nodejs.org](https://nodejs.org/en/about/previous-releases) 下载 Windows 安装包，装完用 PowerShell 验证：
+
+```powershell
+node -v
+# 应输出 v24.x.x（或 v22.x.x）
+```
+
+完整版自带运行时，**跳过这一步**。
+
+## 解压并运行
+
+把下载的 tarball 解压到一个固定目录，例如 `C:\SnowLuma\`。解压后目录里有 `index.mjs`、`launcher.bat`、`webui/`、`native/` 等。
+
+> [!TIP]
+> `.tar.gz` 可以用 Windows 自带的 `tar`（Win10/11 已内置）解压：
+>
+> ```powershell
+> tar -xzf SnowLuma-<TAG>-win-x64.tar.gz -C C:\SnowLuma
+> ```
+>
+> 也可以用 7-Zip 等工具。
+
+进入解压目录后，双击 `launcher.bat` 启动（它本质就是跑 `node ./index.mjs` 再 `pause`，方便你看输出）。或者在终端里手动跑：
+
+```powershell
+cd C:\SnowLuma
+node ./index.mjs
+```
+
+完整版若用了内置 Node，请按 README 指引启动（一般直接 `launcher.bat` 即可）；具体见 WebUI / README。
+
+## QQ 与 SnowLuma 的启动顺序
+
+SnowLuma 默认开启 **hook 自动加载**：它会持续探测系统里的 QQ 主进程，发现 `QQ.exe` 就自动把 hook 注入进去（先进入被动观察），等你扫码登录完成后，hook 自动从被动观察切到工作模式。
+
+所以两种顺序都行：
+
+- **先开 QQ 再开 SnowLuma**：SnowLuma 启动后立刻发现已在运行的 `QQ.exe` 并注入。
+- **先开 SnowLuma 再开 QQ**：SnowLuma 会等到 `QQ.exe` 出现后再注入。
+
+> [!WARNING]
+> **必须用和 QQ 相同的 Windows 用户运行 SnowLuma。** 注入需要能访问目标进程；如果 SnowLuma 和 QQ 跑在不同用户（或权限不对等）下，注入会失败。如果一个以管理员身份运行、另一个没有，也可能注入不上——保持二者权限一致。
+
+### 登录
+
+登录**只支持扫码**：在桌面上打开的 QQ 窗口里用手机 QQ 扫码登录。原生 Windows 上你本来就能看到 QQ 窗口，不需要 VNC/noVNC（那是 Linux 无头环境才用的）。
+
+### 关闭自动注入（可选）
+
+想保留传统的“WebUI 里手动 Load”流程，把 `runtime.json` 里的 `hookAutoLoad` 设为 `false`，或设环境变量 `SNOWLUMA_HOOK_AUTOLOAD=0`。环境变量优先。
+
+## 访问 WebUI 和 OneBot
+
+启动后，默认监听这些端口：
+
+| 端口   | 用途                          |
+| ------ | ----------------------------- |
+| `5099` | SnowLuma WebUI                |
+| `3000` | OneBot HTTP（默认）           |
+| `3001` | OneBot WebSocket（默认）      |
+
+浏览器打开 WebUI：
+
+```text
+http://127.0.0.1:5099/
+```
+
+### 找 WebUI 临时密码
+
+**全新数据目录首次启动**时，会在控制台 / 日志里输出一次性管理员密码。从 `launcher.bat` 弹出的控制台窗口里翻一下即可（找含“临时密码 / initial credentials”的那行）。
+
+> [!INFO]
+> 临时密码**只在全新数据目录首次启动时**输出一次，复用旧目录或重启都不会重新生成。具体提示文案见 WebUI / README。
+
+## 配置文件落在哪
+
+首次运行会在数据目录下自动创建配置：
+
+| 文件                        | 作用                                              |
+| --------------------------- | ------------------------------------------------- |
+| `config/onebot.json`        | 全局默认 OneBot 配置。                             |
+| `config/onebot_<uin>.json`  | 每个账号一份（按 UIN）。                           |
+| `config/runtime.json`       | WebUI 端口、`hookAutoLoad`、日志级别等运行时设置。 |
+
+环境变量优先级高于 `runtime.json`。多账号无需手动配置：每登录一个 UIN，SnowLuma 自动拉起一个 OneBot 实例。配置项详解见 [配置参考](/zh/guide/configuration)。
+
+> [!TIP]
+> 数据目录的确切位置见 WebUI / README（不同打包方式可能不同）。
+
+## 防火墙
+
+首次启动时，Windows 防火墙可能弹窗询问是否放行 `node` / SnowLuma 的网络访问。
+
+- 只在**本机**访问（`127.0.0.1`）时，可以不放行公网。
+- 想让局域网内其它设备访问 WebUI / OneBot，需要在防火墙放行对应端口（`5099` / `3000` / `3001`）。
+
+> [!DANGER]
+> **不要把 WebUI / OneBot 端口裸暴露到公网。** 这些端口能完全控制你的 QQ。如需远程访问，请走反向代理 + 鉴权或内网穿透 + 鉴权，并改掉默认凭据。
+
+## 下一步
+
+- [配置参考](/zh/guide/configuration) —— OneBot / runtime 配置项详解。
+- [快速开始](/zh/guide/quickstart) —— 连接你的第一个 OneBot 客户端。
+- [MCP 使用](/zh/mcp/) / [SDK](/zh/sdk/) —— 二次开发。
+- 其它平台：[Docker（Linux）](/zh/guide/deploy/docker)、[WSL2](/zh/guide/deploy/wsl2)、[部署方式总览](/zh/guide/deploy/)。

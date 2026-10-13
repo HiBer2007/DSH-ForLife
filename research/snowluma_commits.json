@@ -1,0 +1,1232 @@
+[
+  {
+    "sha": "9632b006385e603c9d9fe9150ab433e43792591f",
+    "node_id": "C_kwDOO6_5ItoAKDk2MzJiMDA2Mzg1ZTYwM2M5ZDlmZTkxNTBhYjQzM2U0Mzc5MjU5MWY",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T08:10:01Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T08:10:01Z"
+      },
+      "message": "chore(release): v1.14.21",
+      "tree": {
+        "sha": "240643261099beea37aa5a828583e54b75ab95ad",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/240643261099beea37aa5a828583e54b75ab95ad"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/9632b006385e603c9d9fe9150ab433e43792591f",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQO0R2owApmMZtZn3OggtiW4kRHqu8soIUQ3yxbbsA5RmI4lssszIVvyvVa5vN26+Ns\nSWy61pysNgNM3twbhybQ4=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 240643261099beea37aa5a828583e54b75ab95ad\nparent 88cb2985e2c95d2828c359d471e9355e7cfea79b\nauthor DrSmoothl <1787882683@qq.com> 1791101401 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791101401 +0800\n\nchore(release): v1.14.21\n",
+        "verified_at": "2026-10-04T08:10:05Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/9632b006385e603c9d9fe9150ab433e43792591f",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/9632b006385e603c9d9fe9150ab433e43792591f",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/9632b006385e603c9d9fe9150ab433e43792591f/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "88cb2985e2c95d2828c359d471e9355e7cfea79b",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/88cb2985e2c95d2828c359d471e9355e7cfea79b",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/88cb2985e2c95d2828c359d471e9355e7cfea79b"
+      }
+    ]
+  },
+  {
+    "sha": "88cb2985e2c95d2828c359d471e9355e7cfea79b",
+    "node_id": "C_kwDOO6_5ItoAKDg4Y2IyOTg1ZTJjOTVkMjgyOGMzNTlkNDcxZTkzNTVlN2NmZWE3OWI",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T08:03:49Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T08:03:49Z"
+      },
+      "message": "fix(protocol): keep forward previews valid\n\nKeep forwarded cards readable when previews contain unsupported characters\nwithout changing the forwarded messages.\n\nReject invalid resource references and record affected preview fields for\ntroubleshooting.\n\nRefs #467",
+      "tree": {
+        "sha": "54ed2a38548bbe3e9ca9aa36fb6fce579be5d0f4",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/54ed2a38548bbe3e9ca9aa36fb6fce579be5d0f4"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/88cb2985e2c95d2828c359d471e9355e7cfea79b",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQMfm5P3X4tnsYt7ypyNy0U6TwlzJWKCZe1CvJn4/K0TOv9n9Tp5Ke2FDcYWihpzt9w\n198+LJ24scSGJnDKdPrgw=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 54ed2a38548bbe3e9ca9aa36fb6fce579be5d0f4\nparent 063ede4c625b772536d623c0e9e3db0736f7739c\nauthor DrSmoothl <1787882683@qq.com> 1791101029 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791101029 +0800\n\nfix(protocol): keep forward previews valid\n\nKeep forwarded cards readable when previews contain unsupported characters\nwithout changing the forwarded messages.\n\nReject invalid resource references and record affected preview fields for\ntroubleshooting.\n\nRefs #467\n",
+        "verified_at": "2026-10-04T08:06:34Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/88cb2985e2c95d2828c359d471e9355e7cfea79b",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/88cb2985e2c95d2828c359d471e9355e7cfea79b",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/88cb2985e2c95d2828c359d471e9355e7cfea79b/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "063ede4c625b772536d623c0e9e3db0736f7739c",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/063ede4c625b772536d623c0e9e3db0736f7739c",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/063ede4c625b772536d623c0e9e3db0736f7739c"
+      }
+    ]
+  },
+  {
+    "sha": "063ede4c625b772536d623c0e9e3db0736f7739c",
+    "node_id": "C_kwDOO6_5ItoAKDA2M2VkZTRjNjI1Yjc3MjUzNmQ2MjNjMGU5ZTNkYjA3MzZmNzczOWM",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T08:03:32Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T08:03:32Z"
+      },
+      "message": "fix(onebot): preserve custom forward metadata\n\nKeep custom titles and previews available when reading uploaded forwards,\nincluding nested messages and refreshed sender names.\n\nReject malformed preview metadata before processing the request.\n\nRefs #493",
+      "tree": {
+        "sha": "3084cd8fe2b4f4a629cbcfffc297cc9b4e97a595",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/3084cd8fe2b4f4a629cbcfffc297cc9b4e97a595"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/063ede4c625b772536d623c0e9e3db0736f7739c",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQH9k+GvD8HFeaBiq7g8yvMorox3gkVRrpOdiS4DkmPrOVZ8tBhHGHbns1ldO2gNkkZ\nDj7WduDBaIsLezDjBnVwE=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 3084cd8fe2b4f4a629cbcfffc297cc9b4e97a595\nparent 12afae06327a82843ffde6adb394aa6a18c6edd7\nauthor DrSmoothl <1787882683@qq.com> 1791101012 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791101012 +0800\n\nfix(onebot): preserve custom forward metadata\n\nKeep custom titles and previews available when reading uploaded forwards,\nincluding nested messages and refreshed sender names.\n\nReject malformed preview metadata before processing the request.\n\nRefs #493\n",
+        "verified_at": "2026-10-04T08:06:34Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/063ede4c625b772536d623c0e9e3db0736f7739c",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/063ede4c625b772536d623c0e9e3db0736f7739c",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/063ede4c625b772536d623c0e9e3db0736f7739c/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "12afae06327a82843ffde6adb394aa6a18c6edd7",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/12afae06327a82843ffde6adb394aa6a18c6edd7",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/12afae06327a82843ffde6adb394aa6a18c6edd7"
+      }
+    ]
+  },
+  {
+    "sha": "12afae06327a82843ffde6adb394aa6a18c6edd7",
+    "node_id": "C_kwDOO6_5ItoAKDEyYWZhZTA2MzI3YTgyODQzZmZkZTZhZGIzOTRhYTZhMThjNmVkZDc",
+    "commit": {
+      "author": {
+        "name": "kano0222",
+        "email": "81127181+kano0222@users.noreply.github.com",
+        "date": "2026-10-04T07:44:31Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-10-04T07:44:31Z"
+      },
+      "message": "fix(protocol): restore flat forward card compatibility (#467)\n\nRestore ordinary forwarded-message cards while preserving nested forward navigation.\n\nRefs #467",
+      "tree": {
+        "sha": "430a96989b0f00feaf2ea8c61afa6eb9ae85cd21",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/430a96989b0f00feaf2ea8c61afa6eb9ae85cd21"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/12afae06327a82843ffde6adb394aa6a18c6edd7",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqwgPfCRC1aQ7uu5UhlAAAm3sQABjirRfLdCE03yczvbmcSoRa\ndn/x7SqOX/q03Rgbtf3XCso3C6FMJg8hl9bDvTyXQzyZjsqtPA2IU2uWzJj2ozrG\nqwCWNX345wOkVhY55gJXQ2Wqyu32E8pDWTdl1zEC4S/gljfKO65dHW0Yjp8mzvkn\nuySa+3FUewORCYOcGMHWoUM6tbmn9oO6DR/XjK//TewSfye1iUYC5sFLXQQPsmWp\n4JCEvpzt5cjUrc6Y0CfXMES1rl00vk1/oA/QYUdZ3m99zN4upc6LniNv5Ixl0CRD\na7YWGh8ENSQeZfjEAvl2DziPeCR/x04ookUlE4OFtIY65j6apJHZx5jjCmhajlLX\ntHeGkPaEKgTMjsYaitDvRDHCg2vDJG6iYuW9mraZvWP0Tgs0hlEKlbVZ1+3PXME2\nNtD64a4T0XXf0zWRLKScUr3KvOOdpaG66/1wqfBtYUKaoOtphkubWXOVZVPBwDae\nritaG4tFTd4LVbnPUpvAQu1h6KuAHhD3/J0F+aihFktPek2W5MijrtmqB3ZM9o65\nDf0YQJu4e/GfvNZ6pmX2C3+8m0sGRzY4PCIOxYZxAYB+14Mkiy2RO1FCqnEOD3IB\ntNq98WYa5oKN2IzLMLb1zstYrPu6fdMEB2EVYfmwJw3ldW1yIo7x3VTHHZTBV1XF\nwnDtZtx48VCJci1febh3\n=4j8X\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 430a96989b0f00feaf2ea8c61afa6eb9ae85cd21\nparent 89275ae2797108ff0cdc95ff17eab54c628ab4e9\nauthor kano0222 <81127181+kano0222@users.noreply.github.com> 1791099871 +0800\ncommitter GitHub <noreply@github.com> 1791099871 +0800\n\nfix(protocol): restore flat forward card compatibility (#467)\n\nRestore ordinary forwarded-message cards while preserving nested forward navigation.\n\nRefs #467",
+        "verified_at": "2026-10-04T07:44:31Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/12afae06327a82843ffde6adb394aa6a18c6edd7",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/12afae06327a82843ffde6adb394aa6a18c6edd7",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/12afae06327a82843ffde6adb394aa6a18c6edd7/comments",
+    "author": {
+      "login": "kano0222",
+      "id": 81127181,
+      "node_id": "MDQ6VXNlcjgxMTI3MTgx",
+      "avatar_url": "https://avatars.githubusercontent.com/u/81127181?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/kano0222",
+      "html_url": "https://github.com/kano0222",
+      "followers_url": "https://api.github.com/users/kano0222/followers",
+      "following_url": "https://api.github.com/users/kano0222/following{/other_user}",
+      "gists_url": "https://api.github.com/users/kano0222/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/kano0222/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/kano0222/subscriptions",
+      "organizations_url": "https://api.github.com/users/kano0222/orgs",
+      "repos_url": "https://api.github.com/users/kano0222/repos",
+      "events_url": "https://api.github.com/users/kano0222/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/kano0222/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "89275ae2797108ff0cdc95ff17eab54c628ab4e9",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/89275ae2797108ff0cdc95ff17eab54c628ab4e9",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/89275ae2797108ff0cdc95ff17eab54c628ab4e9"
+      }
+    ]
+  },
+  {
+    "sha": "89275ae2797108ff0cdc95ff17eab54c628ab4e9",
+    "node_id": "C_kwDOO6_5ItoAKDg5Mjc1YWUyNzk3MTA4ZmYwY2RjOTVmZjE3ZWFiNTRjNjI4YWI0ZTk",
+    "commit": {
+      "author": {
+        "name": "under-the-ocean",
+        "email": "109718190+under-the-ocean@users.noreply.github.com",
+        "date": "2026-10-04T07:44:06Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-10-04T07:44:06Z"
+      },
+      "message": "fix(onebot): support custom nested forward previews (#493)\n\nAccept custom preview metadata on nested forward messages and carry it through card creation.\n\nRefs #493",
+      "tree": {
+        "sha": "449c5e6cd76d01fb92a39f324465bca2dbb070ee",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/449c5e6cd76d01fb92a39f324465bca2dbb070ee"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/89275ae2797108ff0cdc95ff17eab54c628ab4e9",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqwgPGCRC1aQ7uu5UhlAAA3bcQAJFvd68sabpUD8drMMkftOq5\n1S5ozVe8iz7hLQ5KU9yH3ifywWZ+AP0kruWi3QLDUld1uU+GTcWjvmmmtYsmWMiN\n7HRq3sdc6XczN+LhIdz4UcjGByTMaX1WsojClSDsCMG4gFSgO9jBxG7tdjuz3fQo\n/zNBX2cES6y/+0n9TtC3RLz4Wnd6yynGdOU0dKBQBdbpF/58DZoi0qsweRqA/lPB\n/qk13avbDWEv2OHPe3iUqtnmf7e/awcezh4U1G2N7hIf4tQS7y0+Ke+4dbeNVDZs\nfKjEgQtHCCbEJWKEzkuM8yAVzRm4P4LVAElCwjsF4AOKM7T98KUGglrVEn7HeZnC\nN2DMjn2N0IKQyFPBhu+SZKUjYPcSRFjVigayNUVFMHVRsdMH6ztmYXqMOQ+50g62\nbQkIs3D1lMsJITS+9yQIuClomi32C4PmWDCXO7kgA67iqrTWb82gmJNsJ9Qgk/XK\nxJZesQern4igT7wcsg8cWN9rHJ+QcTP3rMgexZIoTk3hgEbvqG59okkq+CgDMgWL\nNz7b1UpzNmW/c/Zc3Cgn9WE7EeA1leoLbvElgEQtmkjZffqNAFgiVDrHpC4hzhRF\naUBZWVMWAwyBJQGDFliTyhTQvY9luwa8faQlmxJ4uUJasXWzcAwOTUcVq8IH5MIP\nCWzMWjuJeKFQY2k4pz+N\n=Jui9\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 449c5e6cd76d01fb92a39f324465bca2dbb070ee\nparent 1919e16081689d7af3856b135095caa48b65eb62\nauthor under-the-ocean <109718190+under-the-ocean@users.noreply.github.com> 1791099846 +0800\ncommitter GitHub <noreply@github.com> 1791099846 +0800\n\nfix(onebot): support custom nested forward previews (#493)\n\nAccept custom preview metadata on nested forward messages and carry it through card creation.\n\nRefs #493",
+        "verified_at": "2026-10-04T07:44:07Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/89275ae2797108ff0cdc95ff17eab54c628ab4e9",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/89275ae2797108ff0cdc95ff17eab54c628ab4e9",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/89275ae2797108ff0cdc95ff17eab54c628ab4e9/comments",
+    "author": {
+      "login": "under-the-ocean",
+      "id": 109718190,
+      "node_id": "U_kgDOBooqrg",
+      "avatar_url": "https://avatars.githubusercontent.com/u/109718190?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/under-the-ocean",
+      "html_url": "https://github.com/under-the-ocean",
+      "followers_url": "https://api.github.com/users/under-the-ocean/followers",
+      "following_url": "https://api.github.com/users/under-the-ocean/following{/other_user}",
+      "gists_url": "https://api.github.com/users/under-the-ocean/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/under-the-ocean/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/under-the-ocean/subscriptions",
+      "organizations_url": "https://api.github.com/users/under-the-ocean/orgs",
+      "repos_url": "https://api.github.com/users/under-the-ocean/repos",
+      "events_url": "https://api.github.com/users/under-the-ocean/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/under-the-ocean/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "1919e16081689d7af3856b135095caa48b65eb62",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/1919e16081689d7af3856b135095caa48b65eb62",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/1919e16081689d7af3856b135095caa48b65eb62"
+      }
+    ]
+  },
+  {
+    "sha": "1919e16081689d7af3856b135095caa48b65eb62",
+    "node_id": "C_kwDOO6_5ItoAKDE5MTllMTYwODE2ODlkN2FmMzg1NmIxMzUwOTVjYWE0OGI2NWViNjI",
+    "commit": {
+      "author": {
+        "name": "星陨",
+        "email": "3275304521@qq.com",
+        "date": "2026-10-04T07:43:39Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-10-04T07:43:39Z"
+      },
+      "message": "fix(onebot): expose group descriptions separately (#491)\n\nExpose group descriptions without replacing the existing group memo behavior.\n\nFixes #490\nRefs #491",
+      "tree": {
+        "sha": "db200ef51e232bbc465ac20dfe4b363fe1dd5369",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/db200ef51e232bbc465ac20dfe4b363fe1dd5369"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/1919e16081689d7af3856b135095caa48b65eb62",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqwgOrCRC1aQ7uu5UhlAAAAIoQAH02/hg2P3ZKnxmFDSGnm8Sh\nWGPzkAaE7BHjpkGGMQS4aLjULKXUEkskMTvvdVDyCSnoqOFm4VcbijmBnYBQvE1B\ng8vZgY05d1xGjQsKzeawPeLYGYIBPpnDDNrxqOPPAcV1c8Ai1cclvKVTaJvgY+cP\nP48a8Xi/mttWkda5kBAeH5JNqWGHn35qXSahl/ct1JWdkrf5zZyiN05LWrUEsefo\n/AX1FDLNmPKwjuY/tj7M7Eqq3AaJTqtEBysHrV5sI4JB8uhO2Aqnq9QzI0jAaQBN\nsSS41rCadpzK8HDlCkLnfDN8d/B59bwmTXR1s6bx/DVa3Ml/LjoPVFQpF/HI06dN\nVjqQHNOtDeSSrsHxxA3s4zOohAxt1UqsTnceEUWNr+dnhuBKuccGYAYNz3ne92sk\nKfczPti6f2/8LQOAwAjveneBl3wwiM7ac5Mhe+8AzgtXz+TWJb5aCNUsJZ/6hnRO\nWoUar7Nt0Aje0TQF+jBCbB9aUomGc0MX+Mfx8Q48xldWGe4IPEBOLAGSA42lxHP9\nOhZsz6T/h5UBqOL2d4V2+Dbs3EODSMLH1eHSi4evwxXR6IVia9Wh7lBBoPD54jfg\nZHk5xoF2YLVTRa4XMeBVUg4H1n4g7JKiNSEjEb0EWFq+84691LXs2kmG1jrnSggb\ntgvgIfUWYUrLyMfpZm6s\n=pGId\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree db200ef51e232bbc465ac20dfe4b363fe1dd5369\nparent a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7\nauthor 星陨 <3275304521@qq.com> 1791099819 +0800\ncommitter GitHub <noreply@github.com> 1791099819 +0800\n\nfix(onebot): expose group descriptions separately (#491)\n\nExpose group descriptions without replacing the existing group memo behavior.\n\nFixes #490\nRefs #491",
+        "verified_at": "2026-10-04T07:43:40Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/1919e16081689d7af3856b135095caa48b65eb62",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/1919e16081689d7af3856b135095caa48b65eb62",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/1919e16081689d7af3856b135095caa48b65eb62/comments",
+    "author": {
+      "login": "XingYunStar",
+      "id": 170228477,
+      "node_id": "U_kgDOCiV6_Q",
+      "avatar_url": "https://avatars.githubusercontent.com/u/170228477?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/XingYunStar",
+      "html_url": "https://github.com/XingYunStar",
+      "followers_url": "https://api.github.com/users/XingYunStar/followers",
+      "following_url": "https://api.github.com/users/XingYunStar/following{/other_user}",
+      "gists_url": "https://api.github.com/users/XingYunStar/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/XingYunStar/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/XingYunStar/subscriptions",
+      "organizations_url": "https://api.github.com/users/XingYunStar/orgs",
+      "repos_url": "https://api.github.com/users/XingYunStar/repos",
+      "events_url": "https://api.github.com/users/XingYunStar/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/XingYunStar/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7"
+      }
+    ]
+  },
+  {
+    "sha": "a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7",
+    "node_id": "C_kwDOO6_5ItoAKGE2ZGZkMDQ5MjRiODNiNmQ2YTY3ZGYwZWU3ZTVkNTljYTcxNTgxZjc",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T06:56:02Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T06:56:02Z"
+      },
+      "message": "perf(onebot): reduce message history migration scans\n\nSpeed up unfinished history migration while preserving all messages and\nexisting processing limits.\n\nKeep migration diagnostics under the configured logging policy and surface\npreparation failures.\n\nFixes #462",
+      "tree": {
+        "sha": "d7da04a52a396cd9b584feb09dbd0eb275bce659",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/d7da04a52a396cd9b584feb09dbd0eb275bce659"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQMpy7oYnTHZ9DYqfgHRB4+CGljhcXKnR5nZVqelouFhvkFMK0QMFYbfV6ll7XcjOKH\nGna3qVlm8O49hXDi9h4go=\n-----END SSH SIGNATURE-----",
+        "payload": "tree d7da04a52a396cd9b584feb09dbd0eb275bce659\nparent 99bcfca15c690b3164fe4b1379c285a2133ece7d\nauthor DrSmoothl <1787882683@qq.com> 1791096962 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791096962 +0800\n\nperf(onebot): reduce message history migration scans\n\nSpeed up unfinished history migration while preserving all messages and\nexisting processing limits.\n\nKeep migration diagnostics under the configured logging policy and surface\npreparation failures.\n\nFixes #462\n",
+        "verified_at": "2026-10-04T06:58:32Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/a6dfd04924b83b6d6a67df0ee7e5d59ca71581f7/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "99bcfca15c690b3164fe4b1379c285a2133ece7d",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/99bcfca15c690b3164fe4b1379c285a2133ece7d",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/99bcfca15c690b3164fe4b1379c285a2133ece7d"
+      }
+    ]
+  },
+  {
+    "sha": "99bcfca15c690b3164fe4b1379c285a2133ece7d",
+    "node_id": "C_kwDOO6_5ItoAKDk5YmNmY2ExNWM2OTBiMzE2NGZlNGIxMzc5YzI4NWEyMTMzZWNlN2Q",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T06:00:30Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T06:00:30Z"
+      },
+      "message": "fix(onebot): preserve historical media independently of cache limits\n\nPreserve message history and the media information needed for reliable\nforwarding. Retain available older data during upgrades and report storage\nfailures explicitly.\n\nFixes #462",
+      "tree": {
+        "sha": "29f235adf27e88533726bc705713bbca359a5c1d",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/29f235adf27e88533726bc705713bbca359a5c1d"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/99bcfca15c690b3164fe4b1379c285a2133ece7d",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQCvsNahT53RkSPHftynRv0imYDo7lT2vyZ2I7maLs2iZQ9y7QcgGXJQVO/N0c0Tz4W\nk2ebZtWI+tpbK/WmxQMg0=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 29f235adf27e88533726bc705713bbca359a5c1d\nparent d86e0fc7b51c249c18a7ef059ff6b0a80dba1686\nauthor DrSmoothl <1787882683@qq.com> 1791093630 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791093630 +0800\n\nfix(onebot): preserve historical media independently of cache limits\n\nPreserve message history and the media information needed for reliable\nforwarding. Retain available older data during upgrades and report storage\nfailures explicitly.\n\nFixes #462\n",
+        "verified_at": "2026-10-04T06:01:38Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/99bcfca15c690b3164fe4b1379c285a2133ece7d",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/99bcfca15c690b3164fe4b1379c285a2133ece7d",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/99bcfca15c690b3164fe4b1379c285a2133ece7d/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "d86e0fc7b51c249c18a7ef059ff6b0a80dba1686",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/d86e0fc7b51c249c18a7ef059ff6b0a80dba1686",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/d86e0fc7b51c249c18a7ef059ff6b0a80dba1686"
+      }
+    ]
+  },
+  {
+    "sha": "d86e0fc7b51c249c18a7ef059ff6b0a80dba1686",
+    "node_id": "C_kwDOO6_5ItoAKGQ4NmUwZmM3YjUxYzI0OWMxOGE3ZWYwNTlmZjZiMGE4MGRiYTE2ODY",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T06:00:03Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T06:00:03Z"
+      },
+      "message": "fix(protocol): preserve sent media for message history\n\nKeep media sent by the bot available for later history and forwarding,\nincluding messages without a server echo.\n\nFixes #462",
+      "tree": {
+        "sha": "3181f3430e95561a4a9f67462e869c0e19901dd8",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/3181f3430e95561a4a9f67462e869c0e19901dd8"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/d86e0fc7b51c249c18a7ef059ff6b0a80dba1686",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQIfesiX1/Z+T5mKNeKSROSJLp97riNmHI8jY1IUZu00Os0ptq7DY48z/Wlm08K6d0t\nQ8KHWhNTboEMANRw2yhwE=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 3181f3430e95561a4a9f67462e869c0e19901dd8\nparent 3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd\nauthor DrSmoothl <1787882683@qq.com> 1791093603 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791093603 +0800\n\nfix(protocol): preserve sent media for message history\n\nKeep media sent by the bot available for later history and forwarding,\nincluding messages without a server echo.\n\nFixes #462\n",
+        "verified_at": "2026-10-04T06:01:38Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/d86e0fc7b51c249c18a7ef059ff6b0a80dba1686",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/d86e0fc7b51c249c18a7ef059ff6b0a80dba1686",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/d86e0fc7b51c249c18a7ef059ff6b0a80dba1686/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd"
+      }
+    ]
+  },
+  {
+    "sha": "3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd",
+    "node_id": "C_kwDOO6_5ItoAKDMwNjhkM2VmNjAxZmJhMWE1YjRlZDczZmIxMDhiYTJmYmIyYzFjYmQ",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T05:04:42Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T05:04:42Z"
+      },
+      "message": "feat(onebot): expose extended account profile information\n\nAdd account identifiers, compatible level names, available registration and membership details, and documented account age for group members. Keep unavailable values absent and refresh the action documentation.\n\nFixes #496",
+      "tree": {
+        "sha": "87c1bacef3f1998f9c52bf0a4f12f44e50041da3",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/87c1bacef3f1998f9c52bf0a4f12f44e50041da3"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQOSRCZVMqUg1bSDKXkUvTqikAPXIIWvrUtMO1t5n+drjryQ0MThbj2bbIPAEtAW1rP\nbXY6VKZCuI/qxIIYfsHAc=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 87c1bacef3f1998f9c52bf0a4f12f44e50041da3\nparent b69108e1cc74b5b7af2df11203b6530b6e625128\nauthor DrSmoothl <1787882683@qq.com> 1791090282 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791090282 +0800\n\nfeat(onebot): expose extended account profile information\n\nAdd account identifiers, compatible level names, available registration and membership details, and documented account age for group members. Keep unavailable values absent and refresh the action documentation.\n\nFixes #496\n",
+        "verified_at": "2026-10-04T05:15:06Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/3068d3ef601fba1a5b4ed73fb108ba2fbb2c1cbd/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "b69108e1cc74b5b7af2df11203b6530b6e625128",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/b69108e1cc74b5b7af2df11203b6530b6e625128",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/b69108e1cc74b5b7af2df11203b6530b6e625128"
+      }
+    ]
+  },
+  {
+    "sha": "b69108e1cc74b5b7af2df11203b6530b6e625128",
+    "node_id": "C_kwDOO6_5ItoAKGI2OTEwOGUxY2M3NGI1YjdhZjJkZjExMjAzYjY1MzBiNmU2MjUxMjg",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T05:04:28Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T05:04:28Z"
+      },
+      "message": "fix(onebot): keep ambiguous quote previews unresolved\n\nAvoid selecting a text message when another cached message could share its truncated or media preview. Extend the quote-context regression checks.\n\nFixes #502",
+      "tree": {
+        "sha": "362a2d9f7ee85a351dc808d8afe814859b45d3f9",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/362a2d9f7ee85a351dc808d8afe814859b45d3f9"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/b69108e1cc74b5b7af2df11203b6530b6e625128",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQPf4fd4Tztdgl90Y9l0aYtwE6ZSk9WZ1YV0qkKhYNYTAfBhjyvPGj4gu1EGMq/jofY\nwSOFkoVyShh82b+BDNTgM=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 362a2d9f7ee85a351dc808d8afe814859b45d3f9\nparent b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d\nauthor DrSmoothl <1787882683@qq.com> 1791090268 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791090268 +0800\n\nfix(onebot): keep ambiguous quote previews unresolved\n\nAvoid selecting a text message when another cached message could share its truncated or media preview. Extend the quote-context regression checks.\n\nFixes #502\n",
+        "verified_at": "2026-10-04T05:15:06Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/b69108e1cc74b5b7af2df11203b6530b6e625128",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/b69108e1cc74b5b7af2df11203b6530b6e625128",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/b69108e1cc74b5b7af2df11203b6530b6e625128/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d"
+      }
+    ]
+  },
+  {
+    "sha": "b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d",
+    "node_id": "C_kwDOO6_5ItoAKGI5YmRjZWM1ZjFlN2I0ZDAzMzk4YmQ0YTg0M2ZiZjE1NjdjZWEwOGQ",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:56:25Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:56:25Z"
+      },
+      "message": "fix(onebot): disambiguate same-second private replies\n\nCarry quoted text into receipt lookup and require a unique content match when several outgoing messages share a timestamp. Preserve sequence matches and log unresolved ambiguity.\n\nFixes #502",
+      "tree": {
+        "sha": "1ff9bf92e5e86c6b743193f8d7d032c273e35002",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/1ff9bf92e5e86c6b743193f8d7d032c273e35002"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQDcWpWs69YZv6wMDTWY3gXsXqf3OV9ZOiLtRqcMc4yMTdiO85ugHl000QyYjywCpJH\nBDbpcj6oJbqeFIw/cXeAw=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 1ff9bf92e5e86c6b743193f8d7d032c273e35002\nparent 2c7d9b6387879cbcede43a217729bc600b5b01c0\nauthor DrSmoothl <1787882683@qq.com> 1791089785 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791089785 +0800\n\nfix(onebot): disambiguate same-second private replies\n\nCarry quoted text into receipt lookup and require a unique content match when several outgoing messages share a timestamp. Preserve sequence matches and log unresolved ambiguity.\n\nFixes #502\n",
+        "verified_at": "2026-10-04T05:15:06Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/b9bdcec5f1e7b4d03398bd4a843fbf1567cea08d/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "2c7d9b6387879cbcede43a217729bc600b5b01c0",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/2c7d9b6387879cbcede43a217729bc600b5b01c0",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/2c7d9b6387879cbcede43a217729bc600b5b01c0"
+      }
+    ]
+  },
+  {
+    "sha": "2c7d9b6387879cbcede43a217729bc600b5b01c0",
+    "node_id": "C_kwDOO6_5ItoAKDJjN2Q5YjYzODc4NzljYmNlZGU0M2EyMTc3MjliYzYwMGI1YjAxYzA",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:55:41Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:55:41Z"
+      },
+      "message": "fix(core): reject unconfirmed group message sends\n\nRequire a server message receipt before returning success. Log unconfirmed responses and leave retries to the caller to avoid duplicate sends.\n\nFixes #492",
+      "tree": {
+        "sha": "f547254aac5975ab7d2cce6b46ab0db501577a42",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/f547254aac5975ab7d2cce6b46ab0db501577a42"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/2c7d9b6387879cbcede43a217729bc600b5b01c0",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQIsqVEj2YXhky+vBM9m9qb9Kgze8vL1k3jgmxHl/3YQXgBXGiAc5OXtbKUyQv1prjQ\nWzaUiN2SeOm5NSpgnTDwc=\n-----END SSH SIGNATURE-----",
+        "payload": "tree f547254aac5975ab7d2cce6b46ab0db501577a42\nparent efb32ed06966a46cfec2d1971f03fc825fb5f31c\nauthor DrSmoothl <1787882683@qq.com> 1791089741 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791089741 +0800\n\nfix(core): reject unconfirmed group message sends\n\nRequire a server message receipt before returning success. Log unconfirmed responses and leave retries to the caller to avoid duplicate sends.\n\nFixes #492\n",
+        "verified_at": "2026-10-04T05:15:06Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/2c7d9b6387879cbcede43a217729bc600b5b01c0",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/2c7d9b6387879cbcede43a217729bc600b5b01c0",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/2c7d9b6387879cbcede43a217729bc600b5b01c0/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "efb32ed06966a46cfec2d1971f03fc825fb5f31c",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/efb32ed06966a46cfec2d1971f03fc825fb5f31c",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/efb32ed06966a46cfec2d1971f03fc825fb5f31c"
+      }
+    ]
+  },
+  {
+    "sha": "efb32ed06966a46cfec2d1971f03fc825fb5f31c",
+    "node_id": "C_kwDOO6_5ItoAKGVmYjMyZWQwNjk2NmE0NmNmZWMyZDE5NzFmMDNmYzgyNWZiNWYzMWM",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:53:48Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:53:48Z"
+      },
+      "message": "fix(protocol): resolve animation metadata for unlisted faces\n\nQuery missing system faces individually and validate their metadata before sending. Share concurrent lookups and surface lookup failures.\n\nFixes #488",
+      "tree": {
+        "sha": "33b397998ef7208b76151e2621d4d32b82a1a3c8",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/33b397998ef7208b76151e2621d4d32b82a1a3c8"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/efb32ed06966a46cfec2d1971f03fc825fb5f31c",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQC//3NpqPyRzbEgfdmS+Cdo8v5jkgjAf5mE5W/S98lI/a4N0BM6VCE/lMQqgzkqVxC\ntre7/1J2oXwMb26kiGnwA=\n-----END SSH SIGNATURE-----",
+        "payload": "tree 33b397998ef7208b76151e2621d4d32b82a1a3c8\nparent cf2587a58b0d2d6e35a599c59b4029c3bc08590f\nauthor DrSmoothl <1787882683@qq.com> 1791089628 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791089628 +0800\n\nfix(protocol): resolve animation metadata for unlisted faces\n\nQuery missing system faces individually and validate their metadata before sending. Share concurrent lookups and surface lookup failures.\n\nFixes #488\n",
+        "verified_at": "2026-10-04T05:15:06Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/efb32ed06966a46cfec2d1971f03fc825fb5f31c",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/efb32ed06966a46cfec2d1971f03fc825fb5f31c",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/efb32ed06966a46cfec2d1971f03fc825fb5f31c/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "cf2587a58b0d2d6e35a599c59b4029c3bc08590f",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/cf2587a58b0d2d6e35a599c59b4029c3bc08590f",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/cf2587a58b0d2d6e35a599c59b4029c3bc08590f"
+      }
+    ]
+  },
+  {
+    "sha": "cf2587a58b0d2d6e35a599c59b4029c3bc08590f",
+    "node_id": "C_kwDOO6_5ItoAKGNmMjU4N2E1OGIwZDJkNmUzNWE1OTljNTliNDAyOWMzYmMwODU5MGY",
+    "commit": {
+      "author": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:46:55Z"
+      },
+      "committer": {
+        "name": "DrSmoothl",
+        "email": "1787882683@qq.com",
+        "date": "2026-10-04T04:46:55Z"
+      },
+      "message": "fix(onebot): report account startup failures accurately\n\nPreserve startup and migration error details, and stop automatic retries when account configuration is invalid.\n\nFixes #503",
+      "tree": {
+        "sha": "d6d53e066125b31c9436985cf06655791a3c1021",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/trees/d6d53e066125b31c9436985cf06655791a3c1021"
+      },
+      "url": "https://api.github.com/repos/SnowLuma/SnowLuma/git/commits/cf2587a58b0d2d6e35a599c59b4029c3bc08590f",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAghpXg9oTv8HVuObijEat+Jv4qp3\nWaScfHtfiP2NZ/NY8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQIflu1vyog9iX2QuB8HVATpgi6CLbuHaUslB1AJt3BwSdU1xw+xOs/k7PWJpoXNNXC\nWTI0OGEB+SftGCIBzwKwc=\n-----END SSH SIGNATURE-----",
+        "payload": "tree d6d53e066125b31c9436985cf06655791a3c1021\nparent 368becd078dc51deda191b3c0036505f9d46e0f8\nauthor DrSmoothl <1787882683@qq.com> 1791089215 +0800\ncommitter DrSmoothl <1787882683@qq.com> 1791089215 +0800\n\nfix(onebot): report account startup failures accurately\n\nPreserve startup and migration error details, and stop automatic retries when account configuration is invalid.\n\nFixes #503\n",
+        "verified_at": "2026-10-04T05:15:06Z"
+      }
+    },
+    "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/cf2587a58b0d2d6e35a599c59b4029c3bc08590f",
+    "html_url": "https://github.com/SnowLuma/SnowLuma/commit/cf2587a58b0d2d6e35a599c59b4029c3bc08590f",
+    "comments_url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/cf2587a58b0d2d6e35a599c59b4029c3bc08590f/comments",
+    "author": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "DrSmoothl",
+      "id": 101514345,
+      "node_id": "U_kgDOBgz8aQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/101514345?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/DrSmoothl",
+      "html_url": "https://github.com/DrSmoothl",
+      "followers_url": "https://api.github.com/users/DrSmoothl/followers",
+      "following_url": "https://api.github.com/users/DrSmoothl/following{/other_user}",
+      "gists_url": "https://api.github.com/users/DrSmoothl/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/DrSmoothl/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/DrSmoothl/subscriptions",
+      "organizations_url": "https://api.github.com/users/DrSmoothl/orgs",
+      "repos_url": "https://api.github.com/users/DrSmoothl/repos",
+      "events_url": "https://api.github.com/users/DrSmoothl/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/DrSmoothl/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "368becd078dc51deda191b3c0036505f9d46e0f8",
+        "url": "https://api.github.com/repos/SnowLuma/SnowLuma/commits/368becd078dc51deda191b3c0036505f9d46e0f8",
+        "html_url": "https://github.com/SnowLuma/SnowLuma/commit/368becd078dc51deda191b3c0036505f9d46e0f8"
+      }
+    ]
+  }
+]

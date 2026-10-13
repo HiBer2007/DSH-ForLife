@@ -1,0 +1,20 @@
+[Unit]
+# ★★ 日志采集端（`FIX_PLAN.md` §57 待办②）—— 把容器的 stdout 送进统一日志库。
+#
+# 为什么在**宿主**上跑（三条理由，照 §57）：
+#   ① 读 `docker logs` **不用给任何容器加权限**（更不用挂 `docker.sock` —— 那等于给它 root）；
+#   ② ★★ **不用重建任何容器** —— 重建 `qq` 要重新扫码登录，那是用户红线；
+#   ③ 改归一规则不用重建镜像。
+#
+# ⚠️ 它必须能跑 `docker logs` ⇒ 以 root 运行（或给那个用户免密 sudo docker）。
+Description=forlife log collector (container stdout -> unified log store)
+Documentation=file:/opt/forlife/FIX_PLAN.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/forlife
+# 令牌**从文件读**，不从命令行参数读 —— 命令行会进 `ps` 与 shell 历史
+Environment=FORLIFE_LOG_INGEST_TOKEN_FILE=/opt/forlife/deploy/.log-ingest-token
+ExecStart=/usr/bin/env bash -lc 'FORLIFE_LOG_INGEST_TOKEN="$(cat /opt/forlife/deploy/.log-ingest-token)" /usr/local/bin/node /opt/forlife/scripts/log-collector.mjs'
+# 一轮最多几分钟；超了就杀掉（下一轮会接着采，游标保证不漏）
+TimeoutStartSec=300

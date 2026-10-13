@@ -1,0 +1,2112 @@
+/**
+ * `/api/admin/*` —— 主管理后台的接口。
+ *
+ * ## 统一规矩（每条都对应一个具体的坑）
+ *
+ * - **所有接口都过同一道鉴权**，没有"某个前缀免检"（AstrBot 的双轨鉴权是明确要避开的）。
+ * - **状态变更必须带 `content-type: application/json`**，且 `Origin`（若有）必须同源 ——
+ *   SameSite=Lax 已经挡掉大部分 CSRF，这两条是纵深防御，成本几乎为零。
+ * - **口令绝不回显、绝不进 URL**；错误信息不区分"口令错"与"用户不存在"（这里只有单口令，
+ *   所以统一回"口令不正确"），避免给出可枚举的信息。
+ * - **失败也要审计**（含被限流），安全事件没有证据等于没有安全。
+ *
+ * @module @forlife/gateway/admin/api
+ */
+import { setWakeRule, type WakeCondition } from '../wake.ts'
+import { activePrompt, deleteModelRoute, listModelRoutes, PROMPT_SLUGS, rollbackPrompt, savePromptRevision, setConversationClock, setConversationImpression, setConversationNote, upsertModelRoute, type PromptSlug, deleteWakeTrigger, getWakeTrigger, setWakePaused, updateWakeTrigger } from '@forlife/store'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { DatabaseSync } from 'node:sqlite'
+
+import type { SettleLoop } from '../settle-loop.ts'
+
+import { FLAG_QQ_TAKEOVER, getFlag, setFlag } from '@forlife/store'
+
+import {
+  audit,
+  createSession,
+  deleteAllSessions,
+  deleteSession,
+  hasCredential,
+  LoginRateLimiter,
+  MIN_PASSWORD_LENGTH,
+  readSession,
+  SESSION_COOKIE,
+  safeEqualString,
+  SESSION_TTL_MS,
+  setPassword,
+  verifyPassword,
+} from './auth.ts'
+import { parseIngestBatch } from './log-ingest.ts'
+import { buildOverview } from './overview.ts'
+import { queryMedia } from './queries-media.ts'
+import { queryConversation } from './queries-conversation.ts'
+import { queryWakes } from './queries-wakes.ts'
+import {
+  activeLock,
+  finishMigration,
+  getMigrationRun,
+  listResumable,
+  migrateBatch,
+  rollbackMigration,
+  startMigration,
+  switchReferences,
+  archiveDirFromEnv,
+  archiveEntries,
+  listArchives,
+  moveFileWithVerify,
+  recoverEntry,
+  resolveTierRoots,
+  runBackup,
+  stampFor,
+  verifyBackup,
+} from '@forlife/store'
+import { createDshStatusProbe } from '../dsh-status.ts'
+import { probeAllEndpoints } from '../endpoint-health.ts'
+import { createExternalWakeSource } from '../wake-external-source.ts'
+import { archiveLongMemory, restoreLongMemory, updateLongMemory } from './memory-write.ts'
+// 手动喂食记忆资料：**投喂子系统的唯一入口**（CLI / 面板接口 / 模型工具 / 这里都走它；
+// 它内部每一批调一次 `feedMemory` —— 不存在第二条写入路）
+import { firstFeedResult, feedInput } from '../feed-batch.ts'
+import { isFeedKind, type FeedItem } from '../feed.ts'
+import { recordAdminAction } from '../reports.ts'
+import { backupNow } from './storage-write.ts'
+import { setState } from '@forlife/store'
+import { deleteStickerAsset, updateStickerDescription } from './sticker-write.ts'
+import { queryStickers, readStickerBytes } from './queries-stickers.ts'
+import { queryStorage } from './queries-storage.ts'
+import type { LogBuffer } from './log-buffer.ts'
+import type { LoggerLike, LogRecord } from './log.ts'
+import { LOG_LEVELS, isLogLevel, type LogLevel } from './log-levels.ts'
+// ★ 「开始投喂」那一条（`FIX_PLAN.md` §23）：模型驱动投喂的入口
+import { listFeedFiles } from '../feed-ingest.ts'
+import { startFeedRunFromFiles } from '../feed-run-start.ts'
+import { readFeedCursor } from '../feed-cursor.ts'
+import { readFeedRun } from '../feed-run.ts'
+import { nextFeedTurn } from '../feed-plan.ts'
+import { openLogStream } from './sse.ts'
+import type { PortService } from '../port-service.ts'
+import { enqueueOutbound } from '../outbox.ts'
+import { queryCompaction, queryMemory } from './queries-memory.ts'
+import { queryConversations, queryWake } from './queries-qq.ts'
+import { queryPrompts, queryRouting } from './queries-model.ts'
+import { buildSeries } from './series.ts'
+
+/** 路由上下文。 */
+export interface AdminApiOptions {
+  readonly db: DatabaseSync
+  readonly dbPath: string
+  readonly startedAt: number
+  readonly log?: (message: string) => void
+  /** 由服务进程提供：是否已接管 QQ 连接（没接管就别猜）。 */
+  readonly transportConnected?: (() => boolean | undefined) | undefined
+  /**
+   * NapCat 的 WebUI 位置（用于面板里的「NapCat」页）。
+   *
+   * 为什么由服务端告诉前端，而不是前端写死：前端不知道"用户是从哪台机器访问的"。
+   * 手机访问时 `127.0.0.1:6099` 指的是**手机自己**，必然打不开 ——
+   * 所以只回端口与 token，主机名由前端按当前地址栏推导。
+   */
+  readonly napcat?: { readonly webuiPort: number; readonly token?: string | undefined } | undefined
+  /** 内存日志缓冲（没给则日志页显示空，不报错）。 */
+  readonly logBuffer?: LogBuffer | undefined
+  /** 端口出口（未配置时为 undefined ⇒ 界面显示原因并禁用按钮）。 */
+  readonly ports?:
+    | {
+        readonly service?: PortService | undefined
+        readonly disabledReason?: string | undefined
+        readonly whitelist: readonly { readonly from: number; readonly to: number }[]
+      }
+    | undefined
+  /** 会话时长（测试可缩短）。 */
+  readonly sessionTtlMs?: number
+  /**
+   * ★★ 2026-10-11（`FIX_PLAN.md` §72 / 用户裁定）：**维护循环的句柄** —— 手动触发那条腿。
+   *
+   * ## 用户原话
+   * 「所有的沉降**都有手动触发途径，都有工具触发途径**」
+   *
+   * ## ★ 为什么给的是句柄，而不是让面板另跑一套
+   * ★ PLAN §2.14.14 警告过：另写一套"整理型"实现会让
+   *   「面板点了压缩，实际压缩的参数与自动压缩不一样」—— ★ **这种不一致极难发现**。
+   * ★ 给句柄 ⇒ 面板按的那个"跑一轮"就是**自动那条 `tick()`** ✅
+   *   ★ `ComingSoonView.vue` 里已经对用户承诺过「**走与自动路径完全相同的引擎**」——
+   *     这里就是把那句承诺兑现的地方。
+   *
+   * ★ 没给（测试/未配 `FORLIFE_ROOT_HOT`）时端点如实报"维护不可用"，**不假装成功**。
+   */
+  readonly maintenance?: SettleLoop | undefined
+
+  /**
+   * ★★ 宿主侧**日志采集端**的入口（`FIX_PLAN.md` §57 待办①）。
+   *
+   * ## 为什么需要它
+   *
+   * `qq`（NapCat）与 gateway **不共享任何卷** ⇒ 它的 stdout 在我们的日志库里**一条都没有**
+   * （§57 的活证据：反向 WS 连败 3 次，网关日志/面板/库**全看不见**）。
+   * 采集端在**宿主侧**读 `docker logs`（★ 不用给容器加权限、★ **不用重建 qq**），
+   * 归一后 POST 到这里。
+   *
+   * ## 两条纪律
+   *
+   * - ★ **要令牌**：它写的是**日志库**。没配令牌 ⇒ 端点**如实报"未启用"**，
+   *   ★ 绝不退化成"谁都能写"；
+   * - ★ `accept` 必须把记录送进**与其它日志完全相同的落点**（脱敏 + 缓冲 + 落盘）——
+   *   否则采集来的行**绕过脱敏**、而且面板上要刷新才看得到。
+   */
+  /**
+   * ★★ 2026-10-12（`FIX_PLAN.md` §57 待办④）：**落盘日志库**（面板"翻历史"用它）。
+   *
+   * ★ 没有它时 `/logs?history=1` **如实退回缓冲**并在响应里标 `source: 'buffer'`
+   *   —— 不是假装翻了历史（§52：'没做'与'做了但没生效'必须分得开）。
+   */
+  readonly logStore?:
+    | {
+        readonly read: (filter: {
+          readonly levels?: readonly LogLevel[]
+          readonly modules?: readonly string[]
+          readonly contains?: string
+          readonly limit?: number
+        }) => readonly LogRecord[]
+        readonly modules: () => readonly string[]
+      }
+    | undefined
+
+  readonly logIngest?:
+    | {
+        readonly token: string
+        readonly accept: (record: LogRecord) => void
+      }
+    | undefined
+
+  /**
+   * ★★ 2026-10-12（`FIX_PLAN.md` §57 待办⑥）：**慢查询出口**。
+   *
+   * 面板上那些"读库"的页面（总览 / 记忆 / 会话 / 唤醒 / 存储 …）走的是同一个真源。
+   * ★ 它们原来**没有任何耗时记录** ⇒ 库开始退化时，症状只会被当成"面板有点卡 / 网络慢"。
+   * ⇒ 超过 {@link SLOW_QUERY_MS} 的读库请求写一条 `warn`（模块由调用方给，生产里是 `storage`）。
+   *
+   * ★ 为什么放在这一层：这里**是所有读库页面的唯一入口**（`DATA_ROUTES`），
+   *   一个包装就全覆盖 —— 而不是去二十个查询函数里各埋一个计时器。
+   */
+  readonly slowQueryLog?: LoggerLike | undefined
+
+  /**
+   * 慢查询阈值（毫秒）。默认 {@link SLOW_QUERY_MS}。
+   *
+   * ★ 做成选项只为一件事：**让测试能把它压到 0** —— 否则"慢查询会写日志"这条
+   *   要么靠造一个真慢 500ms 的查询（慢、脆），要么根本没测。
+   */
+  readonly slowQueryMs?: number | undefined
+}
+
+/** 读库超过它就记一条 `warn`（默认 500ms：面板交互"卡一下"就在这个量级）。 */
+/**
+ * ★★ 待执行压缩请求的状态键（2026-10-13）。
+ *
+ * 为什么写成常量而不是各处散着写字符串：这个键是**跨进程契约** ——
+ * 面板/管理接口（gateway 进程）写它，引擎（dsh 进程）的 	akePendingCompactionRequest() 读它。
+ * ★ 两处写错一个字母**不会有任何报错**，只会"点了没反应"，所以：
+ *   1. 这里定义一次；
+ *   2. 守卫测试断言**两边用的是同一个键名**（见 compaction-request.test.ts）。
+ */
+export const PENDING_COMPACTION_KEY = 'acct_pending_compaction'
+
+export const SLOW_QUERY_MS = 500
+
+/** 请求体大小上限：面板只发小 JSON，超过就是有人在试探。 */
+const MAX_BODY_BYTES = 64 * 1024
+
+/** 统一的 JSON 响应。 */
+function json(res: ServerResponse, status: number, body: unknown): void {
+  const text = JSON.stringify(body)
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(text),
+    'cache-control': 'no-store',
+  })
+  res.end(text)
+}
+
+/** 从 cookie 头里取一个值。 */
+function readCookie(req: IncomingMessage, name: string): string | undefined {
+  const header = req.headers.cookie
+  if (header === undefined) return undefined
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=')
+    if (index === -1) continue
+    if (part.slice(0, index).trim() === name) return part.slice(index + 1).trim()
+  }
+  return undefined
+}
+
+/** 客户端 IP（优先取反代头，Caddy 会带 X-Forwarded-For）。 */
+function clientIp(req: IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for']
+  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded
+  if (typeof raw === 'string' && raw !== '') return raw.split(',')[0]!.trim()
+  return req.socket.remoteAddress ?? 'unknown'
+}
+
+/** 请求是否走的是 https（决定 cookie 要不要带 Secure）。 */
+function isHttps(req: IncomingMessage): boolean {
+  const proto = req.headers['x-forwarded-proto']
+  const value = Array.isArray(proto) ? proto[0] : proto
+  return value === 'https'
+}
+
+/** 写会话 cookie。 */
+function setSessionCookie(req: IncomingMessage, res: ServerResponse, id: string, ttlMs: number): void {
+  const parts = [
+    `${SESSION_COOKIE}=${id}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${Math.floor(ttlMs / 1000)}`,
+  ]
+  // 本地 http 调试时不能带 Secure，否则浏览器直接不存 —— 这是最容易被自己坑到的一条
+  if (isHttps(req)) parts.push('Secure')
+  res.setHeader('set-cookie', parts.join('; '))
+}
+
+/** 清 cookie。 */
+function clearSessionCookie(res: ServerResponse): void {
+  res.setHeader('set-cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
+}
+
+/** 读 JSON 请求体（带大小上限）。 */
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.length
+    if (size > MAX_BODY_BYTES) throw new Error('请求体过大')
+    chunks.push(buffer)
+  }
+  if (size === 0) return {}
+  const text = Buffer.concat(chunks).toString('utf8')
+  const parsed: unknown = JSON.parse(text)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('请求体必须是 JSON 对象')
+  return parsed as Record<string, unknown>
+}
+
+/** 取字符串字段。 */
+function stringField(body: Record<string, unknown>, key: string): string {
+  const value = body[key]
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * CSRF 纵深防御：状态变更请求要求 JSON 内容类型，且 `Origin`（若存在）与 Host 同源。
+ *
+ * 为什么不是"只靠 SameSite"：SameSite=Lax 对同站子域仍然放行；
+ * 而面板将来可能挂在多域名下。两条独立检查一起用，漏一条还有另一条。
+ */
+function checkStateChange(req: IncomingMessage): string | undefined {
+  const contentType = req.headers['content-type'] ?? ''
+  if (!contentType.includes('application/json')) return '状态变更请求必须使用 application/json'
+  const origin = req.headers.origin
+  if (typeof origin === 'string' && origin !== '' && origin !== 'null') {
+    const host = req.headers.host
+    try {
+      if (host !== undefined && new URL(origin).host !== host) return 'Origin 与 Host 不一致'
+    } catch {
+      return 'Origin 非法'
+    }
+  }
+  return undefined
+}
+
+/**
+ * 创建 API 处理器。返回值：是否已处理该请求（false = 不是 `/api/admin/*`）。
+ */
+export function createAdminApi(options: AdminApiOptions): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+  const { db, dbPath, startedAt, log } = options
+
+  // 外部触发源（无状态，建一次即可）
+  const externalSource = createExternalWakeSource({ db })
+
+  // DSH 后端状态探测（**短超时 + 缓存** —— 见 dsh-status.ts 的说明：
+  // DSH 挂掉时面板不能跟着卡住，那恰恰是最需要看面板的时候）。
+  const dshStatusProbe = createDshStatusProbe({ env: process.env })
+  const limiter = new LoginRateLimiter()
+  const ttlMs = options.sessionTtlMs ?? SESSION_TTL_MS
+
+  const sessionOf = (req: IncomingMessage): { id: string; expiresAt: string } | undefined =>
+    readSession(db, readCookie(req, SESSION_COOKIE))
+
+  /**
+   * 数据页路由表：路径 → 查询函数。
+   *
+   * 做成表而不是一串 if：新增页面时只加一行，且"哪些页面存在"一眼可见
+   * （不会出现"实现了查询却忘了接线"这种沉默的漏）。
+   */
+  const DATA_ROUTES: Record<string, ((database: DatabaseSync) => unknown) | undefined> = {
+    '/memory': (database) => queryMemory(database),
+    '/compaction': (database) => queryCompaction(database),
+    '/conversations': (database) => queryConversations(database),
+    '/wake': (database) => queryWake(database),
+    '/prompts': (database) => queryPrompts(database),
+    '/routing': (database) => queryRouting(database),
+  }
+
+  /** 需要登录的接口统一在这里挡。 */
+  function requireSession(req: IncomingMessage, res: ServerResponse, path: string): { id: string; expiresAt: string } | undefined {
+    const session = sessionOf(req)
+    if (session === undefined) {
+      audit(db, { action: 'api', ok: false, ip: clientIp(req), path, detail: '未登录' })
+      json(res, 401, { error: '未登录或会话已过期' })
+      return undefined
+    }
+    return session
+  }
+
+  return async function handle(req, res): Promise<boolean> {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const path = url.pathname
+    if (path !== '/api/admin' && !path.startsWith('/api/admin/')) return false
+    const route = path.slice('/api/admin'.length) || '/'
+    const method = req.method ?? 'GET'
+    const ip = clientIp(req)
+
+    try {
+      // ── 会话状态：前端首屏就靠它决定显示登录页还是外壳 ──────────────
+      if (route === '/session' && method === 'GET') {
+        const needsSetup = !hasCredential(db)
+        const session = sessionOf(req)
+        json(res, 200, {
+          authenticated: session !== undefined,
+          needsSetup,
+          ...(session === undefined ? {} : { expiresAt: session.expiresAt }),
+        })
+        return true
+      }
+
+      // ── 首次设置口令：只在**还没有口令**时可用 ──────────────────────
+      if (route === '/setup' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        if (hasCredential(db)) {
+          audit(db, { action: 'setup', ok: false, ip, path, detail: '已有口令，拒绝重复设置' })
+          json(res, 409, { error: '口令已设置过，请直接登录' })
+          return true
+        }
+        const body = await readJsonBody(req)
+        const password = stringField(body, 'password')
+        if (password.length < MIN_PASSWORD_LENGTH) {
+          json(res, 400, { error: `口令至少 ${MIN_PASSWORD_LENGTH} 位` })
+          return true
+        }
+        await setPassword(db, password)
+        const session = createSession(db, { ip, userAgent: req.headers['user-agent'], ttlMs })
+        setSessionCookie(req, res, session.id, ttlMs)
+        audit(db, { action: 'setup', ok: true, actor: session.id.slice(0, 8), ip, path })
+        log?.('[admin] 已设置管理口令并创建首个会话')
+        json(res, 200, { authenticated: true, needsSetup: false, expiresAt: session.expiresAt })
+        return true
+      }
+
+      // ── 登录 ────────────────────────────────────────────────────────
+      if (route === '/login' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const locked = limiter.lockedFor(ip)
+        if (locked > 0) {
+          audit(db, { action: 'rate_limited', ok: false, ip, path, detail: `锁定 ${locked}s` })
+          json(res, 429, { error: `尝试过于频繁，请 ${locked} 秒后再试` })
+          return true
+        }
+        const body = await readJsonBody(req)
+        const password = stringField(body, 'password')
+        const ok = password !== '' && (await verifyPassword(db, password))
+        if (!ok) {
+          limiter.fail(ip)
+          audit(db, { action: 'login_failed', ok: false, ip, path })
+          json(res, 401, { error: '口令不正确' })
+          return true
+        }
+        limiter.succeed(ip)
+        const session = createSession(db, { ip, userAgent: req.headers['user-agent'], ttlMs })
+        setSessionCookie(req, res, session.id, ttlMs)
+        audit(db, { action: 'login', ok: true, actor: session.id.slice(0, 8), ip, path })
+        json(res, 200, { authenticated: true, needsSetup: false, expiresAt: session.expiresAt })
+        return true
+      }
+
+      // ── 登出 ────────────────────────────────────────────────────────
+      if (route === '/logout' && method === 'POST') {
+        const session = sessionOf(req)
+        if (session !== undefined) {
+          deleteSession(db, session.id)
+          audit(db, { action: 'logout', ok: true, actor: session.id.slice(0, 8), ip, path })
+        }
+        clearSessionCookie(res)
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 改口令：需要登录 + 当前口令 ─────────────────────────────────
+      if (route === '/password' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const current = stringField(body, 'current')
+        const next = stringField(body, 'next')
+        if (!(await verifyPassword(db, current))) {
+          audit(db, { action: 'password', ok: false, actor: session.id.slice(0, 8), ip, path, detail: '当前口令不正确' })
+          json(res, 401, { error: '当前口令不正确' })
+          return true
+        }
+        if (next.length < MIN_PASSWORD_LENGTH) {
+          json(res, 400, { error: `新口令至少 ${MIN_PASSWORD_LENGTH} 位` })
+          return true
+        }
+        await setPassword(db, next)
+        // 改口令必须让**其它设备**立即掉线：这是"口令泄露后改密码"这个动作的全部意义
+        const removed = deleteAllSessions(db)
+        clearSessionCookie(res)
+        audit(db, { action: 'password', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `注销 ${removed} 个会话` })
+        json(res, 200, { ok: true, sessionsRemoved: removed })
+        return true
+      }
+
+      // ── 维护循环：**手动触发那条腿**（`FIX_PLAN.md` §72）──────────────
+      //
+      // ★ 用户 2026-10-11：「所有的沉降**都有手动触发途径，都有工具触发途径**」。
+      // ★ PLAN 出处：`src-01.md:342`「按需触发沉降/碎片维护/复盘任务」·
+      //   `src-08.md:346`「碎片索引合并与淘汰（定时 + 手动）」。
+      //
+      // ★★ 这个端点跑的就是**自动那条 `tick()`** —— 同一条代码路径、同一套策略、
+      //    同一个顺序。★ `ComingSoonView.vue` 已经对用户承诺过「走与自动路径完全相同的引擎」。
+      if (route === '/maintenance' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const m = options.maintenance
+        if (m === undefined) {
+          // ★ 如实说"没有"，不假装（"没做"与"做了但没生效"必须分得开 —— §52）
+          json(res, 200, { available: false, reason: '本进程没有维护循环句柄（未配 FORLIFE_ROOT_HOT 或未启动）' })
+          return true
+        }
+        const cfg = m.config
+        json(res, 200, {
+          available: true,
+          enabled: cfg.enabled,
+          intervalMs: cfg.intervalMs,
+          // ★ 0 = 惰性（被动模式）：循环在，但不排计时器 —— 这正是"手动触发"最有用的场景
+          passive: cfg.intervalMs <= 0,
+          limit: cfg.limit,
+          ...(cfg.disabledReason === undefined ? {} : { disabledReason: cfg.disabledReason }),
+        })
+        return true
+      }
+
+      // ★★ 宿主侧日志采集端的入口（`FIX_PLAN.md` §57 待办①）—— 见 `AdminApiOptions.logIngest`。
+      //
+      //   ⚠️ 它**不走** `checkStateChange`：那个守卫是给**浏览器**用的（防 CSRF，看 Origin）。
+      //      采集端是宿主上的脚本、没有 Origin，靠的是**共享令牌**。
+      if (route === '/log-ingest' && method === 'POST') {
+        const ingest = options.logIngest
+        if (ingest === undefined || ingest.token === '') {
+          // ★ 如实说"没开"，而不是开一个"谁都能写日志库"的口子
+          json(res, 503, {
+            error: '日志采集未启用（网关没配 FORLIFE_LOG_INGEST_TOKEN）',
+          })
+          return true
+        }
+        const presented = String(req.headers['x-forlife-log-token'] ?? '')
+        if (presented === '' || !safeEqualString(presented, ingest.token)) {
+          audit(db, { action: 'log.ingest', ok: false, ip, path, detail: '令牌不对' })
+          json(res, 401, { error: '令牌不对' })
+          return true
+        }
+        let body: Record<string, unknown>
+        try {
+          body = await readJsonBody(req)
+        } catch (error) {
+          json(res, 400, { error: error instanceof Error ? error.message : String(error) })
+          return true
+        }
+        const batch = parseIngestBatch(body['records'])
+        if (batch.fatal !== undefined) {
+          json(res, 400, { error: batch.fatal })
+          return true
+        }
+        for (const record of batch.records) ingest.accept(record)
+        // ★ 落审计只记**条数**，不记正文（正文进日志库，审计表不该被日志灌满）
+        audit(db, {
+          action: 'log.ingest',
+          ok: true,
+          ip,
+          path,
+          detail: `accepted=${String(batch.outcome.accepted)} rejected=${String(batch.outcome.rejected.length)}`,
+        })
+        json(res, 200, {
+          ok: true,
+          accepted: batch.outcome.accepted,
+          // ★ 被拒的要**说清是哪一条、为什么** —— 采集端据此能自己发现格式变了
+          rejected: batch.outcome.rejected,
+        })
+        return true
+      }
+
+      // ★★ 2026-10-13（用户裁定"走二"，`FIX_PLAN.md` §78.49）：**面板手动触发一次压缩**。
+      //
+      //   为什么要它：压缩的**触发器在 DSH 宿主**那边（我们只覆写 `compactIfNeeded` 并转调），
+      //   所以 `compaction_log` / `compaction_runs` 至今 **0 行**；而没有压缩，
+      //   `push_to_mid` 那条路就不会产生 `entities`（§5.3-3 的合并规则因此是死的）。
+      //
+      //   ★ 做法与模型的 `request_compaction` 工具**走同一条路**：
+      //     写 `forlife_state.acct_pending_compaction`（引擎的 `takePendingCompactionRequest()` 读它），
+      //     宿主的**下一次** `compactIfNeeded` 会用 `context-overflow` 语义强制执行。
+      //   ⚠️ 所以这是"**排队**"不是"立即执行" —— 真正跑起来要有会话在动（宿主才会调那个钩子）。
+      //     响应里必须说清这一点，否则用户会以为点了就压了（那是最容易骗人的地方）。
+      if (route === '/maintenance/compact' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const raw = await readJsonBody(req)
+        const reason = typeof raw.reason === 'string' && raw.reason.trim() !== '' ? raw.reason.trim().slice(0, 200) : '面板手动触发'
+        const before = db.prepare('SELECT value FROM forlife_state WHERE key = ?').get(PENDING_COMPACTION_KEY) as
+          | { value?: string }
+          | undefined
+        const pendingBefore = (before?.value ?? '').trim() !== ''
+        const payload = JSON.stringify({ reason, at: new Date().toISOString() })
+        db.prepare(
+          `INSERT INTO forlife_state (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ).run(PENDING_COMPACTION_KEY, payload)
+        audit(db, {
+          action: 'maintenance.compact',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `排队一次压缩（reason=${reason}${pendingBefore ? '；★ 之前已有一条待执行，已被这条覆盖' : ''}）`,
+        })
+        log?.(`[admin] 已排队一次压缩（${reason}）—— 宿主的下一次压缩检查会执行它`)
+        json(res, 200, {
+          ok: true,
+          queued: true,
+          replacedPending: pendingBefore,
+          note: '已排队：宿主的**下一次**压缩检查会执行它（要有会话在动才会触发，不是立即执行）。执行后 compaction_log 会留下一条记录。',
+        })
+        return true
+      }
+
+      if (route === '/maintenance/run' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const m = options.maintenance
+        if (m === undefined) {
+          audit(db, { action: 'maintenance.run', ok: false, actor: session.id.slice(0, 8), ip, path, detail: '无句柄' })
+          json(res, 409, { error: '本进程没有维护循环句柄，跑不了' })
+          return true
+        }
+        // ★★ 2026-10-12（`FIX_PLAN.md` §76.5④）：面板要能选"只跑碎片维护"。
+        //
+        //   PLAN `src-08.md:346` 点名要「碎片索引合并与淘汰（**定时 + 手动**）」，
+        //   而 `tick()` 早就支持 `only='fragments'`（维护请求的认领者走的就是它）——
+        //   只是**没有一条给人用的入口**。这里补上：不传 = 三样都跑（与自动那条完全一致）。
+        //
+        //   ⚠️ 只认 `'fragments'`：别的值一律 400 并**说清收到的是什么**（不猜、不忽略）。
+        const raw = await readJsonBody(req)
+        const only = raw.only
+        if (only !== undefined && only !== 'fragments') {
+          audit(db, { action: 'maintenance.run', ok: false, actor: session.id.slice(0, 8), ip, path, detail: `非法 only=${String(only)}` })
+          json(res, 400, { error: `only 只支持 'fragments'（收到 ${JSON.stringify(only)}）` })
+          return true
+        }
+        const scope = only === 'fragments' ? ('fragments' as const) : undefined
+        try {
+          const result = await m.tick(scope)
+          // ★ 落审计（PLAN `src-04.md:277`「写操作必须走统一的写通道……并**落审计**」）
+          audit(db, {
+            action: 'maintenance.run',
+            ok: true,
+            actor: session.id.slice(0, 8),
+            ip,
+            path,
+            detail: `scope=${scope ?? 'all'} moved=${String(result.moved)} skipped=${String(result.skipped)} failed=${String(result.failed)}`,
+          })
+          log?.(`[admin] 手动触发维护一轮：搬运 ${String(result.moved)}、跳过 ${String(result.skipped)}、失败 ${String(result.failed)}`)
+          json(res, 200, { ok: true, result })
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          audit(db, { action: 'maintenance.run', ok: false, actor: session.id.slice(0, 8), ip, path, detail })
+          // ★ 失败要**说清失败**，不是回一个看起来正常的空结果
+          json(res, 500, { error: `维护跑失败了：${detail}` })
+        }
+        return true
+      }
+
+      // ── 运行总览 ────────────────────────────────────────────────────
+      if (route === '/overview' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(
+          res,
+          200,
+            buildOverview(db, {
+              dbPath,
+              startedAt,
+              transportConnected: options.transportConnected?.(),
+              dsh: await dshStatusProbe(),
+          }),
+        )
+        return true
+      }
+
+      // ── 运行图表：按小时分桶的时序 ──────────────────────────────────
+      if (route === '/series' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const hoursParam = Number(url.searchParams.get('hours') ?? '24')
+        json(res, 200, buildSeries(db, { hours: Number.isFinite(hoursParam) ? hoursParam : 24 }))
+        return true
+      }
+
+      // ── 数据页：记忆 / 压缩 / 会话与队列 / 唤醒 / 提示词 / 路由与端点 ──────
+      // 这些页面与 DSH 内嵌面板读**同一份库、同一套语义**（计划 §2.12：无第二真源）
+      if (method === 'GET' && DATA_ROUTES[route] !== undefined) {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        // ★★ 2026-10-12（`FIX_PLAN.md` §57 待办⑥）：**给读库计时**。
+        //   这里是所有读库页面的唯一入口 ⇒ 一个包装就全覆盖。
+        //   ★ 超过阈值只写 `warn`（不拦请求、不改响应）—— 面板照常工作，
+        //     而"库在退化"这件事第一次有了日志凭据（模块 `storage`）。
+        const startedQueryAt = performance.now()
+        const payload = DATA_ROUTES[route]!(db)
+        const elapsedMs = performance.now() - startedQueryAt
+        const threshold = options.slowQueryMs ?? SLOW_QUERY_MS
+        if (elapsedMs >= threshold) {
+          options.slowQueryLog?.warn?.(
+            `读库慢：${route} 用了 ${elapsedMs.toFixed(0)}ms（阈值 ${String(threshold)}ms）` +
+              ` ⇒ 要么库在退化（看同模块的 WAL/空闲页指标），要么这一页该加索引/分页`,
+          )
+        }
+        json(res, 200, payload)
+        return true
+      }
+
+      // ── NapCat 面板页所需的信息（同源策略下前端自己拼不出正确主机名）──────
+      if (route === '/napcat' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const status = options.transportConnected?.()
+        json(res, 200, {
+          webuiPort: options.napcat?.webuiPort ?? 6099,
+          ...(options.napcat?.token === undefined ? {} : { token: options.napcat.token }),
+          // 真实连接状态：undefined = 本服务没接管，前端显示"未知"而不是"离线"
+          ...(status === undefined ? {} : { connected: status }),
+        })
+        return true
+      }
+
+      // ── 手动发消息（接管模式下运维自己回复，也是"用 QQ 通知人"的通路）──────
+      if (route === '/send' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const conversationKey = stringField(body, 'conversationKey').trim()
+        const text = stringField(body, 'text')
+        if (conversationKey === '' || text.trim() === '') {
+          json(res, 400, { error: 'conversationKey 与 text 都必填' })
+          return true
+        }
+        // 会话类型从会话表读（出站表那一列 NOT NULL，猜错会让平台侧行为不对）
+        const known = db.prepare('SELECT kind FROM qq_sessions WHERE conversation_key = ?').get(conversationKey) as
+          | { kind: string }
+          | undefined
+        const kind = known?.kind ?? (conversationKey.includes(':group') ? 'group' : 'private')
+        const id = enqueueOutbound(db, {
+          conversationKey,
+          kind: 'text',
+          payload: { segments: [{ kind: 'text', text }] },
+          conversationKind: kind === 'group' ? 'group' : 'private',
+          source: 'admin',
+        })
+        // 手动发过消息 ⇒ 这个会话里积压的消息就算"处理过了"。
+        // 不做这一步的话，接管模式下运维回完了消息、面板上却永远显示"待处理 N 条" ——
+        // 那个数字会变成一个没人相信的计数器（正是之前踩过的坑的另一种形态）。
+        const handled = db
+          .prepare('UPDATE qq_inbox SET processed = 1 WHERE conversation_key = ? AND processed = 0')
+          .run(conversationKey)
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `手动发送到 ${conversationKey}；顺带标记 ${String(Number(handled.changes))} 条为已处理`,
+        })
+        json(res, 200, { ok: true, id, handled: Number(handled.changes) })
+        return true
+      }
+
+      // ── 接管模式：消息只入库、不路由给模型（运维手动处理）──────────────
+      if (route === '/takeover' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const changedAt = db.prepare('SELECT value FROM forlife_state WHERE key = ?').get(`${FLAG_QQ_TAKEOVER}_changed_at`) as
+          | { value?: string }
+          | undefined
+        json(res, 200, {
+          on: getFlag(db, FLAG_QQ_TAKEOVER),
+          ...(changedAt?.value === undefined ? {} : { changedAt: changedAt.value }),
+        })
+        return true
+      }
+
+      if (route === '/takeover' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        if (typeof body['on'] !== 'boolean') {
+          json(res, 400, { error: 'on 必须是布尔值' })
+          return true
+        }
+        setFlag(db, FLAG_QQ_TAKEOVER, body['on'], `by ${session.id.slice(0, 8)}`)
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `接管模式 → ${body['on'] ? '开' : '关'}`,
+        })
+        log?.(`[admin] 接管模式 ${body['on'] ? '已开启' : '已关闭'}`)
+        json(res, 200, { on: body['on'] })
+        return true
+      }
+
+      // ── 会话详情（子窗口的读接口）──────────────────────────────────
+      // 一次给全：基础信息 + 时区 + 备注 + 画像 + 唤醒规则 + 留痕。
+      // 分成多个接口的话，面板会出现"一半有数据一半转圈"的中间态，
+      // 而那恰恰是用户判断"这个会话到底怎么了"时看的。
+      if (route === '/conversation' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const key = url.searchParams.get('id') ?? ''
+        if (key === '') {
+          json(res, 400, { error: '缺少 id（会话键）' })
+          return true
+        }
+        const detail = queryConversation(db, key)
+        if (detail === undefined) {
+          // 明确 404 而不是返回空壳 —— 空壳会让面板显示一个"什么都是 0"的会话，
+          // 让人以为是数据丢了
+          json(res, 404, { error: `没有这个会话：${key}` })
+          return true
+        }
+        json(res, 200, detail)
+        return true
+      }
+
+      // ── 会话备注（写；**只有人能写**）──────────────────────────────
+      // 刻意不提供"模型写备注"的接口：备注是用户的权威说明，
+      // 模型能写的话，它一次自动总结就会覆盖掉，而用户不会收到任何提示。
+      if (route === '/conversation-note' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const key = typeof body['conversationKey'] === 'string' ? body['conversationKey'] : ''
+        if (key === '') {
+          json(res, 400, { error: 'conversationKey 必填' })
+          return true
+        }
+        const note = typeof body['note'] === 'string' ? body['note'] : null
+        setConversationNote(db, { conversationKey: key, note, updatedBy: session.id.slice(0, 8) })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `备注 ${key} → ${note === null ? '(清空)' : `${String(note.length)} 字`}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+        // ── 迁移（PLAN §2.4 + 阶段 9 交付物 2）──────────────────────────
+        //
+        // **四个动作分开**（不是一个 /migrate 带 action）：
+        // 分开的话权限与审计能逐个对待 —— start/resume/rollback 改数据（要守卫+审计），
+        // status 只读。合成一个的话审计日志里分不出谁做了什么。
+        if (route === '/migrate-status' && method === 'GET') {
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const resumable = listResumable(db)
+          const lock = activeLock(db)
+          json(res, 200, {
+            ok: true,
+            // **锁要报出来** —— 有锁时 core 侧会拒绝新的沉降/blob 写入，
+            // 面板上看不到它的话，用户会以为"沉降坏了"
+            lock: lock === undefined ? null : { runId: lock.runId, note: lock.note },
+            resumable: resumable.map((r) => ({
+              id: r.id,
+              fromTier: r.from_tier,
+              toTier: r.to_tier,
+              status: r.status,
+              totalItems: r.total_items,
+              copiedItems: r.copied_items,
+              estimatedBytes: r.estimated_bytes,
+              copiedBytes: r.copied_bytes,
+              startedAt: r.started_at,
+              note: r.note,
+            })),
+          })
+          return true
+        }
+
+        if (route === '/migrate-start' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          // **收窄成 StorageTier** —— roots 是 Record<StorageTier, string>，
+          // 用 string 索引会被 TS 拦（那是好事：它挡住了拼错的层名）
+          const rawFrom = typeof body?.fromTier === 'string' ? body.fromTier : 'hot'
+          const rawTo = typeof body?.toTier === 'string' ? body.toTier : 'cold'
+          const fromTier = rawFrom as 'hot' | 'warm' | 'cold'
+          const toTier = rawTo as 'hot' | 'warm' | 'cold'
+          if (!['hot', 'warm', 'cold'].includes(fromTier) || !['hot', 'warm', 'cold'].includes(toTier)) {
+            json(res, 400, { error: 'tier 只能是 hot / warm / cold' })
+            return true
+          }
+          if (fromTier === toTier) {
+            json(res, 400, { error: 'fromTier 与 toTier 不能相同' })
+            return true
+          }
+          // **根路径从环境变量来**（不接受请求里的任意路径 —— 那是提权）
+          let roots
+          try {
+            roots = resolveTierRoots(process.env)
+          } catch (error) {
+            json(res, 400, { error: `读不到分层根路径：${String(error).slice(0, 120)}` })
+            return true
+          }
+          const result = startMigration(db, {
+            fromTier,
+            toTier,
+            fromRoot: roots.roots[fromTier],
+            toRoot: roots.roots[toTier],
+            // 目标路径布局与沉降同一套（sha 前两位分片）
+            toPathFor: (sha256, fromPath) => {
+              const dot = fromPath.lastIndexOf('.')
+              const ext = dot === -1 ? '' : fromPath.slice(dot)
+              const root = roots.roots[toTier].replace(/[\\/]+$/, '')
+              const sep = root.includes('\\') ? '\\' : '/'
+              return `${root}${sep}${sha256.slice(0, 2)}${sep}${sha256}${ext}`
+            },
+          })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `迁移 ${fromTier}→${toTier}：${result.ok ? '已建' : '失败'}｜${result.reason.slice(0, 120)}`,
+          })
+          json(res, result.ok ? 200 : 400, result)
+          return true
+        }
+
+        // 续传：搬一批（**中断后再调它就是续传**）
+        if (route === '/migrate-resume' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+          if (runId === '') { json(res, 400, { error: '必须给 runId' }); return true }
+          const run = getMigrationRun(db, runId)
+          if (run === undefined) { json(res, 404, { error: `没有这个 run：${runId}` }); return true }
+          const batch = await migrateBatch(db, { runId, copyFile: moveFileWithVerify, limit: 200 })
+          // **搬完且没有剩余 ⇒ 自动切换并收尾**；否则留在可续传状态
+          let finished: { ok: boolean; reason: string } | undefined
+          let switched: { switched: number; skipped: number } | undefined
+          if (batch.remaining === 0) {
+            switched = switchReferences(db, runId)
+            finished = finishMigration(db, runId)
+          }
+          audit(db, {
+            action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path,
+            detail: `迁移续传 ${runId}：本批通过 ${String(batch.verified)}、失败 ${String(batch.failed)}、剩 ${String(batch.remaining)}`,
+          })
+          json(res, 200, { ok: true, batch, ...(switched === undefined ? {} : { switched }), ...(finished === undefined ? {} : { finished }) })
+          return true
+        }
+
+        // 回滚：**把引用切回旧根，不删新数据**
+        if (route === '/migrate-rollback' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+          if (runId === '') { json(res, 400, { error: '必须给 runId' }); return true }
+          const result = rollbackMigration(db, runId)
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `迁移回滚 ${runId}：${result.ok ? `已回滚 ${String(result.restored)} 条` : result.reason.slice(0, 100)}`,
+          })
+          json(res, result.ok ? 200 : 400, result)
+          return true
+        }
+
+        // ── 归档与提升（PLAN 阶段 9 交付物 3）──────────────────────────
+        //
+        // **归档目录只来自环境变量** —— 与备份同一套安全模型：
+        // 允许任意路径的话，拿到管理会话的人就能把文件写到系统任意位置（那是提权）。
+        if (route === '/archive' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+
+          const base = process.env['FORLIFE_ARCHIVE_DIR']
+          if (base === undefined || base.trim() === '') {
+            json(res, 400, { error: '没有配置 FORLIFE_ARCHIVE_DIR —— 归档目录必须由部署方指定' })
+            return true
+          }
+          const body = await readJsonBody(req)
+          const tier = typeof body?.tier === 'string' && body.tier.trim() !== '' ? body.tier.trim() : 'cold'
+          if (!['hot', 'warm', 'cold'].includes(tier)) {
+            json(res, 400, { error: 'tier 只能是 hot / warm / cold' })
+            return true
+          }
+          const at = new Date()
+          const dir = archiveDirFromEnv(process.env, stampFor(at))
+          if (dir === undefined) {
+            json(res, 400, { error: 'FORLIFE_ARCHIVE_DIR 无效' })
+            return true
+          }
+          const result = await archiveEntries({ db, targetDir: dir, tier })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `归档导出（${tier}）：${result.ok ? '成功' : '失败'}｜${result.reason.slice(0, 120)}`,
+          })
+          json(res, result.ok ? 200 : 500, { ...result, tier })
+          return true
+        }
+
+        // 列出已有归档 —— **否则归档就是"写了但没人知道"**
+        if (route === '/archives' && method === 'GET') {
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const base = process.env['FORLIFE_ARCHIVE_DIR']
+          if (base === undefined || base.trim() === '') {
+            json(res, 200, { ok: true, configured: false, archives: [], note: '没有配置 FORLIFE_ARCHIVE_DIR' })
+            return true
+          }
+          const archives = await listArchives(base)
+          json(res, 200, { ok: true, configured: true, dir: base, archives })
+          return true
+        }
+
+        // 把一条冷数据提回热层 —— **只接受单个 id**（见模块头的说明）
+        if (route === '/recover' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const body = await readJsonBody(req)
+          const id = typeof body?.id === 'string' ? body.id.trim() : ''
+          if (id === '') {
+            json(res, 400, { error: '必须给一个 id —— 提升是逐个的（批量提升等于把沉降成果一次抹掉，而没人知道为什么）' })
+            return true
+          }
+          const roots = resolveTierRoots(process.env)
+          const result = await recoverEntry({ db, id, roots, moveFile: moveFileWithVerify })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `提升回热层 ${id}：${result.ok ? '成功' : '失败'}｜${result.reason.slice(0, 100)}`,
+          })
+          json(res, result.ok ? 200 : 400, result)
+          return true
+        }
+
+        // ── 备份（PLAN 阶段 9 交付物 7）────────────────────────────────
+        //
+        // **手动而不是定时**：备份该由人决定何时做、放哪 ——
+        // 定时跑会占磁盘，而"放哪"更要紧（写到系统盘上，盘坏了备份一起没）。
+        if (route === '/backup' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+
+          // **目标目录只来自环境变量** —— 接口只接受一个子目录名。
+          // 允许任意路径的话，拿到管理会话的人就能把文件写到系统任意位置（那是提权）。
+          const baseDir = process.env['FORLIFE_BACKUP_DIR']
+          if (baseDir === undefined || baseDir.trim() === '') {
+            json(res, 400, {
+              error: '没有配置 FORLIFE_BACKUP_DIR —— 备份目标目录必须由部署方指定（不接受请求里的任意路径）',
+            })
+            return true
+          }
+          const body = await readJsonBody(req)
+          const label = typeof body?.label === 'string' ? body.label.trim() : ''
+          // 白名单字符：**挡住 `..` 与路径分隔符**（目录穿越）
+          if (label !== '' && !/^[A-Za-z0-9_-]{1,40}$/.test(label)) {
+            json(res, 400, { error: 'label 只允许字母数字下划线连字符（1-40 个），不允许路径分隔符或 ..' })
+            return true
+          }
+
+          const result = await runBackup({
+            db,
+            dbPath,
+            targetDir: label === '' ? baseDir : `${baseDir}/${label}`,
+            // blobRoot 是**可选**的 ⇒ 不配时不传这个字段（exactOptionalPropertyTypes）
+            ...(process.env['FORLIFE_STICKER_ROOT'] === undefined
+              ? {}
+              : { blobRoot: process.env['FORLIFE_STICKER_ROOT'] }),
+          })
+          audit(db, {
+            action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+            detail: `手动备份：${result.ok ? '成功' : '失败'}｜${result.reason.slice(0, 120)}`,
+          })
+          json(res, result.ok ? 200 : 500, result)
+          return true
+        }
+
+        // 验证一个备份可用吗 —— **恢复之前先确认**，而不是恢复到一半才发现
+        if (route === '/backup-verify' && method === 'POST') {
+          const guard = checkStateChange(req)
+          if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+          const session = requireSession(req, res, path)
+          if (session === undefined) return true
+          const baseDir = process.env['FORLIFE_BACKUP_DIR']
+          if (baseDir === undefined || baseDir.trim() === '') {
+            json(res, 400, { error: '没有配置 FORLIFE_BACKUP_DIR' })
+            return true
+          }
+          const body = await readJsonBody(req)
+          const rel = typeof body?.path === 'string' ? body.path.trim() : ''
+          // **必须是 baseDir 之下的相对路径**（挡目录穿越）
+          if (rel === '' || rel.includes('..') || /^[A-Za-z]:/.test(rel) || rel.startsWith('/') || rel.startsWith('\\')) {
+            json(res, 400, { error: 'path 必须是备份目录下的相对路径（不允许绝对路径或 ..）' })
+            return true
+          }
+          const verified = await verifyBackup(`${baseDir}/${rel}`)
+          json(res, verified.ok ? 200 : 400, verified)
+          return true
+        }
+
+      // ── 端点探测（手动触发；用户要求"需要增加手动探测"）────────────
+      if (route === '/endpoint-probe' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+
+        // **顺手回结果** —— 只回 ok 的话用户还得再刷一次页面，
+        // 而"点了按钮没反应"最容易让人以为功能坏了
+        const results = await probeAllEndpoints({ db, log: log ?? ((): void => {}) })
+        const okCount = results.filter((r) => r.ok).length
+        audit(db, {
+          action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path,
+          detail: `手动探测端点：${String(okCount)}/${String(results.length)} 健康`,
+        })
+        json(res, 200, {
+          ok: true,
+          total: results.length,
+          healthy: okCount,
+          results: results.map((r) => ({
+            endpointId: r.endpointId,
+            ok: r.ok,
+            latencyMs: r.latencyMs,
+            note: r.note,
+          })),
+        })
+        return true
+      }
+
+      // ── 外部触发（**不走管理会话**，按触发器自己的令牌鉴权）────────
+      // 外部系统（CI / 监控 / 传感器）没有管理会话，也不该有 ——
+      // 给它们一个管理会话等于把整个后台交出去。
+      if (route === '/wake-external' && method === 'POST') {
+        const body = await readJsonBody(req)
+        const triggerId = typeof body['id'] === 'string' ? body['id'] : ''
+        const token = typeof body['token'] === 'string' ? body['token'] : ''
+        if (triggerId === '' || token === '') { json(res, 400, { error: 'id 与 token 必填' }); return true }
+
+        const source = externalSource
+        const result = source.fire(triggerId, token, typeof body['payload'] === 'object' && body['payload'] !== null ? (body['payload'] as Record<string, unknown>) : {})
+        // **失败与"不存在"回同一个 404** —— 否则可以拿它枚举 id
+        if (!result.ok) {
+          audit(db, { action: 'api', ok: false, actor: 'external', ip, path, detail: `外部触发被拒（${triggerId.slice(0, 12)}…）` })
+          json(res, 404, { error: '触发器不存在或令牌不正确' })
+          return true
+        }
+        // 审计里记**触发器 id 前缀**而不是令牌
+        audit(db, { action: 'api', ok: true, actor: 'external', ip, path, detail: `外部触发 ${triggerId.slice(0, 12)}…` })
+        json(res, 200, { ok: true, note: result.reason })
+        return true
+      }
+
+      // ── 唤醒引擎（PLAN 阶段 8 交付物 7）──────────────────────────
+      if (route === '/wakes' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryWakes(db))
+        return true
+      }
+
+      if (route === '/wake-pause' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const paused = body['paused'] === true
+        setWakePaused(db, paused)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: paused ? '唤醒引擎：全局暂停' : '唤醒引擎：恢复' })
+        json(res, 200, { ok: true, paused })
+        return true
+      }
+
+      if (route === '/wake-toggle' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const enabled = body['enabled'] === true
+        if (getWakeTrigger(db, id) === undefined) { json(res, 404, { error: `没有这条触发器：${id}` }); return true }
+        updateWakeTrigger(db, id, { enabled })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `触发器 ${id} ${enabled ? '启用' : '停用'}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      if (route === '/wake-cancel' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const row = getWakeTrigger(db, id)
+        if (row === undefined) { json(res, 404, { error: `没有这条触发器：${id}` }); return true }
+        deleteWakeTrigger(db, id)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `取消触发器「${row.title}」` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      if (route === '/wake-now' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const row = getWakeTrigger(db, id)
+        if (row === undefined) { json(res, 404, { error: `没有这条触发器：${id}` }); return true }
+        // 与工具侧同一条通道：设成"现在"⇒ 下一次 tick 就扫到（对**所有类型**有效）
+        updateWakeTrigger(db, id, { nextFireAt: new Date().toISOString() })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `立刻执行触发器「${row.title}」` })
+        json(res, 200, { ok: true, note: '已请求立刻执行，gateway 侧下一次 tick（≤1 秒）处理' })
+        return true
+      }
+
+      // ── 端口出口：列表 / 发布 / 取消 ───────────────────────────────
+      if (route === '/ports' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const ports = options.ports
+        // **未启用回 200**（不是 4xx）：没配 Caddy 是部署状态、不是请求错误。
+        // 回 4xx 会让面板显示成"操作失败"，而用户会反复重试一个不可能成功的操作。
+        json(res, 200, {
+          enabled: ports?.service !== undefined,
+          ...(ports?.disabledReason === undefined ? {} : { disabledReason: ports.disabledReason }),
+          whitelist: ports?.whitelist ?? [],
+          rows: ports?.service?.list() ?? [],
+        })
+        return true
+      }
+
+      if (route === '/port-publish' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const service = options.ports?.service
+        if (service === undefined) {
+          json(res, 400, { error: options.ports?.disabledReason ?? '端口出口未启用' })
+          return true
+        }
+        const body = await readJsonBody(req)
+        const name = typeof body['name'] === 'string' ? body['name'] : ''
+        const targetPort = Number(body['targetPort'])
+        const ttlRaw = body['ttlSeconds']
+        const ttlSeconds = ttlRaw === null || ttlRaw === undefined ? null : Number(ttlRaw)
+        const protocol = body['protocol'] === 'tcp' ? ('tcp' as const) : ('http' as const)
+        const listenRaw = body['listenPort']
+        const listenPort = listenRaw === null || listenRaw === undefined ? null : Number(listenRaw)
+
+        const result = await service.publish({
+          name,
+          targetPort,
+          protocol,
+          listenPort,
+          ttlSeconds,
+          approvedBy: `admin:${session.id.slice(0, 8)}`,
+          ...(typeof body['note'] === 'string' ? { note: body['note'] } : {}),
+        })
+        // **被拒的也要审计**："有人试图暴露一个非白名单端口"本身就是需要知道的事
+        audit(db, {
+          action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+          detail: result.ok ? `发布端口 ${name} → ${String(targetPort)}` : `发布端口被拒（${name}/${String(targetPort)}）：${result.reason}`,
+        })
+        json(res, result.ok ? 200 : 400, result.ok ? { ok: true, url: service.urlFor(result.row!) } : { error: result.reason })
+        return true
+      }
+
+      if (route === '/port-unpublish' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const service = options.ports?.service
+        if (service === undefined) {
+          json(res, 400, { error: options.ports?.disabledReason ?? '端口出口未启用' })
+          return true
+        }
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const result = await service.unpublish(id)
+        audit(db, {
+          action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+          detail: result.ok ? `取消端口发布 ${id}` : `取消端口发布失败（${id}）：${result.reason}`,
+        })
+        json(res, result.ok ? 200 : 400, result.ok ? { ok: true } : { error: result.reason })
+        return true
+      }
+
+      // ── 压缩：写一条"请求压缩"（**执行在 DSH 侧**）────────────────
+      // 压缩引擎深度依赖 DSH 框架，网关跑不了它；而压缩需要模型调用，那也只在 DSH 侧有。
+      // 所以面板只写请求，DSH 侧读到后执行 —— **压缩逻辑只有一份**，
+      // 不会出现"面板点的压缩和自动压缩效果不一样"。
+      if (route === '/compaction-request' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const at = new Date().toISOString()
+        setState(db, 'compaction_request_at', at)
+        setState(db, 'compaction_request_by', `admin:${session.id.slice(0, 8)}`)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `请求压缩 @ ${at}` })
+        json(res, 200, { ok: true, requestedAt: at, note: '已记录请求；DSH 侧会在下一轮或下次启动时执行' })
+        return true
+      }
+
+      // ── 存储：立即备份（**非破坏性**）──────────────────────────────
+      // 为什么加的是备份而不是清理：清理是破坏性动作，该走明确流程（先备份、再确认、可回滚），
+      // 不该是顺手一点的界面按钮 —— 存储页原本「刻意没有按钮」的理由仍然成立。
+      // 但"能看见备份清单、却不能在面板里做一份备份"正是用户抱怨的那类问题，
+      // 而流程第一步就是"先备份"。所以补这个安全动作。
+      if (route === '/backup-now' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const result = backupNow(db, { dbPath })
+        audit(db, {
+          action: 'api', ok: result.ok, actor: session.id.slice(0, 8), ip, path,
+          detail: result.ok ? `立即备份 → ${result.path ?? ''}` : `立即备份失败：${result.reason}`,
+        })
+        if (!result.ok) { json(res, 500, { error: result.reason }); return true }
+        json(res, 200, { ok: true, path: result.path, sizeBytes: result.sizeBytes })
+        return true
+      }
+
+      // ── 日志：清空缓冲（危险操作，必须留痕）──────────────────────
+      if (route === '/logs-clear' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const removed = options.logBuffer?.clear() ?? 0
+        // 日志是排障依据，清空会**销毁证据** ⇒ 必须落审计（谁、何时、清了多少）
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `清空日志缓冲（${String(removed)} 条）` })
+        json(res, 200, { ok: true, removed })
+        return true
+      }
+
+      // ── 提示词：取某个槽位的**全文**（编辑前必须拿全文，不能拿预览）──
+      if (route === '/prompt-text' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const slug = url.searchParams.get('slug') ?? ''
+        if (!(PROMPT_SLUGS as readonly string[]).includes(slug)) {
+          json(res, 400, { error: `未知槽位：${slug}` })
+          return true
+        }
+        const active = activePrompt(db, slug as PromptSlug)
+        // 没有版本时返回空串而不是 404：**"还没写过"是一种正常状态**，
+        // 404 会让面板显示成错误，而用户其实只是还没编辑过
+        json(res, 200, { slug, text: active?.text ?? '', revisionId: active?.id ?? null })
+        return true
+      }
+
+      // ── 提示词：保存新版本 ─────────────────────────────────────────
+      if (route === '/prompt-revision' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const slug = typeof body['slug'] === 'string' ? body['slug'] : ''
+        if (!(PROMPT_SLUGS as readonly string[]).includes(slug)) {
+          json(res, 400, { error: `未知槽位：${slug}（只允许 ${PROMPT_SLUGS.join(' / ')}）` })
+          return true
+        }
+        const text = typeof body['text'] === 'string' ? body['text'] : ''
+
+        // 校验交给 savePromptRevision —— 它内部做 validatePromptText + 规范化 + 指纹。
+        // 在这里再写一套变量名检查，两套规则迟早分叉，
+        // 而分叉的表现是"面板说保存成功了，实际被拒了"。
+        const result = savePromptRevision(db, {
+          slug: slug as PromptSlug,
+          text,
+          createdBy: `admin:${session.id.slice(0, 8)}`,
+          ...(typeof body['note'] === 'string' ? { note: body['note'] } : {}),
+        })
+        if (!result.ok) {
+          // 校验失败要把**每一条**错误都返回：只回第一条的话，
+          // 用户改完一条又冒出下一条，来回好几轮
+          json(res, 400, { error: result.errors.join('；'), errors: result.errors })
+          return true
+        }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `提示词 ${slug} 保存（${result.changed ? '新版本' : '内容未变，未造新版本'}）` })
+        json(res, 200, { ok: true, changed: result.changed, revisionId: result.revision.id })
+        return true
+      }
+
+      // ── 提示词：回滚到某个版本 ─────────────────────────────────────
+      if (route === '/prompt-rollback' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const revisionId = typeof body['revisionId'] === 'string' ? body['revisionId'] : ''
+        if (revisionId === '') { json(res, 400, { error: 'revisionId 必填' }); return true }
+
+        const revision = rollbackPrompt(db, revisionId)
+        if (revision === undefined) {
+          // 版本不存在要**明确报错**，而不是静默返回成功 ——
+          // 静默成功会让用户以为回滚生效了，实际提示词一个字都没变
+          json(res, 404, { error: `没有这个版本：${revisionId}` })
+          return true
+        }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `提示词回滚 → ${revisionId}` })
+        json(res, 200, { ok: true, revisionId: revision.id })
+        return true
+      }
+
+      // ── 记忆条目：编辑正文与摘要 ───────────────────────────────────
+      if (route === '/memory-entry' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        const content = typeof body['content'] === 'string' ? body['content'] : ''
+        const summary = typeof body['summary'] === 'string' ? body['summary'] : ''
+        const entities = Array.isArray(body['entities'])
+          ? body['entities'].filter((e): e is string => typeof e === 'string' && e.trim() !== '')
+          : []
+        if (id === '') { json(res, 400, { error: 'id 必填' }); return true }
+
+        const result = updateLongMemory(db, { id, content, summary, entities })
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `记忆 ${id} 已编辑（${String(content.length)} 字）` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 记忆条目：归档 / 恢复（**不是真删**）────────────────────────
+      if (route === '/memory-archive' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const id = typeof body['id'] === 'string' ? body['id'] : ''
+        if (id === '') { json(res, 400, { error: 'id 必填' }); return true }
+
+        // restore=true 走恢复；默认归档。用一个接口而不是两个：
+        // 它们是同一个动作的两个方向，分成两个接口会让前端要判断该调哪个。
+        const result = body['restore'] === true ? restoreLongMemory(db, id) : archiveLongMemory(db, id)
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `记忆 ${id} ${body['restore'] === true ? '恢复' : '归档'}` })
+        json(res, 200, { ok: true, message: result.reason })
+        return true
+      }
+
+      // ── 手动喂食记忆资料（后台「喂食记忆」页）──────────────────────
+      //
+      // ★ 与 CLI / 面板接口 / 模型工具**共用** `feedInput`（@forlife/gateway 的投喂子系统）：
+      // 这里只做"鉴权 → 解析请求体 → 调用 → 记审计"，一行记忆/切分逻辑都不重复。
+      // 子系统会自己切分、自己分批、批间让出控制权（大输入不再被"一口气灌进去"）。
+      // 校验失败一律 400（带原因），不是 500 —— 抛异常会变成"服务器内部错误"，
+      // 用户看不出是自己传错了还是系统坏了。
+      // ★★ 「**开始投喂**」—— 模型驱动投喂的入口（`FIX_PLAN.md` §23 那个洞）。
+      //
+      //   为什么单独一个端点、而不是复用 `/feed`：
+      //   `/feed` 是**内容驱动**（调用方把 items 交上来，我们直接写库）；
+      //   这一条是**模型驱动** —— 我们只登记"要喂这份素材"（每段一个可读路径），
+      //   真正写库的是**模型自己**读完之后调的 `feed_memory`。
+      //   两者的"谁在喂"根本不同，混在一个端点上会让两边的参数互相污染。
+      //
+      //   ⚠️ **必须放在 `/feed` 分支之前**：TS 会在 `route === '/feed'` 那个分支里
+      //   把 `route` 收窄成 `'/feed'`，之后再比 `'/feed-run'` 会被判成"不可能相等"
+      //   （TS2367）—— `/logs` 与 `/logs/stream` 那里踩过同一个坑。
+      // ★ 进度读数（**GET**，同一个路径）。
+      //
+      //   为什么必须有它：投喂是**以轮次为界**推进的，一次 POST 只返回
+      //   "**开始那一刻**"的快照 —— 面板据此显示"已投喂 N 段"的话，
+      //   喂了几轮之后那个数字**是不动的**，而用户会以为卡住了。
+      //   ⇒ 给它一个能问"现在到哪了"的只读端点（面板轮询它）。
+      //
+      //   ⚠️ 放在 POST 之前：TS 会在 `method === 'POST'` 那个分支里把 `method`
+      //   收窄成 `'POST'`，之后再比 `'GET'` 会被判成"不可能相等"。
+      if (route === '/feed-run' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const run = readFeedRun(db)
+        if (run === undefined) {
+          json(res, 200, { active: false })
+          return true
+        }
+        const cursor = readFeedCursor(db, run.source)
+        const plan = nextFeedTurn({
+          total: run.segments.length,
+          fedThrough: cursor?.fedThrough ?? 0,
+          perTurn: run.perTurn,
+        })
+        json(res, 200, {
+          active: true,
+          source: run.source,
+          kind: run.kind,
+          perTurn: run.perTurn,
+          segments: run.segments.length,
+          fedThrough: plan.fed,
+          pending: plan.pending,
+          done: plan.done,
+          next: plan.next ?? null,
+          lastSegment: run.segments[run.segments.length - 1]?.label ?? null,
+        })
+        return true
+      }
+
+      if (route === '/feed-run' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const as = body['as']
+        if (!isFeedKind(as)) { json(res, 400, { error: 'as 必须是 knowledge 或 experience' }); return true }
+        const source = typeof body['source'] === 'string' ? body['source'].trim() : ''
+        if (source === '') { json(res, 400, { error: 'source 不能为空（游标与会话都靠它关联）' }); return true }
+        const dir = typeof body['dir'] === 'string' ? body['dir'].trim() : ''
+        if (dir === '') { json(res, 400, { error: 'dir 不能为空（指向装着分段素材的目录）' }); return true }
+        const perTurn = Number(body['perTurn'] ?? 0)
+
+        // 枚举素材。用 `listFeedFiles`（它已经懂"哪些扩展名算文本、哪些目录要跳过"），
+        // 而不是自己 `readdirSync` —— 自己写会把二进制文件也列进来。
+        let files: readonly string[]
+        try {
+          files = listFeedFiles(dir)
+        } catch (error: unknown) {
+          json(res, 400, { error: `读不了这个目录：${String(error).slice(0, 160)}` })
+          return true
+        }
+        if (files.length === 0) {
+          json(res, 400, { error: `这个目录里没有可分段的文本素材：${dir}` })
+          return true
+        }
+
+        let started
+        try {
+          started = startFeedRunFromFiles(db, { source, kind: as, perTurn, files })
+        } catch (error: unknown) {
+          json(res, 400, { error: String(error instanceof Error ? error.message : error).slice(0, 200) })
+          return true
+        }
+
+        // 顺带把"已经喂到哪"一起回：面板要显示"已投喂 N/M 段"（断点续传的可见形式）
+        const cursor = readFeedCursor(db, source)
+        // ⚠️ 动作用已有的 `'api'` 而不是往 `AuditAction` 里加 `'feed-run'`：
+        //   那个联合类型别处也在用（改它会牵动审计界面与它的测试），
+        //   而"是哪一条接口"在 `detail` 里写得清楚。
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          detail: `feed-run ${source}（${String(started.segments.length)} 段）`,
+        })
+        json(res, 200, {
+          source: started.source,
+          kind: started.kind,
+          perTurn: started.perTurn,
+          segments: started.segments.length,
+          first: started.segments[0]?.path ?? null,
+          fedThrough: cursor?.fedThrough ?? 0,
+        })
+        return true
+      }
+
+      if (route === '/feed' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const as = body['as']
+        if (!isFeedKind(as)) { json(res, 400, { error: 'as 必须是 knowledge 或 experience' }); return true }
+        const rawItems = body['items']
+        if (!Array.isArray(rawItems)) { json(res, 400, { error: 'items 必须是数组' }); return true }
+        const items = rawItems.map((entry): FeedItem => {
+          const record = (entry ?? {}) as Record<string, unknown>
+          const content = typeof record['content'] === 'string' ? record['content'] : ''
+          const summary = typeof record['summary'] === 'string' ? record['summary'] : undefined
+          const entities = Array.isArray(record['entities'])
+            ? record['entities'].filter((entity): entity is string => typeof entity === 'string' && entity.trim() !== '')
+            : undefined
+          return {
+            content,
+            ...(summary === undefined || summary === '' ? {} : { summary }),
+            ...(entities === undefined ? {} : { entities }),
+          }
+        })
+        const source = typeof body['source'] === 'string' && body['source'].trim() !== '' ? body['source'].trim() : undefined
+
+        const run = await feedInput(db, {
+          as,
+          items,
+          ...(source === undefined ? {} : { source }),
+          ...(body['dryRun'] === true ? { dryRun: true } : {}),
+        })
+        const result = firstFeedResult(run)
+        if (result === undefined || !result.ok) {
+          json(res, 400, { error: run.error ?? result?.error ?? '喂食失败' })
+          return true
+        }
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `喂食 ${as} ← ${result.source}：新增 ${String(result.inserted)} / 更新 ${String(result.updated)} / 判重 ${String(result.duplicates)} / 归档 ${String(result.archived)}${result.dryRun ? '（dry-run）' : ''}`,
+        })
+        // 铁律 1：喂食**直接改了模型记得什么** ⇒ 除了安全审计（上面那笔，带 ip/路径），
+        // 还要记一笔"影响模型的变更"，由既有的报告管线告知模型（`affectsModel('memory.')` 为真）。
+        // 预演不记：它没有改动任何东西，报告一条"我动过你的记忆"会让模型凭空怀疑自己的记忆。
+        if (!result.dryRun) {
+          recordAdminAction(db, {
+            action: 'memory.feed',
+            actor: 'admin',
+            subject: result.source,
+            detail: {
+              as: result.as,
+              inserted: result.inserted,
+              updated: result.updated,
+              duplicates: result.duplicates,
+              archived: result.archived,
+            },
+          })
+        }
+        json(res, 200, { ok: true, result })
+        return true
+      }
+
+      // ── 表情库：改描述/标签 ────────────────────────────────────────
+      if (route === '/sticker-description' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const assetId = typeof body['assetId'] === 'string' ? body['assetId'] : ''
+        const description = typeof body['description'] === 'string' ? body['description'] : ''
+        const tags = Array.isArray(body['emotionTags'])
+          ? body['emotionTags'].filter((t): t is string => typeof t === 'string' && t.trim() !== '')
+          : []
+        if (assetId === '') { json(res, 400, { error: 'assetId 必填' }); return true }
+
+        const result = updateStickerDescription(db, { assetId, description, emotionTags: tags, updatedBy: session.id.slice(0, 8) })
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `表情描述 ${assetId} → ${String(description.length)} 字 / ${String(tags.length)} 标签` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 表情库：删除（标记为 rejected，保留指纹与判定）──────────────
+      if (route === '/sticker-delete' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) { json(res, 400, { error: guard }); return true }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const assetId = typeof body['assetId'] === 'string' ? body['assetId'] : ''
+        if (assetId === '') { json(res, 400, { error: 'assetId 必填' }); return true }
+
+        const result = deleteStickerAsset(db, { assetId, reason: `by ${session.id.slice(0, 8)}` })
+        if (!result.ok) { json(res, 400, { error: result.reason }); return true }
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `删除表情 ${assetId}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 路由行（增 / 改）──────────────────────────────────────────
+      if (route === '/model-route' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const role = typeof body['role'] === 'string' ? body['role'].trim() : ''
+        const provider = typeof body['provider'] === 'string' ? body['provider'].trim() : ''
+        const model = typeof body['model'] === 'string' ? body['model'].trim() : ''
+        const rank = typeof body['rank'] === 'number' && Number.isFinite(body['rank']) ? Math.max(0, Math.floor(body['rank'])) : 0
+        if (role === '' || provider === '' || model === '') {
+          json(res, 400, { error: 'role / provider / model 都必填' })
+          return true
+        }
+
+        // effort 允许 null（表示"不指定"，各端点用自己的默认值）——
+        // 传空串进来会写成一个空值，面板显示的和实际生效的就不一致了
+        const effort = typeof body['effort'] === 'string' && body['effort'].trim() !== '' ? body['effort'].trim() : null
+
+        const id = upsertModelRoute(db, {
+          role,
+          rank,
+          provider,
+          model,
+          reasoningEffort: effort,
+          enabled: body['enabled'] !== false,
+          note: typeof body['note'] === 'string' ? body['note'] : null,
+          updatedBy: session.id.slice(0, 8),
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `路由 ${role}#${String(rank)} → ${provider}/${model}（effort=${effort ?? '不指定'}）` })
+        json(res, 200, { ok: true, id })
+        return true
+      }
+
+      // ── 路由行（删）────────────────────────────────────────────────
+      if (route === '/model-route-delete' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const role = typeof body['role'] === 'string' ? body['role'] : ''
+        const rank = typeof body['rank'] === 'number' ? body['rank'] : -1
+        if (role === '' || rank < 0) {
+          json(res, 400, { error: 'role 与 rank 必填' })
+          return true
+        }
+        const removed = deleteModelRoute(db, role, rank)
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `删除路由 ${role}#${String(rank)}（${String(removed)} 行）` })
+        json(res, 200, { ok: true, removed })
+        return true
+      }
+
+      // ── 路由行（上下移）─────────────────────────────────────────────
+      if (route === '/model-route-move' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const role = typeof body['role'] === 'string' ? body['role'] : ''
+        const rank = typeof body['rank'] === 'number' ? body['rank'] : -1
+        const direction = body['direction'] === 'up' ? 'up' : body['direction'] === 'down' ? 'down' : ''
+        if (role === '' || rank < 0 || direction === '') {
+          json(res, 400, { error: 'role / rank / direction(up|down) 必填' })
+          return true
+        }
+
+        const rows = listModelRoutes(db, role)
+        const target = rank + (direction === 'up' ? -1 : 1)
+        if (target < 0 || target >= rows.length) {
+          json(res, 400, { error: `已经在${direction === 'up' ? '最前' : '最后'}了` })
+          return true
+        }
+        const a = rows[rank]
+        const b = rows[target]
+        if (a === undefined || b === undefined) {
+          json(res, 400, { error: '找不到要交换的两行' })
+          return true
+        }
+
+        // UNIQUE(role, rank)：直接交换会在中间那步撞唯一约束（先写 a=target 时 b 还是 target）。
+        // 所以先把 a 挪到临时高位，再落位 —— 这是唯一安全的顺序。
+        const TEMP = 9000
+        db.prepare('UPDATE model_routes SET rank = ? WHERE id = ?').run(TEMP, a.id)
+        db.prepare('UPDATE model_routes SET rank = ? WHERE id = ?').run(rank, b.id)
+        db.prepare('UPDATE model_routes SET rank = ? WHERE id = ?').run(target, a.id)
+
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `路由 ${role}：${String(rank)} ↔ ${String(target)}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 会话时区（写；**人工设置**，标 user_set）────────────────────
+      if (route === '/conversation-timezone' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const key = typeof body['conversationKey'] === 'string' ? body['conversationKey'] : ''
+        const timezone = typeof body['timezone'] === 'string' ? body['timezone'].trim() : ''
+        if (key === '' || timezone === '') {
+          json(res, 400, { error: 'conversationKey 与 timezone 都必填' })
+          return true
+        }
+        // 校验时区名：写进去一个拼错的名字，之后这个会话的**所有时间表述都会错**，
+        // 而且不会报错（只是算出来的时间不对）—— 这是最难发现的一类问题。
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: timezone })
+        } catch {
+          json(res, 400, { error: `不是合法时区名：${timezone}（应形如 Asia/Shanghai）` })
+          return true
+        }
+        // 复用 store 里既有的 setConversationClock（它带来源分级与校验），
+        // 不重写一套 —— 两套校验迟早分叉。
+        // 来源固定 user_set：面板上改是**人明确做的决定**，优先级最高；
+        // 不这么标的话，模型/小模型之后的自动判断会按优先级把它覆盖掉。
+        setConversationClock(db, {
+          scope: key,
+          timezone,
+          hour24: body['hour24'] !== false,
+          source: 'user_set',
+          ...(typeof body['reason'] === 'string' ? { reason: body['reason'] } : {}),
+          updatedBy: session.id.slice(0, 8),
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `时区 ${key} → ${timezone}` })
+        json(res, 200, { ok: true })
+        return true
+      }
+
+      // ── 会话画像（写；模型与人都能改，但人改过之后模型不该覆盖）────
+      if (route === '/conversation-impression' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+        const key = typeof body['conversationKey'] === 'string' ? body['conversationKey'] : ''
+        if (key === '') {
+          json(res, 400, { error: 'conversationKey 必填' })
+          return true
+        }
+        const impression = typeof body['impression'] === 'string' ? body['impression'] : null
+        // 从面板改的 ⇒ source='user'，此后模型自动更新不会覆盖它
+        const written = setConversationImpression(db, {
+          conversationKey: key,
+          impression,
+          source: 'user',
+          updatedBy: session.id.slice(0, 8),
+        })
+        audit(db, { action: 'api', ok: true, actor: session.id.slice(0, 8), ip, path, detail: `画像 ${key} → ${written ? '已保存（标记为用户修正）' : '未写入'}` })
+        json(res, 200, { ok: true, written })
+        return true
+      }
+
+      // ── 唤醒规则（写）──────────────────────────────────────────────
+      // 用户硬要求：「整个后台只准我看、没有写编辑入口，这个必须要补充」。
+      // 作用域传 '*' 就是改**全局默认**（wake_rules 里 scope='*' 的那些行）。
+      if (route === '/wake-rule' && method === 'POST') {
+        const guard = checkStateChange(req)
+        if (guard !== undefined) {
+          json(res, 400, { error: guard })
+          return true
+        }
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const body = await readJsonBody(req)
+
+        const scope = typeof body['scope'] === 'string' && body['scope'] !== '' ? body['scope'] : '*'
+        const condition = body['condition']
+        if (typeof condition !== 'string' || condition === '') {
+          json(res, 400, { error: 'condition 必须是非空字符串' })
+          return true
+        }
+
+        // 只接受已知字段，**不接受任意键** —— 否则前端一个拼写错误会被静默忽略，
+        // 表现为"点了保存但没生效"，最难查。
+        const patch: Record<string, unknown> = {}
+        for (const key of ['enabled', 'probability', 'minIntervalMs', 'dailyLimit', 'quietUntil'] as const) {
+          if (body[key] !== undefined) patch[key] = body[key]
+        }
+        if (Object.keys(patch).length === 0) {
+          json(res, 400, { error: '没有要改的字段（enabled / probability / minIntervalMs / dailyLimit / quietUntil）' })
+          return true
+        }
+        // 类型校验：数字字段必须是有限数，布尔字段必须是布尔 ——
+        // 传字符串 '50' 进来如果被 SQLite 收下，面板显示的和实际生效的就会不一致
+        for (const key of ['probability', 'minIntervalMs', 'dailyLimit'] as const) {
+          const value = patch[key]
+          if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
+            json(res, 400, { error: `${key} 必须是数字` })
+            return true
+          }
+        }
+        if (patch['enabled'] !== undefined && typeof patch['enabled'] !== 'boolean') {
+          json(res, 400, { error: 'enabled 必须是布尔值' })
+          return true
+        }
+        if (patch['quietUntil'] !== undefined && patch['quietUntil'] !== null && typeof patch['quietUntil'] !== 'string') {
+          json(res, 400, { error: 'quietUntil 必须是字符串或 null' })
+          return true
+        }
+
+        const updated = setWakeRule(
+          db,
+          scope,
+          condition as WakeCondition,
+          patch as Parameters<typeof setWakeRule>[3],
+          'admin',
+        )
+        audit(db, {
+          action: 'api',
+          ok: true,
+          actor: session.id.slice(0, 8),
+          ip,
+          path,
+          detail: `唤醒规则 ${scope}/${condition} → ${JSON.stringify(patch)}`,
+        })
+        log?.(`[admin] 唤醒规则 ${scope}/${condition} 已更新`)
+        json(res, 200, { rule: updated })
+        return true
+      }
+
+      // 存储页要 dbPath，所以不能进上面那张纯函数表
+      if (route === '/storage' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryStorage(db, { dbPath }))
+        return true
+      }
+
+      // ── 表情与媒体 ─────────────────────────────────────────────────
+      if (route === '/media' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryMedia(db))
+        return true
+      }
+
+      // ── 实时日志（内存缓冲；since 用于增量拉取）────────────────────────
+      // ── ★ SSE：实时日志推送（替代 2 秒轮询）─────────────────────────
+      //
+      // **鉴权与下面 /logs 完全一致** —— SSE 是个长连接，
+      // **忘了鉴权就等于开了一个持续泄露日志的口子**。
+      //
+      // **必须放在 /logs 之前**：TS 会在 /logs 那个分支里把 `route` 收窄成
+      // `'/logs'`，之后再比 `'/logs/stream'` 会被判成"不可能相等"（TS2367）。
+      if (route === '/logs/stream' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const buffer = options.logBuffer
+        if (buffer === undefined) {
+          // **没有缓冲就说没有** —— 不能开一个永远不说话的流
+          // （前端会以为"连上了但没日志"，而真相是"这台根本没配缓冲"）
+          json(res, 200, { error: '本进程没有日志缓冲' })
+          return true
+        }
+        const since = Number(url.searchParams.get('since') ?? '0')
+        openLogStream(req, res, { logBuffer: buffer, since: Number.isFinite(since) ? since : 0 })
+        // **返回 true**：语义是"这个请求我处理了"。
+        // 流不会被掐断 —— 收尾在 SSE 自己的 close 事件里。
+        return true
+      }
+
+      if (route === '/logs' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        const buffer = options.logBuffer
+        const store = options.logStore
+        const since = Number(url.searchParams.get('since') ?? '0')
+        const limit = Number(url.searchParams.get('limit') ?? '200')
+        // ★★ 2026-10-12（`FIX_PLAN.md` §57 待办④）：**翻落盘的历史**（而不只是内存缓冲）。
+        //
+        //   为什么必须补：`?levels=&modules=&q=` 那条路原来走的是 `buffer.query(...)`，
+        //   而缓冲是**进程内**的（重启就空、容量有限）。采集端采进来的 NapCat 记录
+        //   （真机 2025 条）大部分在落盘里 ⇒ 不翻历史的话，重启之后面板上**又看不见了**。
+        //   ★ 落盘保留 14 天（`FORLIFE_LOG_RETENTION_DAYS`），那才是"更久远"的那一侧。
+        const history = (url.searchParams.get('history') ?? '') === '1'
+        const wantStore = history && store !== undefined
+        if (buffer === undefined && !wantStore) {
+          // ★ 没有缓冲**也不假装有**；但把落盘里有哪些模块报出来（下拉不至于空着）
+          json(res, 200, {
+            lines: [],
+            sequence: 0,
+            size: 0,
+            capacity: 0,
+            modules: store?.modules() ?? [],
+            levels: [...LOG_LEVELS],
+            source: 'buffer',
+          })
+          return true
+        }
+
+        // ★ 筛选（用户 2026-10-10：「在管理面板的日志区能筛选**等级、模块**等」）。
+        //
+        // ⚠️ 筛选与 `since` **不能并用**：`since` 的语义是"给我比这个序号新的"，
+        //    而筛选是"在所有行里挑符合的"。两者一起用会得到一个**每个轮询周期
+        //    都不同**的集合（新行进来会改变"哪些行符合"），前端增量追加就会错位。
+        //    ⇒ 有筛选时**忽略 `since`**、按筛选回一批，并用 `filtered: true`
+        //      明确告诉前端"这一批不是增量的，请整段替换"。
+        const levels = (url.searchParams.get('levels') ?? '')
+          .split(',')
+          .map((piece) => piece.trim())
+          .filter((piece): piece is LogLevel => isLogLevel(piece))
+        const modules = (url.searchParams.get('modules') ?? '')
+          .split(',')
+          .map((piece) => piece.trim())
+          .filter((piece) => piece !== '')
+        const contains = (url.searchParams.get('q') ?? '').trim()
+        const filtered = history || levels.length > 0 || modules.length > 0 || contains !== ''
+
+        // `modules` 总是一起给：面板的模块下拉靠它，免得用户手打拼错
+        // ★ 历史模式下要把**落盘里的模块**并进来（否则重启后选不到 `napcat`）
+        const known = wantStore
+          ? [...new Set([...(buffer?.modules() ?? []), ...(store?.modules() ?? [])])].sort()
+          : (buffer?.modules() ?? [])
+        // `levels` 也一起给：**七级的唯一真源在服务端**（`log-levels.ts`）。
+        // 面板照着渲染即可 —— 前端再抄一份清单，两边迟早对不上。
+        const levelNames = [...LOG_LEVELS]
+        if (filtered) {
+          // ★ 历史模式：读**落盘**（接上了才读）；没接上就退回缓冲，并**如实标出来**
+          const source: 'buffer' | 'store' = wantStore ? 'store' : 'buffer'
+          const filter = { levels, modules, ...(contains === '' ? {} : { contains }), limit }
+          const lines = source === 'store' ? store!.read(filter) : (buffer?.query(filter) ?? [])
+          json(res, 200, {
+            lines,
+            sequence: buffer?.sequence ?? 0,
+            size: buffer?.size ?? 0,
+            capacity: buffer?.capacity ?? 0,
+            modules: known,
+            levels: levelNames,
+            filtered: true,
+            source,
+          })
+          return true
+        }
+
+        // ★ 走到这里只可能是"有缓冲"（没有缓冲且没要求翻历史时，上面已经返回过了）
+        if (buffer === undefined) {
+          json(res, 200, { lines: [], sequence: 0, size: 0, capacity: 0, modules: known, levels: levelNames, source: 'buffer' })
+          return true
+        }
+        const lines = Number.isFinite(since) && since > 0 ? buffer.since(since, limit) : buffer.tail(limit)
+        json(res, 200, {
+          lines,
+          sequence: buffer.sequence,
+          size: buffer.size,
+          capacity: buffer.capacity,
+          modules: known,
+          levels: levelNames,
+        })
+        return true
+      }
+
+      // ── 表情库 ──────────────────────────────────────────────────────
+      if (route === '/stickers' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        json(res, 200, queryStickers(db))
+        return true
+      }
+
+      // 图片字节。**只按 id 取库里登记过的路径** ——
+      // 若允许调用方传路径，这个接口就是"按路径读服务器任意文件"的洞。
+      if (route === '/sticker-file' && method === 'GET') {
+        const session = requireSession(req, res, path)
+        if (session === undefined) return true
+        const id = url.searchParams.get('id') ?? ''
+        const found = readStickerBytes(db, id)
+        if (!found.ok) {
+          json(res, 404, { error: found.reason })
+          return true
+        }
+        res.writeHead(200, {
+          'content-type': found.mime,
+          'content-length': found.bytes.length,
+          // 内容按 sha256 命名 ⇒ 同一个 id 的字节不会变，可以长缓存；
+          // 但必须是 private（这是登录后才能看的东西，不能被共享缓存留存）
+          'cache-control': 'private, max-age=86400',
+          'x-content-type-options': 'nosniff',
+        })
+        res.end(found.bytes)
+        return true
+      }
+
+      json(res, 404, { error: `未知接口：${method} ${path}` })
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log?.(`[admin] 接口异常 ${method} ${path}: ${message}`)
+      json(res, 500, { error: message })
+      return true
+    }
+  }
+}

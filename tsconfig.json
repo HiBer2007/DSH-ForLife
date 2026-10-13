@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "paths": {
+      "@forlife/contracts": ["./packages/contracts/src/index.ts"],
+      "@forlife/store": ["./packages/store/src/index.ts"],
+      "@forlife/memory-core": ["./packages/memory-core/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  // 注意：`packages/admin-ui` 是**前端包**（Vue + Vite），它有自己的 tsconfig
+  // （需要 DOM lib 与 bundler 解析）。根配置只管 Node 侧代码，所以把它排除掉 ——
+  // 否则根 typecheck 会去解析 .vue 与 DOM API 而失败。
+  "exclude": ["node_modules", "**/node_modules", "research", ".runtime", "packages/admin-ui"]
+}

@@ -1,0 +1,329 @@
+/**
+ * Caddy Admin API 客户端（PLAN 阶段 7 交付物 3）。
+ *
+ * ## ⚠️ 一次真实的纠错（靠读官方文档发现的）
+ *
+ * 最初我把 upsert 写成一句 `PUT /id/<id>`，以为它能"存在则替换、不存在则创建"。
+ * **这是错的。** 官方文档（https://caddyserver.com/docs/api）写得很清楚：
+ *
+ * > **Using `@id` in JSON** — make a request to the `/id/` API endpoint
+ * > **in the same way you would to the corresponding `/config/` endpoint**.
+ *
+ * 也就是说 `/id/<id>` 只是**配置路径的快捷方式**，用来访问**已经存在**的对象 ——
+ * 它**不能创建**新对象。而创建要用：
+ *
+ * > **PUT /config/[path]** — *Creates new object; inserts into array*
+ *
+ * 所以正确做法是两步（但语义仍然是幂等的）：
+ *   1. `GET /id/<id>` —— 存在 ⇒ `PATCH /id/<id>` 替换；
+ *   2. 不存在（404）⇒ `PUT /config/apps/http/servers/<server>/routes/0` 插入（对象里带 `@id`）。
+ *
+ * **这个错误只有两种方式能发现：真跑一次 Caddy，或者读文档。**
+ * 我这次是因为 Docker Hub 拉不动镜像才去读的文档 —— 否则它会一直躺在代码里，
+ * 直到部署当天表现为"发布成功但访问不通"。
+ *
+ * ## 删除为什么要"确认删干净"
+ *
+ * 验收有一条是「`GET /config/` 无残留路由」。DELETE 返回 200 **不代表**路由真的没了。
+ * 所以删完**再查一次**，查得到就判失败 —— 否则会出现"库里说取消了，实际还公开着"，
+ * 而那是最危险的状态（**没人知道它还在**）。
+ *
+ * @module @forlife/gateway/caddy
+ */
+import type { FetchLike } from './sticker-vision.ts'
+
+/** 一次 HTTP 调用的结果。 */
+export interface CaddyResult {
+  readonly ok: boolean
+  readonly reason: string
+  readonly status?: number
+}
+
+/** 客户端配置。 */
+export interface CaddyClientOptions {
+  /** Admin API 地址，如 `http://127.0.0.1:2019`。 */
+  readonly adminUrl: string
+  /**
+   * 路由要插进哪个 HTTP server 的 `routes`。
+   *
+   * 必须能配：`PUT /config/…` 需要**完整路径**，而 server 名由部署方的
+   * Caddyfile/JSON 决定（Caddyfile 适配出来的通常叫 `srv0`）。
+   * 猜错的表现是"发布返回成功但访问不通"。
+   */
+  readonly serverName?: string
+  readonly fetchImpl?: FetchLike
+  readonly timeoutMs?: number
+}
+
+/** Caddy 客户端。 */
+export interface CaddyClient {
+  /** 幂等 upsert 一条路由。 */
+  readonly upsertRoute: (routeId: string, route: unknown) => Promise<CaddyResult>
+  /** 按 id 删除一条路由，并**确认删干净**。 */
+  readonly deleteRoute: (routeId: string) => Promise<CaddyResult>
+  /** 列出配置里所有 `@id`（验收要"无残留路由"时用它核对）。 */
+  readonly listRouteIds: () => Promise<{ readonly ok: boolean; readonly ids: readonly string[]; readonly reason: string }>
+  /** 原始配置（排障用）。 */
+  readonly getConfig: () => Promise<{ readonly ok: boolean; readonly config: unknown; readonly reason: string }>
+  /**
+   * 幂等写入一个 layer4 server（TCP 出口用）。
+   *
+   * 用 `POST /config/apps/layer4/servers/<name>` —— 文档说对**对象**它是
+   * "creates or replaces"，所以一次请求就同时覆盖两种情况（layer4 的 server
+   * 是按名字索引的对象，没有数组顺序语义，因此不需要 HTTP 那边那套两步）。
+   */
+  readonly upsertLayer4Server: (serverName: string, server: unknown) => Promise<CaddyResult>
+  /** 删除一个 layer4 server，并**确认删干净**。 */
+  readonly deleteLayer4Server: (serverName: string) => Promise<CaddyResult>
+}
+
+
+/**
+ * 从 admin 地址推出要发的 `Origin`（**完整 origin URL**）。
+ *
+ * Caddy 的 admin 端点有**来源保护**，而且实测行为是：
+ * **没有 `Origin` 头 ⇒ 被当成空 origin `''` ⇒ 403**。
+ * 所以我们必须主动发一个 Origin，且必须是带 scheme 的完整形式
+ * （裸 `host:port` 会被拒，实测过）。
+ *
+ * 为什么不用 `Host` 头：Node 的 `fetch`（undici）**按规范禁止设置 `Host`**，
+ * 会**静默忽略** —— 那样的代码看起来做了事，实际什么都没做。
+ */
+export function originHeaderFor(adminUrl: string): string | undefined {
+  try {
+    const url = new URL(adminUrl)
+    return url.origin
+  } catch {
+    return undefined
+  }
+}
+
+/** 造一个 Caddy 客户端。 */
+export function createCaddyClient(options: CaddyClientOptions): CaddyClient {
+  const base = options.adminUrl.replace(/\/$/, '')
+  const doFetch = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
+  const timeout = options.timeoutMs ?? 5000
+  const serverName = options.serverName ?? 'srv0'
+  // 发 Origin（见 originHeaderFor 的说明：不发会被 Caddy 当空 origin 拒掉）
+  const originHeader = originHeaderFor(base)
+
+  const call = async (method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; text: string }> => {
+    try {
+      const response = await doFetch(`${base}${path}`, {
+        method,
+        headers: {
+          // **必须发 Origin**：Caddy 把"没有 Origin"当空 origin 而拒绝（实测 403）
+          ...(originHeader === undefined ? {} : { origin: originHeader }),
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(timeout),
+      } as never)
+      return { ok: response.ok, status: response.status, text: await response.text() }
+    } catch (error) {
+      // 连不上要如实报（"Caddy 没起来"与"配置被拒"是完全不同的问题）
+      return { ok: false, status: 0, text: `无法连接 Caddy Admin API（${base}）：${String(error).slice(0, 140)}` }
+    }
+  }
+
+  const upsertRoute = async (routeId: string, route: unknown): Promise<CaddyResult> => {
+    if (routeId.trim() === '') return { ok: false, reason: 'routeId 不能为空' }
+
+    // `@id` 必须写进**对象本身**：否则按 id 再查查不到 —— 表现为"删不掉自己那条"
+    const withId = { ...(route as Record<string, unknown>), '@id': routeId }
+    const encoded = encodeURIComponent(routeId)
+
+    // ① 先看它是不是已经存在
+    const existing = await call('GET', `/id/${encoded}`)
+    if (existing.ok) {
+      // ② 存在 ⇒ 替换（PATCH 严格替换已存在的值）
+      const patched = await call('PATCH', `/id/${encoded}`, withId)
+      if (!patched.ok) {
+        return { ok: false, reason: `Caddy 拒绝更新（HTTP ${String(patched.status)}）：${patched.text.slice(0, 200)}`, status: patched.status }
+      }
+      return { ok: true, reason: '已更新', status: patched.status }
+    }
+
+    // ③ 不存在 ⇒ **插入到 routes 数组最前面**（PUT 到下标 0 = 插入）。
+    //    放最前是有意的：我们发布的路由应当**优先于**部署方自己的兜底路由
+    //    （否则会被一条 `handle` 全接走，表现为"发布成功但访问到的是别的东西"）。
+    const insertPath = `/config/apps/http/servers/${encodeURIComponent(serverName)}/routes/0`
+    const inserted = await call('PUT', insertPath, withId)
+    if (!inserted.ok) {
+      return {
+        ok: false,
+        reason:
+          `Caddy 拒绝插入（HTTP ${String(inserted.status)}）：${inserted.text.slice(0, 200)}` +
+          `　—— 若提示找不到路径，多半是 server 名不对（当前用「${serverName}」，可用 FORLIFE_CADDY_SERVER 覆盖）`,
+        status: inserted.status,
+      }
+    }
+    return { ok: true, reason: '已插入', status: inserted.status }
+  }
+
+  const listRouteIds = async (): Promise<{ readonly ok: boolean; readonly ids: readonly string[]; readonly reason: string }> => {
+    const result = await call('GET', '/config/')
+    if (!result.ok) return { ok: false, ids: [], reason: `读取配置失败（HTTP ${String(result.status)}）：${result.text.slice(0, 160)}` }
+    try {
+      const ids: string[] = []
+      const walk = (node: unknown): void => {
+        if (node === null || typeof node !== 'object') return
+        if (Array.isArray(node)) {
+          for (const item of node) walk(item)
+          return
+        }
+        const record = node as Record<string, unknown>
+        if (typeof record['@id'] === 'string') ids.push(record['@id'])
+        for (const value of Object.values(record)) walk(value)
+      }
+      walk(JSON.parse(result.text))
+      return { ok: true, ids, reason: `共 ${String(ids.length)} 个 @id` }
+    } catch {
+      return { ok: false, ids: [], reason: `配置不是 JSON：${result.text.slice(0, 120)}` }
+    }
+  }
+
+  const deleteRoute = async (routeId: string): Promise<CaddyResult> => {
+    if (routeId.trim() === '') return { ok: false, reason: 'routeId 不能为空' }
+    const result = await call('DELETE', `/id/${encodeURIComponent(routeId)}`)
+    // 404 也算成功：目标就是"它不存在"。把它当失败会让人反复重试一个已经达成的目标。
+    if (!result.ok && result.status !== 404) {
+      return { ok: false, reason: `删除失败（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}`, status: result.status }
+    }
+
+    // **删完再查一次**：DELETE 返回 200 不代表真的没了。
+    // 验收有一条是「GET /config/ 无残留路由」—— 不确认的话会出现
+    // "库里说取消了，实际还公开着"，而那是最危险的状态（没人知道它还在）。
+    const after = await listRouteIds()
+    if (after.ok && after.ids.includes(routeId)) {
+      return { ok: false, reason: `删除后 ${routeId} 仍在配置里 —— 视为失败（否则会留下一条公开路由）` }
+    }
+    return { ok: true, reason: '已删除', status: result.status }
+  }
+
+  const getConfig = async (): Promise<{ readonly ok: boolean; readonly config: unknown; readonly reason: string }> => {
+    const result = await call('GET', '/config/')
+    if (!result.ok) return { ok: false, config: undefined, reason: `HTTP ${String(result.status)}：${result.text.slice(0, 160)}` }
+    try {
+      return { ok: true, config: JSON.parse(result.text), reason: 'ok' }
+    } catch {
+      return { ok: false, config: undefined, reason: '配置不是 JSON' }
+    }
+  }
+
+
+  const layer4Path = (serverName: string): string =>
+    `/config/apps/layer4/servers/${encodeURIComponent(serverName)}`
+
+
+  /**
+   * 确保 `apps/layer4` 存在。
+   *
+   * Caddy 的配置 API **不能穿过不存在的路径** —— Caddyfile 里没声明 layer4 app 时，
+   * `POST /config/apps/layer4/servers/<name>` 会报
+   * `invalid traversal path`。所以先把它建出来。
+   */
+  const ensureLayer4App = async (): Promise<CaddyResult> => {
+    const existing = await call('GET', '/config/apps/layer4')
+    if (existing.ok) return { ok: true, reason: 'layer4 app 已存在' }
+    const created = await call('POST', '/config/apps/layer4', { servers: {} })
+    if (!created.ok) {
+      return {
+        ok: false,
+        reason: `无法创建 layer4 app（HTTP ${String(created.status)}）：${created.text.slice(0, 160)}`,
+        status: created.status,
+      }
+    }
+    return { ok: true, reason: '已创建 layer4 app' }
+  }
+
+  const upsertLayer4Server = async (serverName: string, server: unknown): Promise<CaddyResult> => {
+    if (serverName.trim() === '') return { ok: false, reason: 'serverName 不能为空' }
+    // POST 到对象路径 = creates or replaces（见接口上的说明）
+    let result = await call('POST', layer4Path(serverName), server)
+
+    // **父路径不存在**时会报 invalid traversal path（真机踩到的）：
+    // Caddyfile 里没声明 layer4 app 时，apps/layer4 这个键根本不存在。
+    // 这时先建出父路径再重试 —— 而不是让部署方记得在 Caddyfile 里写一段空的 layer4 配置。
+    if (!result.ok && result.text.includes('invalid traversal path')) {
+      const ensured = await ensureLayer4App()
+      if (!ensured.ok) return ensured
+      result = await call('POST', layer4Path(serverName), server)
+    }
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        reason:
+          `Caddy 拒绝 layer4 配置（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}` +
+          `　—— 若提示「unknown module: layer4」，说明这个 Caddy 没编入 layer4（需自建镜像，见 deploy/caddy/Dockerfile.forlife）；` +
+          `若提示某个「layer4.matchers.*」未知，则是路由里用了不存在的 matcher（layer4 的 matcher 全是协议专属的，通用转发应**不写 match**）`,
+        status: result.status,
+      }
+    }
+    return { ok: true, reason: '已写入', status: result.status }
+  }
+
+  const deleteLayer4Server = async (serverName: string): Promise<CaddyResult> => {
+    if (serverName.trim() === '') return { ok: false, reason: 'serverName 不能为空' }
+    const result = await call('DELETE', layer4Path(serverName))
+    // 404 算成功：目标就是"它不存在"
+    if (!result.ok && result.status !== 404) {
+      return { ok: false, reason: `删除 layer4 server 失败（HTTP ${String(result.status)}）：${result.text.slice(0, 200)}`, status: result.status }
+    }
+
+    // **确认删干净**：留下的不是 404 的路由，而是一条**还在监听端口**的转发。
+    //
+    // 这里**列全部再查成员**，而不是 GET 单条看它是否 404 ——
+    // Caddy 对"路径存在、值为空"可能回 200 + 空，那样会把"已删掉"误判成"还在"。
+    // 成员判断没有歧义，不依赖"删掉后该回什么状态码"这种假设。
+    const listed = await call('GET', '/config/apps/layer4/servers/')
+    if (listed.ok) {
+      try {
+        const servers = JSON.parse(listed.text) as Record<string, unknown>
+        if (Object.prototype.hasOwnProperty.call(servers, serverName)) {
+          return { ok: false, reason: `删除后 layer4 server「${serverName}」仍在配置里 —— 视为失败（否则端口还开着）` }
+        }
+      } catch {
+        // 解析不出来就不下结论 —— **不能因为读不懂就当成功**
+        return { ok: false, reason: `删除后无法确认 layer4 server 是否已移除（配置不是 JSON）：${listed.text.slice(0, 120)}` }
+      }
+    }
+    return { ok: true, reason: '已删除', status: result.status }
+  }
+
+  return { upsertRoute, deleteRoute, listRouteIds, getConfig, upsertLayer4Server, deleteLayer4Server }
+}
+
+/** 拼一条 HTTP 映射路由：`https://<host>/svc/<name>/*` → 工作区里的 `<targetPort>`。 */
+export function buildHttpRoute(input: {
+  readonly host: string
+  readonly name: string
+  readonly targetPort: number
+  /** 上游地址（默认 127.0.0.1；容器里要换成服务名）。 */
+  readonly upstreamHost?: string
+}): unknown {
+  const upstreamHost = input.upstreamHost ?? '127.0.0.1'
+  const prefix = `/svc/${input.name}`
+  return {
+    match: [{ host: [input.host], path: [`${prefix}/*`] }],
+    handle: [
+      {
+        handler: 'rewrite',
+        // 去掉前缀：工作区里的服务通常以为自己在根路径上。
+        // 不去的话，它会收到 `/svc/name/...` 而 404 —— 表现为"映射配好了但打不开"。
+        strip_path_prefix: prefix,
+      },
+      {
+        handler: 'reverse_proxy',
+        upstreams: [{ dial: `${upstreamHost}:${String(input.targetPort)}` }],
+      },
+    ],
+    terminal: true,
+  }
+}
+
+/** 路由 id 的命名规则（回收时按它删）。 */
+export function caddyRouteId(name: string): string {
+  return `forlife-svc-${name}`
+}

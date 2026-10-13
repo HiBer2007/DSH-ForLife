@@ -1,0 +1,44 @@
+# 运行时数据（绝不入库）
+.runtime/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# 依赖与构建产物
+node_modules/
+dist/
+lib/
+*.tsbuildinfo
+
+# 调研素材（体积大，可重新获取）
+research/_sources/
+research/**/node_modules/
+
+# 截图素材（面板对账用的图，不入库）
+test_photo/
+
+# 本地环境
+.env
+.env.local
+*.local.md
+.DS_Store
+
+# ── 根目录的临时笔记（用户要求：临时 md 不要上传）────────────────────
+#
+# 历史上一批当天的排障笔记被扔在根目录，现已归到 `docs/incidents/`。
+# 新写的**不要放根目录** —— 放 `docs/` 下对应目录，并在 `docs/README.md` 加一行。
+# 下面挡掉常见命名（`/` 前缀表示只匹配根目录）。
+/wake-*.md
+/wake-*.MD
+/*-note.md
+/*-status-*.md
+/escalation-note-*.md
+/*-diag.mjs
+/test_photo
+
+# ── 运行时产物：日志与临时状态，**绝不进仓库** ───────────────────────────
+# 理由：日志里会有路径、主机名、QQ 号等；而且它们每次跑测试都会变
+# （`git add -A` 会把它们一起收进来 —— 这个坑本仓踩过两次）。
+.forlife/
+*.log
+**/.plugin-manager/logs/

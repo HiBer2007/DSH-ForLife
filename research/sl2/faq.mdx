@@ -1,0 +1,50 @@
+﻿---
+title: 排障
+description: 扫码、密码、端口、注入、镜像拉取的常见失败
+---
+
+## noVNC 打不开 / 一直转圈
+
+- 确认映射了 `6081`，官方模板**不映射 5900**。
+- 远程桌面**没有**固定默认密码。第一次启动会随机生成，只在日志里打印一次；重启后不再打印，用第一次记下的那串。
+- CPU 很高、握手出不来：给容器加 `--ulimit nofile=65536:1048576`（官方 compose 已带）。
+
+```bash
+docker logs snowluma 2>&1 | grep -E "远程桌面密码:|remote desktop password:" | tail -n 1
+```
+
+## WebUI 密码找不到
+
+临时密码只在**全新数据卷第一次启动**时打印。复用旧卷不会再生成。
+
+```bash
+docker logs snowluma 2>&1 | grep -E "临时密码|initial credentials" | tail -n 1
+```
+
+## 机器人连不上 3000 / 3001
+
+- Docker 里 OneBot 应听 `0.0.0.0`。旧卷如果还是 `127.0.0.1`，升级镜像后入口脚本会把缺省回环改掉；你手改过的地址不会动。
+- 同 compose 网络请用服务名 `snowluma`，不要用 `127.0.0.1`。
+- 带上 access token。
+
+## 注入失败 / QQ 起来了但不上线
+
+- 启动参数必须有 `SYS_PTRACE` 和 `seccomp=unconfined`。
+- 不要用 root 在容器里再起一个 QQ。
+- `ptrace_scope=3` 的内核会直接拒绝。
+- 不要删 `qq-gateway-data` / `qq-client-config` / `qq-client-data` 三个卷。
+
+## 国内拉镜像卡住
+
+这是 Docker Hub 这一跳。安装器会自动换前缀。手动可以：
+
+```bash
+docker pull docker.1ms.run/motricseven7/snowluma:latest
+docker tag docker.1ms.run/motricseven7/snowluma:latest motricseven7/snowluma:latest
+```
+
+1Panel / 宝塔请在面板里配镜像加速，不要让安装器改 `daemon.json`。
+
+## 升级后要重新扫码
+
+容器重建可能换设备指纹。不要删数据卷。若仍要重登，用 noVNC 再扫一次。

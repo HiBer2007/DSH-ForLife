@@ -1,0 +1,17 @@
+{
+  "name": "dsh-profile-forlife-web",
+  "private": true,
+  "description": "DSH Web + DSH-ForLife 组件：记忆面板（settings.section）住在这里。由官方 web 模板 + 我们的 bundle 组成。",
+  "dependencies": {
+    "forlife-memory": "workspace:*"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "forlife-memory"
+      ]
+    }
+  }
+}

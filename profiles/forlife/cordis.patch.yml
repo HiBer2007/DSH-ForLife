@@ -1,0 +1,151 @@
+# DSH-ForLife profile 的用户补丁层（在 bundle 层之后应用）。
+#
+# 两条规则（来自对宿主实现的调研）：
+#   1. `- id:` 定向 patch 会**替换整行 config**，不是合并 ⇒ 每个键都必须重述；
+#   2. 行顺序不决定加载顺序（由服务可用性驱动），只决定 patch 应用顺序。
+
+# 我们的组件：forlife-memory 由它自己的 bundle 补丁注册，这里覆盖配置。
+- id: forlife-memory
+  name: forlife-memory
+  config:
+    # 全部路径相对 DSH_HOME，保证可移植（换机器只改 DSH_HOME）
+    storageRoots:
+      db: ./forlife/db
+      hot: ./forlife/hot
+      warm: ./forlife/warm
+      cold: ./forlife/cold
+      vectors: ./forlife/vectors
+      workspace: ./forlife/workspace
+      models: ./forlife/models
+      tmp: ./forlife/tmp
+      logs: ./forlife/logs
+    time:
+      systemZone: UTC
+    wake:
+      enabled: false
+
+# 显式挂载宿主时钟插件：它默认只存在于 web bundle 且 disabled:true，
+# 不显式挂就完全拿不到时间上下文（EXECUTION_PLAN §2.15 的根因 R1）。
+# refreshIntervalMs: 0 = 每个合格步骤都注入；后续由我们自己的事件驱动注入节流接管。
+- insert:
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        timeZone: Asia/Shanghai
+        refreshIntervalMs: 0
+
+# 压缩引擎：禁用宿主的 compaction-basic，挂我们的结构化压缩实现。
+# 为什么必须替换而不是并存：`ctx.compaction` 是**单实现**服务
+# （CompactionEngine 基类构造函数里 super(ctx, "compaction")），两个实现会互相覆盖。
+- id: compaction-basic
+  disabled: true
+
+- insert:
+    - id: forlife-compaction
+      name: 'forlife-memory/compaction'
+
+# ── OpenCode Go（本项目实际使用的模型接入）──────────────────────────────
+#
+# **为什么必须显式声明**：DSH 默认走内置的 `deepseek-official`，它要
+# `DEEPSEEK_API_KEY` —— 而本项目走 OpenCode Go。不声明的话，
+# 就算设了 `FORLIFE_OPENCODE_GO_KEY`，DSH 也不知道有这个 provider，
+# 真机表现是：`MISSING_CREDENTIAL: no API key for provider route "deepseek-official"`。
+#
+# **为什么是"改 config"而不是"insert 一份"**：
+# `@deepseek-ai/dsh-llm-pi-ai` 已经在 base bundle 里挂着了 ——
+# 再 insert 一份会报 `configurable provider "amazon-bedrock" is already declared`
+# （两个实例抢同一批 provider 声明）。所以按 id 定位、只改 config。
+#
+# `apiKeyEnv` 是**凭据引用名**（值仍在环境变量里）—— 与"密钥只存引用名"一致。
+# `baseURL` 与 gateway 侧的 `OPENCODE_GO_BASE_URL` 必须一致，
+# 否则面板上的额度统计与实际调用会对不上。
+# ★ 2026-10-08 修：这里**必须是 base bundle 里的短 id**，不是包名。
+#   base 的结构是 `id: <短名>` + `name: <包名>`；
+#   拿包名当 id 去定位会**静默丢弃整段 patch**（只在 `--dump-config` 时打一行警告）。
+- id: llm-pi-ai
+  config:
+    providers:
+      opencode-go:
+        displayName: OpenCode Go
+        apiKeyEnv: FORLIFE_OPENCODE_GO_KEY
+        api: openai-completions
+        baseURL: https://opencode.ai/zen/go/v1
+        # **OpenCode Go 强制要求**：每个请求带 `x-opencode-session`。
+        # 不带的话真机报 400 MissingSessionID —— 它是**路由与提示词缓存**的依据，
+        # 不是可选元数据。id 要**稳定**（变了会掉缓存）。
+        headers:
+          x-opencode-session: dsh-forlife
+        # 只列**授权过的**模型（PLAN 里那 5 个）。
+        # 列全 43 个的话，模型可能在选择器里挑到未授权/未验证的那些。
+        models:
+          - id: deepseek-v4.1-flash
+            name: DeepSeek V4.1 Flash
+            # ★ 2026-10-09 用户裁定 ①：这个模型的总上下文是 **1M**，不是 262144。
+            # 262144 是 `dsh-llm-pi-ai` 的**通用兜底默认值**（`lib/index.js` 的
+            # `DEFAULT_CONTEXT_WINDOW = 262144`），不是本模型的事实 —— 照抄它会让
+            # 压缩阈值变成 `contextWindow × ratio` = 0.6 × 262144 ≈ **157k**，
+            # 而用户口径是 **600k**（0.6 × 1M）。**分母错了，比例改对了也没用。**
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：none | low | high | max
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: deepseek-v4-pro
+            name: DeepSeek V4 Pro
+            # ★ 2026-10-09 补齐（用户裁定：**把所有值都补上**）。原来写的 262144 **不是**
+            # 本模型的事实 —— 它是 `dsh-llm-pi-ai` 的通用兜底 `DEFAULT_CONTEXT_WINDOW`
+            # （`lib/index.js:923`），照抄进 profile 反而**盖掉**了包内目录里的真值。
+            # 真值来源（同一上游 models.dev 的两份快照，都可核对）：
+            #  ① pi-ai 包内目录 `@earendil-works/pi-ai/dist/providers/data/opencode-go.json`
+            #     （`generatedAt 2026-09-05`）该模型 `contextWindow: 1000000`；
+            #  ② https://models.dev/providers/opencode-go/ 同值。
+            # ⚠️ 声明值 > 真值 ⇒ 压缩永不触发（上下文直接溢出），所以**查不到就别填**；
+            #     这三个都查到了，才敢填。
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：none | low | high | max
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: glm-5.3-flash
+            name: GLM 5.3 Flash
+            # ★ 2026-10-09 补齐：真值 **1M**（原来抄的 204800 是本仓第一次登记时的
+            # 臆测值，不是本模型的事实）。来源与核对方式见上面 `deepseek-v4-pro` 那段注释。
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：low | high | max
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
+          - id: glm-5.3
+            name: GLM 5.3
+            # ★ 2026-10-09 补齐：真值 **1M**（同上，204800 不是本模型的事实）。
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：low | high | max
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
+
+# 默认模型：**必须一起改** —— 只加 provider 的话，新 agent 仍用内置的
+# `deepseek-official`（要 DEEPSEEK_API_KEY），真机表现就是那条 MISSING_CREDENTIAL。
+# 推理强度按项目规定：deepseek-v4.1-flash 支持 none|low|high|max（**没有 medium**）。
+# ★ 2026-10-08 修：这里**必须是 base bundle 里的短 id**，不是包名。
+#   base 的结构是 `id: <短名>` + `name: <包名>`；
+#   拿包名当 id 去定位会**静默丢弃整段 patch**（只在 `--dump-config` 时打一行警告）。
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoningEffort: high

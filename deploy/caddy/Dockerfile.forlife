@@ -1,0 +1,51 @@
+# 自建 Caddy 镜像（含 layer4 模块）—— PLAN 阶段 7 的 TCP 出口需要它
+#
+# `layer4` 不是 Caddy 内置模块，必须用 xcaddy 编进去。
+# 官方镜像里没有它，所以 TCP 出口**必须**用这个镜像。
+#
+# 构建：
+#   docker build -f deploy/caddy/Dockerfile.forlife -t forlife/caddy-l4:2.11 .
+#
+# 代价（相对官方镜像）：
+#   - 镜像体积更大（带 Go 构建工具链，或用多阶段构建后约 60–80 MB）
+#   - **升级 Caddy 版本要重新构建**，不能只改 tag
+#   - 需要构建环境有网络访问 Go module 代理
+#
+# 若不想自建：只做 HTTP 出口（功能完整、已真机验收过），放弃 TCP 穿透。
+
+# ── 构建阶段 ────────────────────────────────────────────────────────
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+# 固定 xcaddy 与 caddy-l4 的版本：不固定的话每次构建产物都可能不同，
+# 而"部署时用的是哪个版本"会变成一个查不清的问题。
+ARG XCADDY_VERSION=v0.4.2
+ARG CADDY_VERSION=v2.11.7
+ARG CADDY_L4_VERSION=v2.11.0
+
+RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}
+
+WORKDIR /build
+RUN xcaddy build ${CADDY_VERSION} \
+      --with github.com/mholt/caddy-l4@${CADDY_L4_VERSION}
+
+# ── 运行阶段 ────────────────────────────────────────────────────────
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates libcap \
+ && setcap cap_net_bind_service=+ep /usr/bin/caddy || true
+
+COPY --from=builder /build/caddy /usr/bin/caddy
+
+# 数据与配置目录（与官方镜像保持一致，便于复用既有部署习惯）
+RUN mkdir -p /data /config
+WORKDIR /srv
+
+EXPOSE 80 443 2019
+
+# `--resume`：重启后恢复上次的配置。
+# 这对端口出口很重要 —— 否则进程一重启，所有已发布的路由就没了，
+# 而数据库里还记着它们（表现为"库里有、实际不通"）。
+ENTRYPOINT ["caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]

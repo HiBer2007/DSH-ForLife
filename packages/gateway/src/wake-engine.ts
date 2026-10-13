@@ -1,0 +1,321 @@
+/**
+ * Trigger Engine：四类触发器的调度与派发（PLAN 阶段 8 交付物 1）。
+ *
+ * ## 最需要想清楚的一件事：**错过触发怎么办**
+ *
+ * 进程停了两小时，期间有 10 个 timer 到点。重启后如果"补醒 10 次"，
+ * 用户会被 10 条迟到的消息砸中 —— 而这些事**早就过去了**。
+ * 如果"全丢掉"，那"每天 9 点提醒吃药"在机器重启那天就**静默失效**了。
+ *
+ * 采取的策略是 **补一次、并说明**：
+ *  - 错过的 timer **只醒一次**（不是 N 次），payload 里带上"原定 X 点，因停机顺延"；
+ *  - 周期性的（every/daily）**推进到下一个未来的点**，而不是把过去的点逐个补完；
+ *  - 一次性的（after/at）醒完就停用。
+ *
+ * 这样"该提醒的没漏"和"不被迟到消息淹没"两件事同时成立。
+ *
+ * ## 为什么 tick 只做一件事
+ *
+ * tick 扫"到点的 timer"→ 过六道闸 → 派发。**watcher 不走 tick**
+ * （它们是独立的长驻进程，由监督器管，见交付物 3）——
+ * 混在一起会让"某次唤醒是谁触发的"变得难以回答。
+ *
+ * @module @forlife/gateway/wake-engine
+ */
+import type { DatabaseSync } from 'node:sqlite'
+
+// ★ 迁移到七级（用户 2026-10-10）。判据不是"数还剩多少处"，而是
+//   **"这句该归哪一级、而猜测够不够得着它"**：
+//   `guessLevel` 只能猜 `info`/`warn`/`error`，**`fault`/`crash`/`note`/`debug` 必须显式**。
+import { atLevel } from './admin/log.ts'
+
+import {
+  countFiredToday,
+  decideWake,
+  DEFAULT_MERGE_WINDOW_MS,
+  getWakeTrigger,
+  isWakePaused,
+  listDueTriggers,
+  markFired,
+  recordWakeEvent,
+  type WakeTriggerRow,
+} from '@forlife/store'
+
+/** 派发结果（由唤醒桥回报）。 */
+export interface DispatchResult {
+  readonly ok: boolean
+  readonly reason: string
+  readonly costTokens?: number
+  readonly modelDid?: string
+}
+
+/** 派发器：真正去"叫醒模型"的那一层（交付物 2 的桥）。 */
+export type WakeDispatcher = (input: {
+  readonly trigger: WakeTriggerRow
+  readonly reason: string
+  readonly payload: Record<string, unknown>
+}) => Promise<DispatchResult>
+
+/** 引擎配置。 */
+export interface WakeEngineOptions {
+  readonly db: DatabaseSync
+  readonly dispatch: WakeDispatcher
+  readonly log?: (message: string) => void
+  /** tick 间隔（默认 1 秒）。 */
+  readonly tickMs?: number
+  readonly now?: () => Date
+  readonly setIntervalImpl?: (fn: () => void, ms: number) => { unref?: () => void }
+  readonly clearIntervalImpl?: (handle: unknown) => void
+  /**
+   * 被闸门拦下时的回调（可选）。
+   *
+   * 六道闸里**早就判了预算**，但以前没人往外说 —— 于是"预算超了"这件事
+   * 只能靠人去面板上看，而不是变成一次 `system` 触发让模型自己知道。
+   *
+   * **它是观察者，不是引擎的一部分** —— 抛异常会被吞掉。
+   */
+  readonly onGateBlocked?:
+    | ((trigger: WakeTriggerRow, decision: string, reason: string) => void)
+    | undefined
+}
+
+/** 引擎。 */
+export interface WakeEngine {
+  /** 跑一次 tick（测试直接调它，不用等定时器）。 */
+  readonly tick: () => Promise<readonly TickOutcome[]>
+  /** 立刻触发一条（`wake_now` 工具、system/external 事件都走它）。 */
+  readonly fireNow: (triggerId: string, reason: string, payload?: Record<string, unknown>) => Promise<TickOutcome>
+  readonly stop: () => void
+}
+
+/** 一次 tick 的结果。 */
+export interface TickOutcome {
+  readonly triggerId: string
+  readonly title: string
+  readonly decision: string
+  readonly reason: string
+}
+
+/** 从 spec 里取"周期"（毫秒）；没有则返回 null（一次性）。 */
+export function periodOf(spec: unknown): number | null {
+  if (spec === null || typeof spec !== 'object') return null
+  const s = spec as Record<string, unknown>
+  const everyMs = s['everyMs']
+  if (typeof everyMs === 'number' && Number.isFinite(everyMs) && everyMs >= 1000) return everyMs
+  return null
+}
+
+/**
+ * 算出**下一次**该触发的时间。
+ *
+ * 关键：从 `from`（现在是"当前时刻"，不是"上次该触发的时刻"）往后推。
+ * 如果从"上次该触发"推，停机期间攒下的每一次都会被算出来，
+ * 于是补醒 N 次 —— 正是我们要避免的。
+ */
+export function nextFireAt(spec: unknown, from: Date): string | null {
+  const period = periodOf(spec)
+  if (period === null) return null // 一次性：没有下一次
+  return new Date(from.getTime() + period).toISOString()
+}
+
+/** 造一个引擎。 */
+export function createWakeEngine(options: WakeEngineOptions): WakeEngine {
+  const { db, dispatch } = options
+  const now = options.now ?? ((): Date => new Date())
+  const log = options.log ?? ((): void => {})
+  const tickMs = options.tickMs ?? 1000
+
+  /** 过闸 + 派发 + 记账（timer 与 fireNow 共用这一段）。 */
+  const evaluateAndFire = async (
+    trigger: WakeTriggerRow,
+    reason: string,
+    payload: Record<string, unknown>,
+    /** 是否推进 next_fire_at（timer 需要，system/external 不需要）。 */
+    advance: boolean,
+  ): Promise<TickOutcome> => {
+    const at = now()
+    const spec = safeParse(trigger.spec)
+
+    const decision = decideWake({
+      paused: isWakePaused(db),
+      quietUntil: trigger.quiet_until,
+      firedToday: countFiredToday(db, trigger.id, at),
+      dailyLimit: trigger.daily_limit,
+      spentTokens: 0, // token 预算由派发层累计（这里先只判配置）
+      budgetTokens: 0,
+      lastFiredAt: trigger.last_fired_at,
+      minIntervalMs: trigger.min_interval_ms,
+      depth: trigger.depth,
+      now: at,
+      pendingInWindow: 1,
+      mergeWindowMs: 0,
+    })
+
+    if (!decision.allow) {
+      // **把"为什么没醒"上报出去** —— 六道闸里早就判了预算，但以前没人往外说。
+      // 吞掉异常：它是观察者，不是引擎的一部分。
+      if (decision.decision === 'budget') {
+        try {
+          options.onGateBlocked?.(trigger, decision.decision, decision.reason)
+        } catch (error) {
+          // ★ **warn**（不是 `error`）：它是"**出了点问题但兜住了**"——上报丢了，
+      //   可唤醒本身继续工作（下一轮会再报）。按用户定的轴（**影响范围**）：一次上报
+      //   没送到 = 范围极小 ⇒ warn。
+      //
+      //   ⚠️ 这一处**猜测会高估**：文本里有"失败"，`guessLevel` 会判成 `error`，
+      //   于是面板上一条**被容忍的**小故障长得像硬错误。
+      //   ⇒ 迁移不只是"把该升级的升级"，**也包括把被高估的降回来** ——
+      //     两者做反了都会让那一档失去分辨力。
+      atLevel(log, 'warn')(`预算上报失败（已忽略）：${String(error).slice(0, 160)}`)
+        }
+      }
+      // **被拦下也要留痕**（而且是可区分的原因）—— 否则用户看到"没醒"却查不出为什么
+      recordWakeEvent(db, {
+        triggerId: trigger.id,
+        kind: trigger.kind,
+        decision: decision.decision,
+        reason: decision.reason,
+        now: at,
+      })
+      // timer 即使被拦，也要推进到下一次 —— 否则它会**卡在过去**，每个 tick 都重试
+      if (advance) markFired(db, trigger.id, nextFireAt(spec, at), at)
+      return { triggerId: trigger.id, title: trigger.title, decision: decision.decision, reason: decision.reason }
+    }
+
+    let result: DispatchResult
+    try {
+      result = await dispatch({ trigger, reason, payload })
+    } catch (error) {
+      // 派发抛异常要**接住**：否则一次失败会杀掉整个 tick 循环，唤醒从此静默失效
+      result = { ok: false, reason: `派发异常：${String(error).slice(0, 160)}` }
+    }
+
+    recordWakeEvent(db, {
+      triggerId: trigger.id,
+      kind: trigger.kind,
+      decision: result.ok ? 'fired' : 'failed',
+      reason: result.ok ? reason : result.reason,
+      payload: JSON.stringify(payload),
+      sessionId: trigger.scope,
+      turnOk: result.ok,
+      costTokens: result.costTokens,
+      modelDid: result.modelDid,
+      now: at,
+    })
+
+    if (advance) markFired(db, trigger.id, nextFireAt(spec, at), at)
+    else markFired(db, trigger.id, trigger.next_fire_at, at)
+
+    log(`唤醒 ${trigger.title}（${trigger.kind}）：${result.ok ? '已派发' : result.reason}`)
+    return { triggerId: trigger.id, title: trigger.title, decision: result.ok ? 'fired' : 'failed', reason: result.reason }
+  }
+
+  /**
+   * **正在派发中的触发器**（防重入）。
+   *
+   * ## 为什么必须有它（真机烧了 141 次模型调用）
+   *
+   * `tick()` 每 `tickMs`（默认 1 秒）跑一次，而它要 **await 派发** ——
+   * 派发一次真模型可能要 **300 秒**（headless 子进程的超时就是 300s）。
+   * 而 `next_fire_at` 是在**派发完成后**才推进的（下面 `markFired` 那两行）。
+   *
+   * ⇒ 在那 300 秒里，**每一个 tick 都会重新读到同一个"已到点"的触发器，
+   * 再派发一次** ⇒ 300 个并发派发。
+   *
+   * **真机证据**（2026-10-06，触发器 `wt_e34bb82e…`）：
+   * ```
+   * 14:46:55 failed: 轮次超时（300000ms）
+   * 14:46:56 failed: 轮次超时（300000ms）
+   * 14:46:57 fired:  定时到点
+   * 14:46:58 failed: 轮次超时（300000ms）
+   * …
+   * fire_count = 141
+   * ```
+   * **每秒一条，正好等于 tick 间隔。** 141 次真实模型调用 —— **这是会烧额度的 bug**。
+   *
+   * ## 为什么用"在飞集合"而不是一把大锁
+   *
+   * 一把锁（`if (ticking) return`）也能止住重放，但它会让**一条慢触发器
+   * 阻塞所有其它触发器** 300 秒 —— 那等于把"重复唤醒"换成了"该醒的不醒"。
+   * 按 id 记在飞，则只挡住**正在派发的那一条**，其余照常。
+   */
+  const inFlight = new Set<string>()
+
+  const tick = async (): Promise<readonly TickOutcome[]> => {
+    const outcomes: TickOutcome[] = []
+    const at = now()
+
+    for (const trigger of listDueTriggers(db, at)) {
+      // ★ **防重入**：这一条已经在派发中就跳过 —— 否则每个 tick 都会重放它
+      if (inFlight.has(trigger.id)) continue
+      inFlight.add(trigger.id)
+      try {
+        const spec = safeParse(trigger.spec)
+        // **错过触发的策略**：到这里说明它已经到点（可能迟到很久）。
+        // 只醒一次，并把"迟到了多久"写进 payload —— 用户能看出这不是准点提醒。
+        const scheduledAt = trigger.next_fire_at
+        const lateMs = scheduledAt === null ? 0 : at.getTime() - new Date(scheduledAt).getTime()
+        const payload: Record<string, unknown> = {
+          scheduledAt,
+          firedAt: at.toISOString(),
+          ...(lateMs > 60_000 ? { lateByMs: lateMs, lateNote: '原定时间已过（可能是停机顺延），只补一次' } : {}),
+        }
+        outcomes.push(await evaluateAndFire(trigger, lateMs > 60_000 ? '错过的定时（已顺延）' : '定时到点', payload, true))
+      } finally {
+        inFlight.delete(trigger.id)
+      }
+    }
+
+    return outcomes
+  }
+
+  const fireNow = async (
+    triggerId: string,
+    reason: string,
+    payload: Record<string, unknown> = {},
+  ): Promise<TickOutcome> => {
+    const trigger = getWakeTrigger(db, triggerId)
+    if (trigger === undefined) {
+      return { triggerId, title: '(不存在)', decision: 'failed', reason: `没有这条触发器：${triggerId}` }
+    }
+    // 手动/系统触发**不推进** next_fire_at（它没有"下一次"的概念，或由自己的周期决定）
+    return evaluateAndFire(trigger, reason, payload, false)
+  }
+
+  const setIntervalFn = options.setIntervalImpl ?? ((fn, ms) => setInterval(fn, ms))
+  const clearIntervalFn = options.clearIntervalImpl ?? ((h) => clearInterval(h as never))
+
+  const handle = setIntervalFn(() => {
+    // tick 里已经接住了派发异常，这里再兜一层：**定时器里抛异常会静默杀死整个循环**
+    void tick().catch((error: unknown) => {
+      // ★ **fault**（不是 `error`）：这是**唤醒循环**在报错 ——
+      //   而唤醒循环是**唤醒这一子系统的全部**。它每次 tick 都炸 ⇒ 她**永远叫不醒**，
+      //   而进程还活着、面板还开着、别的一切看起来正常。
+      //
+      //   ⚠️ 猜测（`guessLevel`）会把它判成 `error`（文本里有"异常"），
+      //   那是**低估**：`error` 说的是"这一次操作没兜住"，而这里是"**这一类操作都会出问题**"。
+      //   —— 这正是 D6「沉降循环曾完全沉默」的同一个形状：
+      //   那次的教训是"有话说却不说"，这一次是"说了，但说的级别让人以为只是偶发"。
+      atLevel(log, 'fault')(`唤醒 tick 异常：${String(error).slice(0, 200)}`)
+    })
+  }, tickMs)
+  handle.unref?.()
+
+  return {
+    tick,
+    fireNow,
+    stop: () => clearIntervalFn(handle),
+  }
+}
+
+/** 解析 spec；坏 JSON 返回 `{}`（不抛 —— 一条坏数据不该让整个引擎停摆）。 */
+function safeParse(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return {}
+  }
+}
+
+/** 默认合并窗口（导出给上层用，避免两边各写一个数）。 */
+export { DEFAULT_MERGE_WINDOW_MS }

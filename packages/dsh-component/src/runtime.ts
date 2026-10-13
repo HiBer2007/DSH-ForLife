@@ -1,0 +1,2679 @@
+/**
+ * 记忆运行时：把"表 / 渲染 / 检索 / 预算"收成一个与框架无关的对象。
+ *
+ * **为什么与框架无关**：验收要求"渲染逐字节稳定""崩溃后可重建"这类性质，
+ * 必须能在**不启动 DSH** 的情况下断言；同时宿主适配层（prompt/tools/api）只做薄封装。
+ *
+ * 渲染缓存是这里的关键设计（§2.3 / §10.2）：
+ *  - 缓存键 = `epoch:revision`；
+ *  - **相对年龄在缓存刷新时算一次并冻结** —— 否则每次装配都变，字节稳定性直接破产；
+ *  - 只要没有写操作（revision 不变），返回的**就是同一个对象**，SHA-256 必然相同。
+ *
+ * @module forlife-memory/runtime
+ */
+import { createHash } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
+
+import {
+  getClockSuggestion,
+  listModelRoutes,
+  recordRoutingDecision,
+  getConversationClock,
+  listConversationClocks,
+  setClockSuggestion,
+  setConversationClock,
+  LoopGuard,
+  pendingCompactionRuns,} from '@forlife/store'
+
+import { execFileSync } from 'node:child_process'
+import { existsSync, readdirSync } from 'node:fs'
+
+import { probeDevices, switchMode, type DeviceProbe, type RunMode } from '@forlife/router'
+import { getEndpoint, listEndpointProbes, recordEndpointHealth, recordEndpointProbe, recordModeSwitch, setEndpointMode } from '@forlife/store'
+
+import { defaultClockConfig } from './clock-tools.ts'
+import { activePrompt, type PromptSlug } from './prompt-store.ts'
+import {
+  appendMidEntry,
+  bumpEpoch,
+  getState as readState,
+  setState as writeState,
+  currentEpoch,
+  currentRevision,
+  fragmentMidEntry,
+  getLongEntry,
+  getSpill,
+  insertLongEntry,
+  insertSpill,
+  listRenderableMidEntries,
+  listSpills,
+  loadLongEntry,
+  markLongRecovered,
+  midStats,
+  openDatabase,
+  searchLongFts,
+  searchMidFts,
+  touchLongEntry,
+  touchMidEntry,
+  type LongEntryRow,
+  type MidEntryRow,
+  type OpenedDatabase,
+} from '@forlife/store'
+import {
+  decideCompaction,
+  estimateTokens,
+  makeFragmentHint,
+  planFragmentation,
+  renderMidMemory,
+  selectMidWindow,
+  textSimilarity,
+  type MidWindowResult,
+  type RenderedView,
+} from '@forlife/memory-core'
+import { defaultFor } from '@forlife/contracts'
+/**
+ * ★★ 2026-10-11（`FIX_PLAN.md` §58 / §68）：人格名字在**记忆**里的键。
+ *
+ * 为什么是 `forlife_state` 而不是一条记忆条目：见 `promptVariables()` 的说明
+ * （它要进**稳定前缀**、且渲染必须**无副作用**）。
+ */
+export const PERSONA_NAME_STATE_KEY = 'persona_name'
+
+/** 名字的长度上限（字符）。★ 它要进系统提示词，不该长到能塞一段话。 */
+export const PERSONA_NAME_MAX_CHARS = 32
+
+/**
+ * ★★ 2026-10-11（`FIX_PLAN.md` §69）：**沉降循环间隔**在记忆里的键（模型可写）。
+ *
+ * ★ 与 `persona_name` 同一个道理：它要**每轮现读**（改了立刻生效、不用重启），
+ *   而且**渲染/排表都不该产生副作用** ⇒ 一条 `forlife_state` 行最合适。
+ */
+export const SETTLE_INTERVAL_STATE_KEY = 'settle_interval_ms'
+
+/**
+ * 校验一个名字。★ 放在**写入口**而不是读出口：脏值一旦进库，每轮渲染都要再防一次。
+ *
+ * @param name - 已 trim 的名字。
+ * @returns 有问题时返回给模型看的原因；没问题返回 `undefined`。
+ */
+export function personaNameProblem(name: string): string | undefined {
+  if (name.length > PERSONA_NAME_MAX_CHARS) {
+    return `Name is too long (${String(name.length)} chars > the ${String(PERSONA_NAME_MAX_CHARS)}-char limit) - it goes into the system prompt, so keep it short.`
+  }
+  if (/[\r\n]/.test(name)) {
+    return 'A name cannot contain a line break - it is a single word inside one line of the prompt.'
+  }
+  if (/\{\{|\}\}/.test(name)) {
+    return 'A name cannot contain `{{` / `}}` - that would be read as a prompt variable and break rendering.'
+  }
+  return undefined
+}
+// 投喂期的「工作模式」文本：真源在 gateway 那一侧（与工具返回、CLI 输出共用同一份措辞），
+// 这里只把它接到提示段上（导入改名以免与方法同名 —— 同名不算错，但读的人会以为在递归）
+// ★ `atLevel`：惰性（被动模式）那条要用 `note` 级 —— 它是**判断**，不是异常（见 `startSettleTimer`）。
+import { atLevel, feedModeText as renderFeedModeText } from '@forlife/gateway'
+
+import type { ForlifeConfig } from './config.ts'
+
+/** recall 预算状态（内部计数器形态；对模型的那份声明见 `RecallBudgetDeclaration`）。 */
+export interface RecallBudget {
+  readonly maxPerTurn: number
+  readonly maxPerCycle: number
+  readonly maxResults: number
+  readonly usedThisTurn: number
+  readonly usedThisCycle: number
+  readonly remainingThisTurn: number
+  readonly remainingThisCycle: number
+}
+
+/** 本轮额度（PLAN §7.1 只给了一组数字，而闸门有两道 —— 第二个维度也要如实报）。 */
+export interface RecallPerTurnBudget {
+  readonly used: number
+  readonly limit: number
+  readonly remaining: number
+}
+
+/** 逃生通道的现状（`request_recall_extension` 的累积效果）。 */
+export interface RecallExtensionState {
+  /** 本周期已经追加到的额度（0 = 没申请过）。 */
+  readonly grantedThisCycle: number
+  /** 一次最多能追加多少（基线 `recall.extensionMax`）。 */
+  readonly maxPerRequest: number
+  /** 两次追加之间的冷却（轮次维度，基线 `recall.extensionCooldownTurns`）。 */
+  readonly cooldownTurns: number
+}
+
+/**
+ * **PLAN §7.1 的预算声明**（每次 `recall_longterm` 返回都附带）。
+ *
+ * 字段名刻意与 PLAN 逐字一致（`used` / `limit` / `remaining` / `reset_at` /
+ * `queries_this_turn` / `hint`）—— 它是**给模型看的契约**，不是我们的内部结构。
+ *
+ * ## `used` / `limit` / `remaining` 说的是哪个额度
+ *
+ * **本周期**（`recall.maxPerCycle`，`reset_at = on_compaction`）。理由：PLAN §7.1 的样例
+ * `used:2, limit:5, remaining:3` 只有按周期读才自洽（每轮上限是 2，与 `limit:5` 对不上）；
+ * §7.2 的耗尽样例 `used:5, limit:5, remaining:0` 同理。
+ *
+ * 但**闸门有两道**（每轮 2、每周期 5），只报周期数字会误导模型（它会以为这一轮还能查 4 次），
+ * 所以另附 `per_turn` 把第二轮额度也如实报出来 —— PLAN 没规定这一节，
+ * 属于"多说一句真话"，不改变 PLAN 要的六个字段。
+ *
+ * ## `reset_at` 是**读**出来的
+ *
+ * 它的值来自基线 `recall.resetPolicy`（当前 `on_compaction`），**不写死**：
+ * 谁把策略改成按轮重置，声明与文案都必须跟着变。
+ */
+export interface RecallBudgetDeclaration {
+  readonly used: number
+  readonly limit: number
+  readonly remaining: number
+  readonly reset_at: string
+  readonly queries_this_turn: readonly string[]
+  readonly hint: string
+  readonly per_turn: RecallPerTurnBudget
+  readonly extension: RecallExtensionState
+}
+
+/** 追加额度请求的裁决结果（`request_recall_extension` 工具原样透传 —— **含拒绝理由**）。 */
+export interface RecallExtensionVerdict {
+  readonly granted: boolean
+  /** 拒绝码：`reason_too_short` / `bad_amount` / `beyond_max` / `too_frequent`（批准时无此项）。 */
+  readonly reason?: string
+  readonly hint: string
+  /** 实际（或请求的）追加数；被拒时为 0。 */
+  readonly additional: number
+  /** 裁决后生效的每轮额度。 */
+  readonly perTurnLimit: number
+  /** 裁决后生效的每周期额度。 */
+  readonly perCycleLimit: number
+  readonly cooldownTurns: number
+  /** 还要等几轮才能再申请（只在因冷却被拒时出现）。 */
+  readonly cooldownRemainingTurns?: number
+  /** 本周期累计已追加的额度。 */
+  readonly grantedThisCycle: number
+  /** 单次可追加的上限（基线 `recall.extensionMax`）。 */
+  readonly maxPerRequest: number
+}
+
+/**
+ * `recover` 的结果（长期条目 **HDD → SSD**）。
+ *
+ * `status` 是给模型看的关键信息：**"已经热了"与"提升成功"必须能分开**
+ * （把前者说成成功，模型会以为它刚触发了一次搬运）。
+ */
+export interface LongRecoverOutcome {
+  readonly ok: boolean
+  readonly id: string
+  readonly status: 'recovered' | 'not_found' | 'already_hot' | 'archive_unreadable'
+  readonly note: string
+  /** 提升后（或原本）的层。 */
+  readonly tier?: string
+  /** 正文是从哪读回来的（`archive` 才是真的"从冷层提升"）。 */
+  readonly source?: 'archive' | 'db' | 'none'
+  readonly latencyMs?: number
+  /** 回填的正文长度（字符）。 */
+  readonly contentChars?: number
+}
+
+/**
+ * 一次 recall 被**拒绝**的机器可读原因（PLAN §7.2 / §7.4）。
+ *
+ * PLAN §7.4 对重复查询的要求是"拒绝并返回 `duplicate_query`" ——
+ * **`duplicate_query` 是一个码，不是一句人话**：只把说明写进 `note`，
+ * 模型（与将来的面板/统计）就只能去正则匹配自然语言。所以拒绝一律带码。
+ */
+export interface RecallRefusal {
+  /** `duplicate_query`（§7.4 重复检测）/ `turn_exhausted`（本轮额度）/ `cycle_exhausted`（本周期额度）。 */
+  readonly code: 'duplicate_query' | 'turn_exhausted' | 'cycle_exhausted'
+  /** 该怎么办（**可执行**的那句话，不是重复原因）。 */
+  readonly hint: string
+  /** 与**哪一条**已查过的查询相撞（只有 `duplicate_query` 有）。 */
+  readonly matchedQuery?: string
+  /** 近似相似度 0..1（只有 `duplicate_query` 有；**不是语义相似度**，见 `querySimilarity()`）。 */
+  readonly similarity?: number
+  /** 判定阈值（读自基线 `recall.duplicateSimilarity`，只有 `duplicate_query` 有）。 */
+  readonly threshold?: number
+}
+
+/**
+ * **联想深度提示**（PLAN §7.4「同轮连续 3 次以上检索时强制附加提示」，阈值读
+ * 基线 `recall.associativeDepthWarn`）。
+ *
+ * 它是"同轮检索太多次 ⇒ 大概率在围绕模糊片段过度联想"的告警，
+ * 与 §7.3 的三条反面示例配套：连续相似查询、围绕模糊片段推测、强行关联不相关结果。
+ */
+export interface AssociationWarn {
+  /** 本轮第几次检索（含本次）。 */
+  readonly depth: number
+  /** 触发阈值（基线 `recall.associativeDepthWarn`）。 */
+  readonly warnAt: number
+  /** 给模型看的提示原文（**同时**会被拼进 `note` ⇒ 一定会渲染出来）。 */
+  readonly hint: string
+}
+
+/** 一次 recall 的结果。 */
+export interface RecallResult {
+  readonly entries: readonly LongEntryRow[]
+  readonly budget: RecallBudget
+  /** PLAN §7.1 的声明（工具层原样透传，不再自己拼数字）。 */
+  readonly declaration: RecallBudgetDeclaration
+  readonly note?: string
+  /** 被拒绝时的原因码（PLAN §7.4 的 `duplicate_query` 就落在这里；批准时没有这一项）。 */
+  readonly refusal?: RecallRefusal
+  /** 联想深度提示（同轮检索次数 ≥ `recall.associativeDepthWarn` 时出现）。 */
+  readonly associationWarn?: AssociationWarn
+  /**
+   * 冷层（HDD）按需加载的结果 —— 只含**命中且已沉降**的条目。
+   *
+   * 它存在的理由与 `cold-load.ts` 的 `source` 字段一样：
+   * **不假装做了一件没做的事**（"从 HDD 加载了"和"正文本来就在库里"必须能分开）。
+   */
+  readonly coldLoaded?: readonly ColdLoadOutcome[]
+}
+
+/** 一条冷层命中的加载结果（延迟与来源都要如实报）。 */
+export interface ColdLoadOutcome {
+  readonly id: string
+  /** **读成了没有** —— `false` 时正文不可用，必须让模型知道。 */
+  readonly ok: boolean
+  /** 正文从哪读的（`archive` 才是真的"按需加载"）。 */
+  readonly source: 'archive' | 'db' | 'none'
+  readonly latencyMs: number
+  readonly note: string
+}
+
+/** 手动档位覆盖（可撤销）。 */
+export interface TierOverride {
+  readonly tier: 'L1' | 'L2' | 'L3'
+  readonly reason: string
+  readonly at: string
+  readonly actor: string
+}
+/** 记忆运行时的构造参数。 */
+export interface MemoryRuntimeOptions {
+  readonly config: ForlifeConfig
+  /** 数据库绝对路径（由调用方解析 `DSH_HOME` 后传入，运行时不做路径猜测）。 */
+  readonly dbPath: string
+  readonly log?: (message: string) => void
+}
+
+/** 记忆运行时。 */
+export class MemoryRuntime {
+  readonly db: OpenedDatabase['db']
+  /**
+   * **死循环监控**（用户要求：重复输出 ⇒ 停本轮 + 重启）。
+   *
+   * **必须是长期存在的实例** —— 单次工具调用看不出循环，
+   * 循环是"跨多次输出"才显形的。
+   */
+  readonly loopGuard = new LoopGuard()
+  readonly dbPath: string
+  private readonly opened: OpenedDatabase
+  private readonly config: ForlifeConfig
+  private readonly logger: (message: string) => void
+  private cache: { readonly key: string; readonly view: RenderedView } | undefined
+  /**
+   * **窗口**选取结果的缓存（键与 `cache` 同源，与它同时写入）。
+   *
+   * 为什么单独留一份：`stats()`（面板）必须报**窗口口径**的数字，
+   * 而它得与 `renderView()` 真正渲染的那一段**同源** —— 各自选一次窗口虽然
+   * 在纯函数上结果相同，但"面板说窗口里 30 条、实际渲染了 29 条"这种偏差
+   * 一旦出现就再也解释不清（本仓已经吃过"面板数字与生效值不一致"的亏）。
+   * 所以窗口**只选一次**，两处共用。
+   */
+  private windowCache: { readonly key: string; readonly window: MidWindowResult } | undefined
+  /**
+   * ★★ 2026-10-11（§69）：沉降定时器的句柄 —— 模型改间隔之后要靠它**立刻重排表**。
+   * ★ 由 `attachSettleTimer()` 注入（定时器先存在，运行时再拿到它）。
+   */
+  private settleTimer: { reconfigure: () => void } | undefined
+  // ★★ 2026-10-11（`FIX_PLAN.md` §61 缺口②）：这里原来有一个
+  //   `private get contextWindowTokens()`（"上下文上限（用于算短期占比）"），
+  //   ★ **已删除** —— 它作为"短期占比"的分母是**错的**（见 `compactionStats()` 的说明：
+  //   分母该是 **L4 自己的预算** `memory.shortBudgetTokens`，`PLAN.MD` 附录 A 的 10%）。
+  //   ★ 删而不是留着：本仓纪律是"零引用的东西要处理掉"，否则下一个人会以为它还在生效。
+  //   ⚠️ 配置项 `config.contextWindowTokens` **保留**（宿主的 tokenMeter 仍以它为准，
+  //      见 `config.ts` 的描述）—— 只是**不再参与**压缩判据的分母。
+  private turnsThisCycle = 1
+  private recallThisTurn = 0
+  private recallThisCycle = 0
+  /**
+   * **本轮查过什么**（PLAN §7.1 的 `queries_this_turn`）。
+   *
+   * 它是给模型看"我刚查过什么、别再重复"的，所以**必须有界**：
+   * 无界列表会随轮次越长越大，而它每次 recall 都要原样回显进上下文。
+   * 上限由 `appendBoundedQuery()` 强制（见那里的说明）。
+   */
+  private queriesThisTurn: readonly string[] = []
+  /** 已批准的追加额度（每轮；`beginTurn()` 归零 —— 临时提额是"这一轮"的事）。 */
+  private turnExtensionBonus = 0
+  /** 已批准的追加额度（本周期；`resetCycle()` 归零 —— 压缩后重来）。 */
+  private cycleExtensionBonus = 0
+  /** 上一次批准追加是在第几个轮次（`turnsThisCycle` 口径，冷却判据）。 */
+  private lastExtensionTurn: number | undefined
+
+  constructor(options: MemoryRuntimeOptions) {
+    this.config = options.config
+    this.logger = options.log ?? ((): void => {})
+    this.dbPath = options.dbPath
+    mkdirSync(dirname(this.dbPath), { recursive: true })
+    this.opened = openDatabase({ file: this.dbPath, log: this.log })
+    this.db = this.opened.db
+    this.log(`记忆库已打开：${this.dbPath}`)
+  }
+
+  /** 迁移结果（诊断用）。 */
+  appliedMigrations(): readonly number[] {
+    return this.opened.applied
+  }
+
+  /** 当前压缩 epoch。 */
+  epoch(): number {
+    return currentEpoch(this.db)
+  }
+
+  /** 当前渲染修订号。 */
+  revision(): number {
+    return currentRevision(this.db)
+  }
+
+  /**
+   * 取当前中期记忆区的渲染视图（带缓存）。
+   *
+   * 同一 `(epoch, revision)` 下**必然返回同一份字节**，这是"缓存断点"承诺的落点。
+   *
+   * ## ★ 只渲染**窗口**，不是整张表（2026-10-09 修）
+   *
+   * PLAN §1.2 的中期记忆是「**上下文窗口中的稳定前缀**」——"窗口"两个字以前没落地：
+   * 这里直接渲染 `listRenderableMidEntries()` 的**全表**。真机后果（2026-10-09 实测）：
+   * 10,794 条 / 1,504,850 token 全进系统提示词 ⇒ QQ 唤醒报
+   * `CONTEXT_WINDOW_EXCEEDED: pi-ai detected context overflow`；而压缩要看"上下文占比"
+   * 才触发，上下文一开始就爆 ⇒ **压缩永远不触发**（`compaction_epoch` 恒为 0、
+   * 长期记忆恒为空）—— 四层记忆流水线第一层就堵死。
+   *
+   * 现在按基线 `memory.midWindow.maxTokens`（**内容**预算）与 `memory.midWindow.maxCount`
+   * （**条数**防呆上限）**从最新往回**取（选取规则与排序键的理由写在 `selectMidWindow()`
+   * 的模块头：`window_offset` 是**按 epoch 分桶**的，只看它会把"压缩刚 push 的条目"
+   * 判成最旧、第一批丢掉）。两个预算都读基线、**不在这里写死数字**；
+   * 丢了东西**不静默**（verbose 时如实报数，并说清是撞到哪个约束）。
+   */
+  renderView(): RenderedView {
+    const key = `${String(this.epoch())}:${String(this.revision())}`
+    if (this.cache !== undefined && this.cache.key === key) return this.cache.view
+    const entries = listRenderableMidEntries(this.db)
+    const maxTokens = defaultFor<number>('memory.midWindow.maxTokens')
+    const maxCount = defaultFor<number>('memory.midWindow.maxCount')
+    const window = selectMidWindow(entries, { maxTokens, maxCount })
+    if (this.config.verbose && window.droppedCount > 0) {
+      const countNote = window.droppedByCount > 0 ? `，其中 ${String(window.droppedByCount)} 条是撞到条数上限` : ''
+      this.log(
+        `中期窗口：进 ${String(window.entries.length)} 条 / ${String(window.tokens)} token，` +
+          `丢下 ${String(window.droppedCount)} 条 / ${String(window.droppedTokens)} token` +
+          `（表共 ${String(entries.length)} 条；预算 ${String(maxTokens)} token / ${String(maxCount)} 条${countNote}）`,
+      )
+    }
+    const now = new Date() // 只在缓存刷新时取一次，随后冻结在文本里
+    const view = renderMidMemory(window.entries, {
+      header: this.config.l3Header,
+      relativeAges: this.config.relativeAges,
+      now,
+    })
+    this.cache = { key, view }
+    // 与 cache **同时**写入 —— 见 windowCache 的说明：两处必须同源
+    this.windowCache = { key, window }
+    return view
+  }
+
+  /**
+   * 当前的中期**窗口**选取结果（面板/诊断用；与 `renderView()` 同源）。
+   *
+   * 面板过去显示的是 `midStats()` 的**全表** `activeTokens`（真机 1,505k），
+   * 而真正进上下文的是窗口里那一段 —— 两者差着 15 倍时，用户会以为窗口没修好。
+   * 所以这个数字必须由**渲染器同一份**选取给出，不能另算一遍。
+   *
+   * 实现上刻意**不复制**选取逻辑：先确保 `renderView()` 已经把 `windowCache` 填成
+   * 当前 `(epoch, revision)` 的那一份（它自带缓存，重复调用是廉价的）。
+   */
+  midWindow(): MidWindowResult {
+    const key = `${String(this.epoch())}:${String(this.revision())}`
+    if (this.windowCache === undefined || this.windowCache.key !== key) this.renderView()
+    const cached = this.windowCache
+    if (cached === undefined || cached.key !== key) {
+      // `renderView()` 必然填 windowCache；走到这里说明两处的缓存键算法漂了。
+      // 宁可报错，也不返回一个可能骗人的数字（本仓纪律：不静默）。
+      throw new Error('midWindow()：窗口缓存没有随 renderView() 刷新（两处缓存键不一致？）')
+    }
+    return cached.window
+  }
+
+  /** L2 段的文本（用户可编辑，直接来自配置）。 */
+  l2Text(): string {
+    return this.config.l2IndexText
+  }
+
+  /**
+   * 投喂期的「工作模式」段文本（**没有在投喂就是严格的空串**）。
+   *
+   * 为什么单独一段而不是并进 L3：见 `prompt.ts` 的 `FEED_MODE_ORDER` 说明
+   * （核心是"不动 `renderView()` 的缓存契约"）。
+   *
+   * 为什么读库而不是读内存里的标志：投喂的四条入口分属**不同进程** ——
+   * CLI 与 gateway 后台那两条根本不在这个进程里，只有把状态落在
+   * `forlife_state` 上，模型那一侧才看得见（见 `feed-session.ts` 的模块头）。
+   *
+   * ⚠️ 空闲时必须返回**严格空串**：真机实测过宿主对空段是"整段跳过"（渲染字节不变），
+   * 但**只含空白的串会被原样插进提示词** —— 那会白白改掉稳定前缀。
+   */
+  feedModeText(): string {
+    return renderFeedModeText(this.db)
+  }
+
+  /** 写一条中期记忆（append 协议：表 + 修订号同事务）。 */
+  append(input: {
+    /** 显式 id（压缩事务要**动手前**就知道 id 才能写回滚计划）；不传则自动生成。 */
+    readonly id?: string
+    readonly summary: string
+    readonly content?: string
+    readonly entities?: readonly string[]
+    readonly sourceScope?: string | null
+    readonly sourceShortIds?: readonly string[]
+  }): { readonly id: string; readonly revision: number; readonly windowOffset: number; readonly tokenCount: number } {
+    const id = input.id ?? `mid_${createHash('sha1').update(`${String(Date.now())}:${input.summary}`).digest('hex').slice(0, 12)}`
+    const tokenCount = estimateTokens([input.summary, input.content ?? '', (input.entities ?? []).join(' ')].join(' '))
+    const result = appendMidEntry(this.db, {
+      id,
+      summary: input.summary,
+      content: input.content ?? null,
+      entities: input.entities ?? [],
+      tokenCount,
+      sourceShortIds: input.sourceShortIds ?? [],
+      sourceScope: input.sourceScope ?? null,
+    })
+    if (this.config.verbose) this.log(`追加中期记忆 ${id}（${String(tokenCount)} token，offset ${String(result.entry.window_offset)}）`)
+    return { id, revision: result.revision, windowOffset: result.entry.window_offset, tokenCount }
+  }
+
+  /** 把一条中期记忆降级为碎片（指向长期记忆）。 */
+  fragment(midId: string, longId: string, hint: string): number {
+    const hintTokens = estimateTokens(hint)
+    const maxHint = defaultFor<number>('fragment.maxHintTokens')
+    if (hintTokens > maxHint) {
+      // 写入方负责截断（PLAN §5.3 的四层长度限制），这里不静默放过
+      throw new Error(`碎片 hint 超过上限：${String(hintTokens)} > ${String(maxHint)} token`)
+    }
+    return fragmentMidEntry(this.db, midId, longId, hint, hintTokens)
+  }
+
+  /**
+   * 检索长期记忆（阶段 1 用 FTS5；向量检索在阶段 5 接入）。
+   *
+   * ## 三道硬闸门（PLAN §7.4「硬性次数上限，超过直接拒绝」+ 重复查询检测）
+   *
+   * ① **每周期**上限（`recall.maxPerCycle`）；
+   * ② **每轮**上限（`recall.maxPerTurn`，可被已批准的追加额度临时抬高）；
+   * ③ **重复查询**：与**本轮已经查过的**查询近似相似度 > `recall.duplicateSimilarity`
+   *    ⇒ 拒绝并返回 `duplicate_query`。
+   *
+   * 顺序刻意是 ①② 在前：额度已经用尽时，"没额度了"是更要紧的那句话 ——
+   * 只报 `duplicate_query` 会让模型以为"换个词就还能查"。
+   *
+   * ⚠️ 第 ② 道以前只拦每轮、第 ③ 道完全不存在；第 ① 道也**只用于显示**
+   * （`remainingThisCycle` 只算不判）⇒ 周期额度形同建议。被拒时返回空结果 +
+   * 完整预算声明 + 指向 `request_recall_extension` 的提示（PLAN §7.2），**不静默失败**。
+   *
+   * ## ③ 是**近似**、不是语义相似度（关键说明，别读错）
+   *
+   * PLAN 原文是"与上轮**语义**相似度 > 0.9"。语义相似度要向量（embedding + 余弦），
+   * 而本仓**没有向量库**（`packages/store/package.json` 只依赖 `@forlife/contracts`；
+   * PLAN §6.4 的 LanceDB/Qdrant 选型尚未落地，检索走 FTS5）。
+   * 所以这里用**词面近似**（归一化后的 token 集合 Jaccard），
+   * 边界与理由逐条写在 `querySimilarity()` 的注释里 —— **只抓"几乎同一个查询"**。
+   *
+   * ## "与上轮"的取法（一处需要在明处的解释）
+   *
+   * 这里比对的是 `queriesThisTurn`（**本轮**已查过的查询，PLAN §7.1 自己要求回显的
+   * 那份清单，也正是"避免重复检索相近主题"那句提示服务的对象）。
+   * 它覆盖了"上一次检索"这一读法；**不做跨轮比对**，两条理由：
+   *  1. **判据必须与模型看得见的东西一致** —— `queries_this_turn` 每次返回都回显，
+   *     模型因此能预判"什么会被判重复"。跨轮的隐藏记忆会让 `duplicate_query`
+   *     变成一次**不可解释的拒绝**（上一轮查过什么，本轮上下文里未必还留着），
+   *     而 §7.3 要的正是模型**自我约束**，前提是它看得见判据；
+   *  2. 跨轮比对会挡住"新一轮里因新信息而重查同一主题"这种正当行为，
+   *     而总量本来就由**周期额度**（①）封死。
+   *
+   * ## 重复查询被拒时**照样扣额度**（要写在明处）
+   *
+   * 不扣的话这道闸门就是**免费重试**：模型可以拿同一个词无限撞墙，
+   * 而每次撞墙都会产生一条工具结果进上下文 —— 那正是 §7.4 要省的东西。
+   * 扣了之后"被拒绝"与"真的查了"在账面上一致（`used` 会涨、`queries_this_turn` 会记下），
+   * 所以预算声明不会自相矛盾。
+   */
+  recallLongterm(query: string, limit?: number): RecallResult {
+    const maxResults = Math.min(
+      limit ?? this.config.recallMaxResults,
+      defaultFor<number>('recall.maxResultsHardCap'),
+    )
+    const maxPerTurn = this.effectiveMaxPerTurn()
+    const maxPerCycle = this.effectiveMaxPerCycle()
+
+    // ① 周期上限（更硬的那道：PLAN §7.6 的 max_recall_per_cycle）
+    if (this.recallThisCycle >= maxPerCycle) {
+      return this.recallRefused('cycle_exhausted', maxPerTurn, maxPerCycle, maxResults)
+    }
+    // ② 每轮上限
+    if (this.recallThisTurn >= maxPerTurn) {
+      return this.recallRefused('turn_exhausted', maxPerTurn, maxPerCycle, maxResults)
+    }
+
+    // ③ 重复查询检测（PLAN §7.4）—— **必须在把本次查询记进清单之前**，否则它会撞上自己
+    const duplicate = this.findDuplicateQuery(query)
+    this.recallThisTurn += 1
+    this.recallThisCycle += 1
+    // PLAN §7.1 的 queries_this_turn：记"本轮查过什么"，**有界**（见 appendBoundedQuery）。
+    // 被拒的重复查询也记：它确实发生、也确实扣了额度（见方法头）。
+    this.queriesThisTurn = appendBoundedQuery(this.queriesThisTurn, query, recallQueryLogLimit())
+    if (duplicate !== undefined) {
+      return this.recallDuplicateRefused(duplicate, maxPerTurn, maxPerCycle, maxResults)
+    }
+
+    const entries = searchLongFts(this.db, query, maxResults)
+    for (const entry of entries) touchLongEntry(this.db, entry.id)
+
+    // ★★ 2026-10-09（`FIX_PLAN.md` D3 / P0-c）：这里原来是 `if (entries.length === 0)` ——
+    //   "只在长期层**零命中**时才看一眼中期层"。
+    //
+    //   那是一个**新手引导性质**的兜底（原注释自己写的：避免"刚开始用什么都搜不到"的挫败感），
+    //   不是一条检索路径。代价要到长期库有内容之后才显现：
+    //   **任何能命中长期层的查询，再也不会被告知"中期层里还有 N 条"** ⇒
+    //   模型连"要不要 recall_mid"都无从判断 —— 而 P0-a 刚加的那个工具正需要这条提示指路。
+    //   ⇒ 两件事叠起来就是：**工具在那儿，路被堵死了。**
+    //
+    //   改成"长期层没喂饱这次额度，就也看一眼中期层"。
+    //   多一次 FTS 的代价，换的是"不会再有一整层记忆静默消失"。
+    if (entries.length < maxResults) {
+      const mid = searchMidFts(this.db, query, maxResults)
+      for (const entry of mid) touchMidEntry(this.db, entry.id)
+      if (mid.length > 0) {
+        if (entries.length === 0) {
+          return this.recallResult([], maxPerTurn, maxPerCycle, maxResults, this.midFallbackNote(mid))
+        }
+        // 长期层有命中、中期层也有 ⇒ **两边都要说**，否则中期那一层等于不存在
+        return this.recallResult(
+          entries,
+          maxPerTurn,
+          maxPerCycle,
+          maxResults,
+          this.midAlongsideNote(mid, entries.length),
+        )
+      }
+    }
+    if (entries.length === 0) {
+      return this.recallResult(
+        [],
+        maxPerTurn,
+        maxPerCycle,
+        maxResults,
+        '无命中。先判断这条信息是否真的可能存在，再决定是否换关键词；不要为确认而反复检索。',
+      )
+    }
+    return this.recallResult(entries, maxPerTurn, maxPerCycle, maxResults)
+  }
+
+  /**
+   * "长期记忆无命中、但中期记忆里有"时，给模型的那句话。
+   *
+   * ## ★ 2026-10-09 修：以前这句是**静默的谎**
+   *
+   * 原文案（`runtime.ts:492`）是：
+   * 「长期记忆无命中；中期记忆里有 N 条相关，**但它们已在当前上下文中，无需检索**。」
+   *
+   * 在**有窗口之前**这话确实成立：`renderView()` 把 `listRenderableMidEntries()` 整张表
+   * 渲染进前缀，中期条目条条都在上下文里。窗口（`memory.midWindow.maxTokens`）落地之后，
+   * **窗口外的条目既不在上下文、正文也永不返回** —— 那句话就变成了一句
+   * "听起来很确定、实际是错的"断言：模型会据此认为"这条信息我已经有了"，
+   * 然后凭一个窗口里根本没有的印象作答。**假绿比报错更贵**（本仓的纪律）。
+   *
+   * ## 现在的判据与措辞
+   *
+   * 判据只有一条：命中**在不在窗口里**（`midWindow()` —— 与 `renderView()` 同源的那份选取）。
+   *  - **全在窗口内** ⇒ 原话仍然成立，照说。（`renderView()` 渲染的是 active 的 `summary`
+   *    与碎片的 `fragment_hint`，所以窗口内条目的**摘要/指针**确实在上下文里）；
+   *  - **有落在窗口外的** ⇒ **如实分述**：窗口内几条（那些无需检索）、
+   *    窗口外几条（**摘要与正文都不在你眼前，本次检索也取不回来**）。
+   *
+   * ## ⚠️ 刻意**不**承诺一条不存在的回填路径
+   *
+   * 用户给的措辞示例是"可用 X 回填全文"。本仓**现在没有**这个 X：
+   *  - `recall_full` 取的是**溢出工具结果**的全文（spill），不是中期条目；
+   *  - `recover(id)` 只处理**长期**冷层条目，且返回的是字数与状态，不含正文；
+   *  - `recall_longterm` 自己就是这里失败的那条路（长期库零命中）。
+   *
+   * 所以这里**只陈述事实、不给假承诺** —— 编一个"可以用 X 取回"会换来同一形状的第二次谎。
+   * 真要给一条回填路径，得先有"按 id 取中期条目正文"的工具（见交付报告里的待定项）。
+   */
+  private midFallbackNote(hits: readonly MidEntryRow[]): string {
+    const inWindow = new Set(this.midWindow().entries.map((entry) => entry.id))
+    const inside = hits.filter((entry) => inWindow.has(entry.id)).length
+    const outside = hits.length - inside
+
+    // ★★ 2026-10-09（`FIX_PLAN.md` P0-c）：把**能取回它们的 id** 一并交出去。
+    //
+    // 没有这一段，`recall_mid` 就是一个**没有路通向它**的工具：
+    // 模型只知道"有 N 条相关"，不知道是哪几条 ⇒ 干看着，一个字都捞不回来。
+    // 只列前若干条：一次全列出来会把提示词本身撑大，而取回是**逐条**的显式动作。
+    const idHint = ((): string => {
+      const maxIds = 8
+      const ids = hits.slice(0, maxIds).map((entry) => entry.id)
+      if (ids.length === 0) return ''
+      const more = hits.length > maxIds ? ` (showing the first ${String(maxIds)} of ${String(hits.length)})` : ''
+      return `\nTo read the bodies, fetch them one by one with recall_mid: ${ids.join(', ')}${more}`
+    })()
+
+    if (outside === 0) {
+      return `No long-term hits; ${String(hits.length)} related entries exist in mid-term memory and are already in the current context - no need to search.`
+    }
+    if (inside === 0) {
+      return (
+        `No long-term hits; ${String(hits.length)} related entries exist in mid-term memory, but they have **all slid out of the current context window**: ` +
+        'neither their summaries nor their bodies are in front of you. Do not answer from out-of-window content as if you "remember" it. ' +
+        idHint
+      )
+    }
+    return (
+      `No long-term hits; ${String(hits.length)} related entries exist in mid-term memory: ${String(inside)} of them are in the current context (in-window), no search needed; ` +
+      `another ${String(outside)} have **slid out of the current context window** - neither their summaries nor their bodies are in front of you. ` +
+      'Do not answer from out-of-window content as if you "remember" it. ' +
+      idHint
+    )
+  }
+
+  /**
+   * "长期层有命中、中期层**也**有命中"时给模型的那句话（`FIX_PLAN.md` D3 的另一半）。
+   *
+   * 原来只有"长期零命中"那一条路会提中期，长期有命中就**整层不提** ——
+   * 那等于"长期库一有内容，中期就再也没人知道它还在"。
+   * 这条补上那一半：说清**两边各有几条**、以及怎么把中期的取回来。
+   */
+  private midAlongsideNote(hits: readonly MidEntryRow[], longHits: number): string {
+    const maxIds = 8
+    const ids = hits.slice(0, maxIds).map((entry) => entry.id)
+    const more = hits.length > maxIds ? ` (showing the first ${String(maxIds)} of ${String(hits.length)})` : ''
+    return (
+      `Also: ${String(hits.length)} more related entries are in mid-term memory (the ${String(longHits)} above came from the long-term tier) - ` +
+      'they are not in the long-term tier, so `recall_longterm` cannot find them. If you need them, fetch them one by one with recall_mid: ' +
+      `${ids.join(', ')}${more}`
+    )
+  }
+
+  /**
+   * **逃生通道**：裁决一次"追加 recall 额度"的请求（PLAN §7.5 的
+   * `request_recall_extension(reason, additional=2)`）。
+   *
+   * ## 约束来自基线，不在这里写死
+   *
+   *  - `additional` 缺省 = `recall.extensionMax`（PLAN §7.5 的 `additional=2`）；
+   *  - 单次最多追加 `recall.extensionMax`（要更多就分次申请，别把一次请求当许愿池）；
+   *  - 两次批准之间至少隔 `recall.extensionCooldownTurns` **轮**（轮次维度：
+   *    `turnsThisCycle` 由 `beginTurn()` 推进）。
+   *
+   * ## 为什么**必须**明确拒绝
+   *
+   * 逃生通道最怕"静默失败"：模型以为额度涨了，接着查，然后拿到一句
+   * "已达上限"，它会以为系统坏了。所以拒绝时给出**码 + 还差几轮 + 现在是多少**。
+   *
+   * ## 批准后额度怎么涨
+   *
+   *  - **每轮**额度：+`additional`（下一轮 `beginTurn()` 时归零 —— "临时"提额）；
+   *  - **本周期**额度：+`additional`（压缩提交时随 `resetCycle()` 归零）；
+   * 两个都会**如实出现在下一次 recall 的预算声明里**（PLAN §7.5「并在下次返回中告知」）。
+   */
+  requestRecallExtension(input: { readonly reason: string; readonly additional?: number }): RecallExtensionVerdict {
+    const maxPerRequest = defaultFor<number>('recall.extensionMax')
+    const cooldownTurns = defaultFor<number>('recall.extensionCooldownTurns')
+    const requested = input.additional ?? maxPerRequest
+    const perTurnLimit = this.effectiveMaxPerTurn()
+    const perCycleLimit = this.effectiveMaxPerCycle()
+
+    const base = {
+      perTurnLimit,
+      perCycleLimit,
+      cooldownTurns,
+      grantedThisCycle: this.cycleExtensionBonus,
+      maxPerRequest,
+    }
+
+    // ① 理由必须具体（沿用 decideSwitch 的既有约定：少于 4 字看起来像随手要的）
+    const reason = input.reason.trim()
+    if (reason.length < EXTENSION_MIN_REASON_CHARS) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'reason_too_short',
+        hint: `An extension request must state a reason (at least ${String(EXTENSION_MIN_REASON_CHARS)} characters): what you need to search, and why it is unavoidable.`,
+        additional: 0,
+      }
+    }
+    // ② 单次追加数必须是正整数、且不超过上限（**不静默夹取**：夹取会让模型以为要到了）
+    if (!Number.isInteger(requested) || requested <= 0) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'bad_amount',
+        hint: `additional must be a positive integer (got ${String(requested)}); omit it to request the maximum of ${String(maxPerRequest)}.`,
+        additional: 0,
+      }
+    }
+    if (requested > maxPerRequest) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'beyond_max',
+        hint: `At most ${String(maxPerRequest)} can be granted per request (you asked for ${String(requested)}). For more, ask again after the cooldown.`,
+        additional: 0,
+      }
+    }
+    // ③ 冷却（轮次维度）
+    const cooldownRemainingTurns = this.extensionCooldownRemaining(cooldownTurns)
+    if (cooldownRemainingTurns > 0) {
+      return {
+        ...base,
+        granted: false,
+        reason: 'too_frequent',
+        hint:
+          `追加额度冷却中：距上次批准仅 ${String(Math.max(0, cooldownTurns - cooldownRemainingTurns))} 轮，` +
+          `还需等 ${String(cooldownRemainingTurns)} 轮（"轮"按轮次开始计，每轮一次）。`,
+        additional: 0,
+        cooldownRemainingTurns,
+      }
+    }
+
+    // 批准：两个维度的额度都抬高，并记下轮次供冷却判断
+    this.turnExtensionBonus += requested
+    this.cycleExtensionBonus += requested
+    this.lastExtensionTurn = this.turnsThisCycle
+    this.log(
+      `已批准 recall 追加额度 +${String(requested)}（每轮 ${String(this.effectiveMaxPerTurn())}、` +
+        `本周期 ${String(this.effectiveMaxPerCycle())}；理由：${reason}）`,
+    )
+    return {
+      granted: true,
+      hint:
+        `已追加 ${String(requested)} 次：本周期额度 ${String(this.effectiveMaxPerCycle())}，` +
+        `本轮额度 ${String(this.effectiveMaxPerTurn())}（本轮结束即回落，周期额度到下次压缩重置）。`,
+      additional: requested,
+      perTurnLimit: this.effectiveMaxPerTurn(),
+      perCycleLimit: this.effectiveMaxPerCycle(),
+      cooldownTurns,
+      grantedThisCycle: this.cycleExtensionBonus,
+      maxPerRequest,
+    }
+  }
+
+
+  /**
+   * **检索 + 冷层按需加载**（PLAN §6.3 的"回读"那一半）。
+   *
+   * ## 为什么必须存在（不是"多一个方法"）
+   *
+   * `recallLongterm` 走的是 FTS，而 FTS 索引里**留着沉降前的正文**
+   * （`markLongSettled` 只清表里的 `content`，不动 FTS）——
+   * 所以沉降过的条目**仍然会命中**，但返回的行里 `content` 是 NULL。
+   *
+   * 没有这一跳的话：**命中 = 拿到一条空正文**。对模型而言，
+   * 那和"这条记忆被删了"没有区别 —— 也就是 **沉降变成了静默的数据丢失**。
+   *
+   * ## 纪律（照抄 `cold-load.ts` 的模块头，不另立一套）
+   *
+   *  - **命中 HDD ⇒ 去归档读**（`loadLongEntry`），不拿库里的副本凑数；
+   *  - **归档读不出来 ⇒ 明确报错**，绝不悄悄回落到库内副本
+   *    （那会掩盖"归档坏了"，而归档坏了正是最该被发现的事）；
+   *  - **取不回来要告诉模型**（`coldLoaded` 里的 `ok:false` + 原因），
+   *    而不是返回一条空内容让它自己猜。
+   *
+   * @param query - 检索词（与 `recallLongterm` 同一套预算与命中规则）。
+   * @param limit - 期望条数（受硬上限约束）。
+   * @returns 与 `recallLongterm` 同形；HDD 命中的条目会带上取回的正文，
+   *          另附 `coldLoaded` 说明每一条**从哪读的、花了多久、有没有读成**。
+   */
+  async recallLongtermOnDemand(query: string, limit?: number): Promise<RecallResult> {
+    // 检索与预算**不重复实现** —— 这里只加"命中冷层之后那一跳"，
+    // 否则两套预算迟早会不一致（面板显示 3 条、工具给 5 条那种）。
+    const result = this.recallLongterm(query, limit)
+    const coldIds = result.entries.filter((e) => e.storage_tier === 'hdd')
+    if (coldIds.length === 0) return result
+
+    const loaded: ColdLoadOutcome[] = []
+    const entries: LongEntryRow[] = []
+    for (const entry of result.entries) {
+      if (entry.storage_tier !== 'hdd') {
+        entries.push(entry)
+        continue
+      }
+      const cold = await loadLongEntry({ db: this.db, id: entry.id })
+      loaded.push({
+        id: entry.id,
+        ok: cold.found && cold.content !== undefined,
+        source: cold.source,
+        latencyMs: cold.latencyMs,
+        note: cold.note,
+      })
+      // **取回正文才替换**；取不回来则**把库内那份也遮掉** ——
+      //
+      // ⚠️ 这里必须 `content: null`，不能"原样返回"：FTS 命中带回来的行里
+      // **可能还留着库内的副本**（例如 `insertLongEntry({storageTier:'hdd'})`
+      // 造出的行，或沉降中途留下的残留）。把那份当成功返回，正好**掩盖了
+      // "归档坏了"** —— 而那正是最该被发现的事（归档是"很久以后才回来读"的东西）。
+      // 这条纪律与 `cold-load.ts` 模块头写的是同一条：**不悄悄回落到库内副本**。
+      entries.push(cold.found && cold.content !== undefined ? { ...entry, content: cold.content } : { ...entry, content: null })
+    }
+
+    const failed = loaded.filter((l) => !l.ok)
+    return {
+      ...result,
+      entries,
+      coldLoaded: loaded,
+      // **失败必须显式说出来**（静默返回空内容 = 模型以为"记忆里没有这条"）
+      ...(failed.length === 0
+        ? {}
+        : {
+            note: [
+              ...(result.note === undefined ? [] : [result.note]),
+              `⚠️ 有 ${String(failed.length)} 条命中在冷层但**取不回来**（正文不可用）：` +
+                failed.map((f) => `${f.id}（${f.note}）`).join('；'),
+            ].join('\n'),
+          }),
+    }
+  }
+
+  /**
+   * **把一条已沉降的长期记忆提升回热层**（PLAN §6.3 的"可逆"那一半 / §13-17 的 `recover`）。
+   *
+   * ## 为什么必须走归档读，而不是"库内那份"
+   *
+   * 沉降过的条目（`markLongSettled`）**库内 `content` 是 NULL**、正文在归档文件里。
+   * 所以提升的唯一合法来源是 `loadLongEntry()` 读回来的归档正文：
+   *  - **读到 ⇒ 回填库内 + `storage_tier='ssd'` + 清 `archive_path`**（`markLongRecovered`）；
+   *  - **读不到 ⇒ 明确拒绝**（`archive_unreadable`），**绝不**把 NULL 当成功、
+   *    也**不回落**到任何"可能存在的库内副本" —— 那会掩盖"归档坏了"，
+   *    而归档坏了正是最该被发现的事。
+   *
+   * ## 三条不许妥协的细节
+   *
+   * 1. **已经在热层 ⇒ 明确说"不需要提升"**（不报成功：报成功会让模型以为刚搬过一次）；
+   * 2. **不删归档文件** —— 提升只往库里回填正文，冷层那份留在原处（删文件是另一个决定，
+   *    半路删源正是本仓反复吃过亏的地方）；
+   * 3. **顺手 `touchLongEntry`** —— 提升的正当理由是"有人刚要读它"，
+   *    把访问时间刷新才对得上，也免得下一轮沉降立刻又把它沉下去。
+   *
+   * @param id - 长期记忆条目 id（**一次一个**：批量提升等于一次抹掉沉降成果）。
+   * @returns 结果（含 `status`：`recovered` / `not_found` / `already_hot` / `archive_unreadable`）。
+   */
+  async recoverLongEntry(id: string): Promise<LongRecoverOutcome> {
+    const row = getLongEntry(this.db, id)
+    if (row === undefined) {
+      return { ok: false, id, status: 'not_found', note: `No such long-term memory: ${id}` }
+    }
+    const tier = row.storage_tier ?? 'ssd'
+    if (tier !== 'hdd') {
+      return {
+        ok: false,
+        id,
+        status: 'already_hot',
+        tier,
+        note: `It is already in the hot tier (storage_tier=${tier}); no promotion needed - its body does not have to be read from the cold tier.`,
+      }
+    }
+
+    const cold = await loadLongEntry({ db: this.db, id })
+    if (!cold.found || cold.content === undefined) {
+      return {
+        ok: false,
+        id,
+        status: 'archive_unreadable',
+        tier,
+        source: cold.source,
+        latencyMs: cold.latencyMs,
+        note: `The cold-tier body could not be fetched and there is **no in-database fallback** (the stored content is empty): ${cold.note}`,
+      }
+    }
+
+    markLongRecovered(this.db, id, cold.content)
+    touchLongEntry(this.db, id)
+    this.log(`已提升长期条目 ${id}：hdd → ssd（正文 ${String(cold.content.length)} 字，来源 ${cold.source}）`)
+    return {
+      ok: true,
+      id,
+      status: 'recovered',
+      tier: 'ssd',
+      source: cold.source,
+      latencyMs: cold.latencyMs,
+      contentChars: cold.content.length,
+      note:
+        `已提升回热层：正文 ${String(cold.content.length)} 字已回填库内、storage_tier=ssd、archive_path 已清空。` +
+        (cold.source === 'archive'
+          ? '冷层归档文件**保留在原处**（提升不删源）。'
+          : '（这条**没有归档文件**：正文本来就在库内，所以 source=db —— 不假装是从冷层读的。）'),
+    }
+  }
+
+  /** 取回被截断的大结果全文（PLAN §3.2）。 */
+  recallFull(id: string): { readonly found: boolean; readonly content?: string; readonly meta?: { toolName: string; bytes: number; lines: number } } {
+    const row = getSpill(this.db, id)
+    if (row === undefined) return { found: false }
+    return { found: true, content: row.content, meta: { toolName: row.tool_name, bytes: row.byte_size, lines: row.line_count } }
+  }
+
+  /**
+   * 存入一份大工具结果的全文（PLAN §3.2 的存储原语）。
+   *
+   * **谁调用**：`./tool-spill.ts`（统一接缝）——工具结果过大时，那里把全文送到这里，
+   * 只把 `head` + id 还给模型。本函数**只负责存**，不判断"多大算大"
+   * （阈值在 `tool.spill.thresholdBytes` 基线里，判断在接缝里做）。
+   *
+   * 返回 `bytes` / `lines` 是为了让接缝能在提示里如实报出"省略了多少"
+   * （模型据此决定要不要 recall_full，而不是猜）。
+   */
+  spill(input: {
+    readonly toolName: string
+    readonly content: string
+    readonly sessionId?: string
+    readonly toolCallId?: string
+  }): { readonly id: string; readonly head: string; readonly bytes: number; readonly lines: number } {
+    const id = `spill_${createHash('sha1').update(`${input.toolName}:${String(Date.now())}:${input.content.slice(0, 64)}`).digest('hex').slice(0, 12)}`
+    const row = insertSpill(this.db, {
+      id,
+      toolName: input.toolName,
+      content: input.content,
+      sessionId: input.sessionId ?? null,
+      toolCallId: input.toolCallId ?? null,
+      headLines: defaultFor<number>('tool.spill.headLines'),
+    })
+    return { id, head: row.head, bytes: row.byte_size, lines: row.line_count }
+  }
+
+  /** 推进压缩 epoch（压缩事务开始时调用；阶段 2 使用）。 */
+  beginEpoch(): number {
+    return bumpEpoch(this.db)
+  }
+
+  /**
+   * 统计（面板与诊断用）。
+   *
+   * ## ★ 两套口径**都要有**，而且必须标清楚（2026-10-09）
+   *
+   * `activeCount` / `activeTokens` / `fragmentCount` / `fragmentTokens` 来自 `midStats()`
+   * —— 那是**全表**口径（表里有多少）。它**不能删**：压缩裁决的 `midTokens`
+   * （`tools.ts`）、碎片化规划 `planFragmentation()`、§5.3 的碎片占比看的都是全表。
+   *
+   * `window*` 是**窗口**口径（真正进系统提示词的那一段）。面板过去只显示全表，
+   * 于是真机 1,505k 的"活跃 token"看着像没修好 —— 而实际进上下文的只有窗口里那些。
+   * 两个数一起给，才不会互相冒充。
+   */
+  stats(): {
+    readonly epoch: number
+    readonly revision: number
+    /** 全表口径：`status='active'` 的条目数（**不是**进上下文的条数）。 */
+    readonly activeCount: number
+    /** 全表口径：碎片条目数。 */
+    readonly fragmentCount: number
+    /** 全表口径：`status='active'` 的 token 之和。 */
+    readonly activeTokens: number
+    /** 全表口径：碎片的 token 之和。 */
+    readonly fragmentTokens: number
+    /** **窗口**口径：真正进上下文的条目数。 */
+    readonly windowEntries: number
+    /** **窗口**口径：真正进上下文的 token 之和。 */
+    readonly windowTokens: number
+    /** 被窗口丢掉的条目数（`windowDroppedByCount` 是其中撞到条数上限的那部分）。 */
+    readonly windowDroppedEntries: number
+    /** 被窗口丢掉的 token 之和。 */
+    readonly windowDroppedTokens: number
+    /** `windowDroppedEntries` 里**由条数上限造成**的条数（0 ⇒ 是 token 预算在生效）。 */
+    readonly windowDroppedByCount: number
+    /** 窗口的 token 预算（基线 `memory.midWindow.maxTokens`）。 */
+    readonly windowMaxTokens: number
+    /** 窗口的条数上限（基线 `memory.midWindow.maxCount`）。 */
+    readonly windowMaxCount: number
+    readonly renderedTokens: number
+    readonly renderedSha256: string
+    readonly violations: readonly string[]
+  } {
+    const view = this.renderView()
+    const mid = midStats(this.db)
+    // 与 renderView() 同源的那一份窗口选取（见 midWindow()）
+    const window = this.midWindow()
+    return {
+      epoch: this.epoch(),
+      revision: this.revision(),
+      ...mid,
+      windowEntries: window.entries.length,
+      windowTokens: window.tokens,
+      windowDroppedEntries: window.droppedCount,
+      windowDroppedTokens: window.droppedTokens,
+      windowDroppedByCount: window.droppedByCount,
+      windowMaxTokens: defaultFor<number>('memory.midWindow.maxTokens'),
+      windowMaxCount: defaultFor<number>('memory.midWindow.maxCount'),
+      renderedTokens: view.tokenEstimate,
+      renderedSha256: view.sha256,
+      violations: view.violations,
+    }
+  }
+
+  /**
+   * 列条目（**默认列全部 epoch**，可按 epoch / status 过滤）。
+   *
+   * 为什么默认不按 epoch 过滤：L3 是跨压缩累积的，`compaction_epoch` 只是"这条产生于哪次压缩"。
+   * 默认只列当前 epoch 会让"压缩后沉降旧条目"静默失效（旧条目在新 epoch 里根本找不到）——
+   * 这个坑在引擎测试里被真实踩到过一次。
+   */
+  listEntries(options: { readonly epoch?: number; readonly status?: readonly ('active' | 'fragment' | 'fragmented' | 'archived')[] } = {}): readonly MidEntryRow[] {
+    const rows =
+      options.epoch === undefined
+        ? (this.db.prepare('SELECT * FROM mid_memory_entries ORDER BY window_offset ASC').all() as unknown as MidEntryRow[])
+        : (this.db
+            .prepare('SELECT * FROM mid_memory_entries WHERE compaction_epoch = ? ORDER BY window_offset ASC')
+            .all(options.epoch) as unknown as MidEntryRow[])
+    const wanted = options.status
+    if (wanted === undefined || wanted.length === 0) return rows
+    const normalized = new Set(wanted.map((s) => (s === 'fragment' ? 'fragmented' : s)))
+    return rows.filter((r) => normalized.has(r.status))
+  }
+
+  /** 面板用：溢出记录列表（不含全文）。 */
+  listSpill(sessionId: string, limit = 20): readonly Omit<{ id: string; tool_name: string; byte_size: number; line_count: number; created_at: string }, never>[] {
+    return listSpills(this.db, sessionId, limit) as never
+  }
+
+  /** 面板用：压缩日志。 */
+  compactionLog(limit = 20): readonly Record<string, unknown>[] {
+    return this.db.prepare('SELECT * FROM compaction_log ORDER BY timestamp DESC LIMIT ?').all(limit) as Record<string, unknown>[]
+  }
+
+  /**
+   * 轮次边界：重置"每轮"额度的计数，并推进"自上次压缩以来的轮次"（PLAN §4.4 记账）。
+   *
+   * ## ★ 真实调用点（不要删）
+   *
+   * `index.ts` 的 `registerTurnAccounting()` —— 它订阅宿主的 `session/event`，
+   * 在 `turn/start` 上调这里（宿主的 `agent-loop` 在**每一轮开始时**追加该事件，
+   * 早于它 claim 本轮的输入）。
+   *
+   * ⚠️ 这一跳以前**只被测试调用**（生产链路里没有任何地方调它），后果是：
+   *  - `acct_turns_since_compaction` 恒为 0 ⇒ `decideCompaction` 里 `turnsOk=false`；
+   *  - `recallThisTurn` 永不归零 ⇒ 累计 2 次 `recall_longterm` 之后**永久失效**；
+   * 两者都是"函数写好了、测试全绿、线上根本没跑"。
+   */
+  beginTurn(): void {
+    this.recallThisTurn = 0
+    // 每轮额度上的"追加"是**临时**的：新的一轮回到基线（周期追加额度不回落，见 resetCycle）
+    this.turnExtensionBonus = 0
+    // PLAN §7.1 的 queries_this_turn 是"**本轮**查过什么" ⇒ 轮次边界清空
+    this.queriesThisTurn = []
+    // ★ 投喂的"本轮喂了几段"同样是**每轮**的量（用户 2026-10-10：「以单个轮次为界」）
+    this.feedSegmentsThisTurn = 0
+    this.turnsThisCycle += 1
+    // 基线值是 `on_compaction`（见 PLAN §7.6）：周期额度由压缩提交时的 `resetCycle()` 归零。
+    // 若有人把策略改成按轮重置，这里也要跟着归零（否则改了个寂寞）。
+    if (isPerTurnResetPolicy(this.recallResetPolicy())) {
+      this.recallThisCycle = 0
+      this.turnsThisCycle = 1
+    }
+    this.bumpCounter('acct_turns_since_compaction', 1)
+  }
+
+  /** 记一次工具调用（§4.4 的"自上次压缩工具调用数"）。 */
+  recordToolCall(): void {
+    this.bumpCounter('acct_toolcalls_since_compaction', 1)
+  }
+
+  /**
+   * 本轮**已经喂进记忆的段数**（用户 2026-10-10：「以单个轮次为界」）。
+   *
+   * ## 为什么它必须是**每轮**的、而且是"实际喂进去的"而不是"该喂的"
+   *
+   * 投喂的断点续传靠它推进游标（`feed-turn-hook.ts` 的 `onTurnEnd`）。
+   * 如果按"这一轮**该**喂几段"推，那么模型只喂了一半时游标也会往前走满
+   * ⇒ **没喂的那几段永远不会被喂** = **漏喂 = 丢记忆**。
+   * 重喂只是慢（`feedMemory` 同源同序号是幂等更新），**漏喂是不可逆的**。
+   *
+   * ⇒ 所以这个数只由**真的写成功了**的地方加：`feed-tools.ts` 的
+   *   `feed_memory` 在 `result.ok` 之后调 {@link noteFeedSegment}。
+   */
+  private feedSegmentsThisTurn = 0
+
+  /** 记"喂进去了一段"（`feed_memory` 成功写入后调；整块投喂时一次调用 = 一段）。 */
+  noteFeedSegment(count = 1): void {
+    if (!Number.isFinite(count) || count <= 0) return
+    this.feedSegmentsThisTurn += Math.trunc(count)
+  }
+
+  /**
+   * 取走本轮的喂入段数**并清零**（`turn/end` 上用来推进投喂游标）。
+   *
+   * 为什么是"取走"而不是"读"：轮末推进游标这件事**必须只发生一次**。
+   * 若两条路径（轮末钩子 + 某个兜底）各读一次，游标会被推进两次 ⇒ **跳段**。
+   * 与 `recallThisTurn` 同一个道理（那里的注释写着"累计 2 次之后永久失效"）。
+   */
+  consumeFedSegments(): number {
+    const value = this.feedSegmentsThisTurn
+    this.feedSegmentsThisTurn = 0
+    return value
+  }
+
+  /**
+   * 观测当前短期 token 数（宿主 tokenMeter 或网关估算）。
+   *
+   * ## ★ 真实调用点（不要删）
+   *
+   * `index.ts` 的 `registerTurnAccounting()` —— 在 `turn/end` 上用**真实读数**写：
+   *  1. 优先 `ctx.tokenMeter.measure(session).totalTokens`（宿主权威计量）；
+   *  2. 退化到本轮最后一条 `assistant/message` 的 `usage`（provider 报的账）。
+   * 拿不到真实读数时**宁可不写**，也不写 0 —— 0 会让 `decideCompaction` 判 `too_thin`。
+   */
+  observeShortTokens(tokens: number): void {
+    this.setState('acct_short_tokens', String(Math.max(0, Math.trunc(tokens))))
+  }
+
+  /** PLAN §7.6 的 `reset_policy`（唯一有文档的值是 `on_compaction`；基线里也只有它）。 */
+  private recallResetPolicy(): string {
+    return String(defaultFor<unknown>('recall.resetPolicy'))
+  }
+
+  /**
+   * ★★ 2026-10-11（用户裁定「**B 的设计可以**」，见 `FIX_PLAN.md` §58 / §68）：
+   * **人格名字的来源** —— 记忆（这里）优先，**取不到就留空**。
+   *
+   * ## 用户的设计
+   * 「人格名字不是多次声明应当**由记忆决定**而不由提示词决定吗？
+   *   如果确实需要由提示词决定，也应该是一个**工具**，**初始为空**，可以**由模型修改**啊。」
+   * ⇒ ★ **首选由记忆决定**；退一步 ⇒ **工具**、**初始为空**、**模型可写**、
+   *   渲染时**从记忆取、取不到留空**（★ **不回退到 `sample`**）。
+   *
+   * ## 为什么存在 `forlife_state` 而不是"一条记忆条目"
+   * ★ 它是**稳定前缀**里的一个变量（`prompt-text.ts` 把 `persona_name` 标为 `dynamic: false`，
+   *   理由写在那儿：动态变量进前缀等于每轮换前缀、**缓存全废**）。
+   * ★ 而"取名字"必须**每轮都拿得到、且不产生副作用**（`PLAN.MD:72`「渲染是纯函数」）
+   *   ⇒ ★ 一条 `forlife_state` 行是**最便宜、最确定**的读法；
+   *   把它做成"检索记忆条目"会让**渲染变成一次检索**（还要处理没命中、多条命中、过期…）。
+   * ★★ 模型仍然**通过工具**写它（`set_persona_name`）—— 那正是用户说的"由模型修改"。
+   *
+   * ## ★ 取不到 ⇒ **留空**（不回退到 `sample`）
+   * `sample`（`PROMPT_VARIABLES` 里的「团子」）**只服务面板预览**，生产路径从不读它。
+   * ⇒ 这里**没有** `?? '团子'` 这种回退：★ 名字没被记下来之前，就是**没有名字**。
+   *
+   * @returns 稳定变量的取值（`{{persona_name}}` 这类），已把记忆里的名字合并进去。
+   */
+  promptVariables(): Readonly<Record<string, string>> {
+    const base = this.config.promptVariables
+    const remembered = (this.getState(PERSONA_NAME_STATE_KEY) ?? '').trim()
+    // ★ 空 ⇒ 不覆盖：让基线的值（默认也是空）照原样留着，而不是塞一个空串把别人配的值顶掉
+    if (remembered === '') return base
+    return { ...base, persona_name: remembered }
+  }
+
+  /**
+   * ★★ 2026-10-11：把名字写进**记忆**（`forlife_state`），供 `promptVariables()` 读回。
+   *
+   * ★ 传空串 ⇒ **清除**（回到"还没有名字"的状态）—— 这是用户要的"初始为空"的可逆版本。
+   * ★ 校验放在**写入口**（而不是读出口）：脏值一旦进库，每一轮渲染都要再防一次。
+   *
+   * @param name - 新的名字；空串表示清除。
+   * @returns 实际写入的值（清除时为空串）。
+   */
+  setPersonaName(name: string): string {
+    const cleaned = name.trim()
+    if (cleaned === '') {
+      this.setState(PERSONA_NAME_STATE_KEY, '')
+      return ''
+    }
+    const problem = personaNameProblem(cleaned)
+    if (problem !== undefined) throw new Error(problem)
+    this.setState(PERSONA_NAME_STATE_KEY, cleaned)
+    return cleaned
+  }
+
+  /** 当前记下来的名字（没有则为空串）。 */
+  personaName(): string {
+    return (this.getState(PERSONA_NAME_STATE_KEY) ?? '').trim()
+  }
+
+  /**
+   * ★★ 2026-10-11（用户裁定，`FIX_PLAN.md` §69）：**沉降循环间隔由模型和外部共同决定**。
+   *
+   * ## 用户原话
+   * 「沉降循环不用 30 分钟一轮这么频繁，可以**可调**，**最低为惰性**
+   *  （即**被动模式，不主动通过计时器来触发**）同样由**模型和外部共同决定**，
+   *   且在**工具的说明中提示 AI 越低越好（遗忘慢、省钱）**，**默认为惰性**」
+   *
+   * ## 三档来源（从高到低）
+   * ① `FORLIFE_SETTLE_INTERVAL_MS`（**外部**，运维显式配置）
+   * ② ★ **`forlife_state['settle_interval_ms']`**（**模型**用工具写的）← 本方法读它
+   * ③ 基线 `tiering.settleIntervalMs`（**默认 0 = 惰性**）
+   *
+   * ★ 返回 `undefined` = "模型没表过态"（让上层用 ①/③）；
+   * ★ 返回 `0` = 模型明确选了**惰性**（合法值，不是"没表态"）。
+   *
+   * @returns 模型设的间隔（毫秒）；没设过则 `undefined`。
+   */
+  settleIntervalOverrideMs(): number | undefined {
+    const raw = (this.getState(SETTLE_INTERVAL_STATE_KEY) ?? '').trim()
+    if (raw === '') return undefined
+    const n = Number(raw)
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : undefined
+  }
+
+  /**
+   * ★★ 2026-10-11（§69）：模型设置沉降间隔（毫秒）。★ **0 = 惰性**（合法）。
+   *
+   * ★ 写完**立刻踢一下定时器**（`reconfigure()`）—— 否则从"惰性"切到"定时"时，
+   *   **没有任何东西会醒来发现配置变了**（惰性意味着根本没排计时器）。
+   *
+   * @param intervalMs - 间隔毫秒；`0` = 惰性。
+   * @returns 实际写入的值。
+   */
+  setSettleInterval(intervalMs: number): number {
+    if (!Number.isFinite(intervalMs) || intervalMs < 0) {
+      throw new Error(`间隔必须是不小于 0 的毫秒数（0 = 惰性），收到：${String(intervalMs)}`)
+    }
+    const ms = Math.trunc(intervalMs)
+    this.setState(SETTLE_INTERVAL_STATE_KEY, String(ms))
+    this.settleTimer?.reconfigure()
+    return ms
+  }
+
+  /**
+   * ★ 把沉降定时器交给运行时 —— 只为了一件事：模型改间隔之后能**立刻**生效。
+   * ★ 由 `index.ts` 在启动定时器之后调用（顺序反过来不行：定时器要先存在）。
+   *
+   * @param timer - 只用到 `reconfigure()`（不依赖 `SettleTimer` 的完整形状，便于测试注入）。
+   */
+  attachSettleTimer(timer: { reconfigure: () => void }): void {
+    this.settleTimer = timer
+  }
+
+  /**
+   * 取裁决用的统计（PLAN §4.4）。
+   *
+   * ## ★★ 2026-10-11（`FIX_PLAN.md` §61 缺口②）：分母换成 **L4 自己的预算**
+   *
+   * 参数原来叫 `contextWindowTokens`、默认 **128k** —— ★ 那是**错的**：
+   * `PLAN.MD` §4.2 说「短期 token **占比** ≥ 50% 触发压缩」、§4.4 说「占比 ≥ 75% 强制绕过冷却期」，
+   * ★ 而按 `PLAN.MD` 附录 A，**L4 的上限是总上下文的 10%**（1M ⇒ **100k**）。
+   * ⇒ ★ 拿 128k 或 1M 当分母，会把 50% 推到 64k/500k —— **而 L4 只有 100k 可用**
+   *   ⇒ ★ **L4 早爆 5 倍了判据才响**（这正是 `compaction_runs` 恒为 0 的一部分原因）。
+   *
+   * ★ 真机证据（改前）：`acct_short_tokens = 21844` ⇒ 按 128k 算 **17.1%**、按 1M 算 **2.2%**，
+   *   两条都远不到 50%；★ 按 100k 算 ⇒ **21.8%** —— 触发点回到 **PLAN 原文「50%」的语义**上。
+   *
+   * @param shortBudgetTokens - **L4 的预算**（基线 `memory.shortBudgetTokens`，10% 总上下文）。
+   *   ★ 不传则读基线；基线若被清成 0 会退化成"占比恒为 0"（见下面的守卫），**不会**除零。
+   * @returns 裁决输入。
+   */
+  compactionStats(shortBudgetTokens?: number): {
+    shortTokens: number
+    turnsSinceLast: number
+    toolCallsSinceLast: number
+    tokenDeltaSinceLast: number
+    timeSinceLastMs: number
+    shortRatio: number
+    hasPreviousCompaction: boolean
+  } {
+    const shortTokens = Number(this.getState('acct_short_tokens') ?? '0')
+    const atLast = this.getState('acct_tokens_at_last_compaction')
+    const lastAt = this.getState('acct_last_compaction_at')
+    // ★★ 2026-10-11（§61 缺口②）：分母是 **L4 自己的预算**，不是上下文窗口。
+    //   为什么不写死数字：本仓铁律「代码里的默认值只能从基线派生」（`param-consumption.test.ts` 守着）。
+    // ★ 优先级：显式传参 > config（测试用）> 基线（生产走这条）。
+    const shortBudget =
+      shortBudgetTokens ??
+      (this.config.shortBudgetTokens > 0
+        ? this.config.shortBudgetTokens
+        : defaultFor<number>('memory.shortBudgetTokens'))
+    return {
+      shortTokens,
+      turnsSinceLast: Number(this.getState('acct_turns_since_compaction') ?? '0'),
+      toolCallsSinceLast: Number(this.getState('acct_toolcalls_since_compaction') ?? '0'),
+      tokenDeltaSinceLast: atLast === undefined ? shortTokens : Math.max(0, shortTokens - Number(atLast)),
+      timeSinceLastMs: lastAt === undefined ? Number.MAX_SAFE_INTEGER : Date.now() - Date.parse(lastAt),
+      shortRatio: shortBudget <= 0 ? 0 : shortTokens / shortBudget,
+      hasPreviousCompaction: lastAt !== undefined,
+    }
+  }
+
+  /**
+   * 记录模型发起的压缩请求（已通过 §4.4 裁决）。
+   *
+   * 为什么是"入队"而不是直接压：**工具执行上下文里没有 agent**（只有 callId/signal/deferContext），
+   * 而压缩必须要 agent 才能改会话表面。所以工具只负责"裁决 + 排队"，
+   * 由引擎在下一次 `compactIfNeeded` 时用宿主的 `context-overflow` 语义强制执行
+   * （该语义按文档就是"绕过常规阈值与保留尾部策略"，正是我们要的效果）。
+   */
+  requestCompaction(reason: string): void {
+    this.setState('acct_pending_compaction', JSON.stringify({ reason, at: new Date().toISOString() }))
+  }
+
+  /** 取出并清空待执行的压缩请求。 */
+  takePendingCompactionRequest(): { readonly reason: string; readonly at: string } | undefined {
+    const raw = this.getState('acct_pending_compaction')
+    if (raw === undefined) return undefined
+    this.setState('acct_pending_compaction', '')
+    try {
+      const parsed = JSON.parse(raw) as { reason?: string; at?: string }
+      return { reason: parsed.reason ?? '(未说明)', at: parsed.at ?? '' }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 用 PLAN §4.4 裁决一次压缩请求（工具与引擎共用同一套判据）。
+   *
+   * ★★ 2026-10-11（§61 缺口②）：**参数去掉了**。
+   *   它原来收一个 `contextWindowTokens` 并把它当"短期占比"的分母 —— 那是错的
+   *   （见 `compactionStats()` 的说明：分母该是 **L4 自己的预算**，`PLAN.MD` 附录 A 的 10%）。
+   *   ★ 它**只有一个调用者**（`tools.ts`，且不传参）⇒ 去掉参数是安全的。
+   *
+   * @returns 裁决结果（与 §4.4 的反馈 JSON 字段一致）。
+   */
+  evaluateCompactionRequest(): ReturnType<typeof decideCompaction> {
+    return decideCompaction(this.compactionStats(), {})
+  }
+
+  /**
+   * 生效的提示词文本（P1/P2）。
+   *
+   * 走一层内存缓存：宿主的函数型 section **每次装配都会重算**，
+   * 每次装配都去查库 + 解析版本是没必要的开销。缓存键是"当前 active 版本 id"，
+   * 所以保存新版本后一次调用就会自然换新（不需要手工清缓存也能生效），
+   * `invalidatePromptCache()` 只是让"立刻生效"更确定。
+   *
+   * @param slug - 槽位。
+   * @returns 文本（没有则返回空串：宿主会丢弃空段）。
+   */
+  promptText(slug: PromptSlug): string {
+    const active = activePrompt(this.db, slug)
+    const key = `${slug}:${active?.id ?? ''}`
+    const cached = this.promptCache.get(key)
+    if (cached !== undefined) return cached
+    const text = active?.text ?? ''
+    // 只保留当前版本的缓存（版本会不断新增，不清会越攒越多）
+    for (const existing of [...this.promptCache.keys()]) {
+      if (existing.startsWith(`${slug}:`) && existing !== key) this.promptCache.delete(existing)
+    }
+    this.promptCache.set(key, text)
+    return text
+  }
+
+  /** 清掉提示词缓存（保存/回滚后调用，让"下一轮生效"更确定）。 */
+  invalidatePromptCache(): void {
+    this.promptCache.clear()
+  }
+
+  /**
+   * 当前正在处理的 QQ 会话（若有）。
+   *
+   * 用途：**溯源标记**（§2.17.5）。模型调 `remember` 时不必自己填 scope ——
+   * 它很可能不知道该填什么。运行时从"当前 running 轮次"推出会话键，
+   * 于是每条记忆天然带上"这是谁说的/在哪个群发生的"。
+   *
+   * 统一记忆、不做隔离：这个标记只用于标注来源与将来溯源自查，不用于隔离。
+   */
+  currentConversationScope(): string | undefined {
+    const row = this.db
+      .prepare("SELECT conversation_key FROM qq_turns WHERE status = 'running' ORDER BY started_at DESC LIMIT 1")
+      .get() as { conversation_key: string } | undefined
+    return row?.conversation_key
+  }
+
+  /**
+   * QQ 传输层状态（面板显示"QQ 端连没连上"）。
+   *
+   * 传输层活在网关进程里，而面板接口活在 DSH 进程里 —— 所以这里读的是**共享库里的事实**：
+   * 最后一次入站/出站的时间。比"内存里的连接标志"更诚实：
+   * 网关挂了但 DSH 还活着时，内存标志会是错的，而库里的时间戳不会撒谎。
+   */
+  transportStatus(): { readonly connectedEvidence: boolean; readonly lastInboundAt: string | null; readonly lastOutboundAt: string | null } {
+    const inbound = this.db.prepare('SELECT max(received_at) AS at FROM qq_inbox').get() as { at: string | null }
+    const outbound = this.db.prepare('SELECT max(sent_at) AS at FROM qq_outbox').get() as { at: string | null }
+    const at = (value: string | null): string | null => (value === null ? null : value)
+    const recent = (value: string | null): boolean => value !== null && Date.now() - Date.parse(value) < 300_000
+    return {
+      connectedEvidence: recent(at(inbound.at)) || recent(at(outbound.at)),
+      lastInboundAt: at(inbound.at),
+      lastOutboundAt: at(outbound.at),
+    }
+  }
+
+  /** 提示词文本缓存（键：`slug:revisionId`）。 */
+  private readonly promptCache = new Map<string, string>()
+
+  /**
+   * 生效的时钟设置（会话级覆盖 > 全局）。
+   *
+   * 三层时区：`systemTimezone`（记录用，**一律 UTC**）/ `conversationTimezone`（怎么理解）/
+   * `displayTimezone`（给人看）。这里返回的是"与当前会话对话时该用哪一套"。
+   *
+   * @param conversationKey - 会话键；不给则用当前 QQ 会话。
+   * @returns 生效设置与来源（来源要显示，才能解释"这个时区是谁定的"）。
+   */
+  clockSettings(conversationKey?: string): {
+    readonly systemTimezone: string
+    readonly conversationTimezone: string
+    readonly displayTimezone: string
+    readonly hour24: boolean
+    readonly source: string
+  } {
+    const configured = defaultClockConfig()
+    const scope = conversationKey ?? this.currentConversationScope()
+    const override = scope === undefined ? undefined : getConversationClock(this.db, scope)
+    return {
+      systemTimezone: configured.systemTimezone,
+      conversationTimezone: override?.timezone ?? configured.conversationTimezone,
+      displayTimezone: configured.displayTimezone,
+      hour24: override?.hour24 ?? configured.hour24,
+      source: override?.source ?? 'default',
+    }
+  }
+
+  /** 设置某会话的时区（带优先级保护：低优先级不能覆盖高优先级）。 */
+  setConversationClock(
+    scope: string,
+    input: { readonly timezone: string; readonly hour24?: boolean; readonly source: 'user_set' | 'model_note' | 'small_model_suggest'; readonly reason?: string },
+  ): boolean {
+    return setConversationClock(this.db, {
+      scope,
+      timezone: input.timezone,
+      ...(input.hour24 === undefined ? {} : { hour24: input.hour24 }),
+      source: input.source,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    })
+  }
+
+  /** 写一条待确认的时钟建议（**不生效**）。 */
+  setPendingClockSuggestion(
+    scope: string,
+    input: { readonly timezone: string; readonly confidence: string; readonly origin: string; readonly reason?: string },
+  ): void {
+    setClockSuggestion(this.db, {
+      scope,
+      timezone: input.timezone,
+      confidence: input.confidence,
+      origin: input.origin,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
+    })
+  }
+
+  /** 读某会话的待确认建议。 */
+  pendingClockSuggestion(scope?: string): ReturnType<typeof getClockSuggestion> {
+    const target = scope ?? this.currentConversationScope()
+    return target === undefined ? undefined : getClockSuggestion(this.db, target)
+  }
+
+  /** 列出全部按会话设置的时区。 */
+  listConversationClocks(): ReturnType<typeof listConversationClocks> {
+    return listConversationClocks(this.db)
+  }
+
+  /**
+   * 上一次与该会话交互（收或发）的时刻。
+   *
+   * 用于"距上次交互多久"这个锚点 —— 模型不必自己做时间算术（§2.15.1 根因 9）。
+   *
+   * @param conversationKey - 会话键。
+   * @returns 时刻，或 undefined（没有记录）。
+   */
+  lastInteractionAt(conversationKey?: string): Date | undefined {
+    const key = conversationKey ?? this.currentConversationScope()
+    if (key === undefined) return undefined
+    const row = this.db.prepare('SELECT max(at) AS at FROM qq_turns WHERE conversation_key = ?').get(key) as { at: string | null }
+    return row.at === null ? undefined : new Date(row.at)
+  }
+
+  /** 上一次"行动"（真的发出了东西）的时刻。 */
+  lastActionAt(): Date | undefined {
+    const row = this.db.prepare('SELECT max(sent_at) AS at FROM qq_outbox').get() as { at: string | null }
+    return row.at === null ? undefined : new Date(row.at)
+  }
+
+  /** 当前会话 id（缓存采集与读数落库要关联会话）。 */
+  currentSessionId(): string | undefined {
+    const row = this.db
+      .prepare("SELECT session_id FROM qq_turns WHERE status = 'running' AND session_id IS NOT NULL ORDER BY started_at DESC LIMIT 1")
+      .get() as { session_id: string } | undefined
+    return row?.session_id
+  }
+
+  // ── 阶段 5：档位覆盖与路由观测 ──────────────────────────────────────────
+
+  /** 手动档位覆盖（可撤销）。进程内状态：重启后回到自动判定（那是安全方向）。 */
+  // eslint-disable-next-line @typescript-eslint/member-ordering
+  private tierOverrideValue: TierOverride | undefined
+
+  /**
+   * 写一行运行时日志（工具层要留痕：切换档位这种事必须能被看到）。
+   *
+   * **必须是箭头函数属性**：它会被当作回调传给 `openDatabase({ log })`，
+   * 普通方法那样传会丢掉 `this`（真机启动时报 "Cannot read properties of undefined"）。
+   * 刻意只暴露"写日志"而不是整个 logger：工具层不该能改日志配置。
+   */
+  readonly log = (message: string): void => {
+    this.logger(message)
+  }
+
+  /**
+   * 路由表播种用的默认模型（来自配置）。
+   *
+   * 刻意只暴露这两个值而不是整个 config：播种只需要它们，
+   * 而 `config` 里有存储路径这类不该被别处乱动的东西。
+   */
+  defaultRouteModel(): { readonly provider: string; readonly model: string } {
+    return { provider: this.config.defaultProvider, model: this.config.defaultModel }
+  }
+
+  /** 当前的手动档位覆盖。 */
+  tierOverride(): TierOverride | undefined {
+    return this.tierOverrideValue
+  }
+
+  /** 设置手动档位覆盖。 */
+  setTierOverride(override: TierOverride): void {
+    this.tierOverrideValue = override
+  }
+
+  /** 撤销手动档位覆盖（回到自动判定）。 */
+  clearTierOverride(): void {
+    this.tierOverrideValue = undefined
+  }
+
+  /** 最近的切换记录（冷却与预算的依据）。 */
+  recentSwitches(): readonly { readonly at: string }[] {
+    return this.db
+      .prepare("SELECT at FROM routing_log WHERE switched = 1 AND at >= ? ORDER BY at DESC")
+      .all(new Date(Date.now() - 3_600_000).toISOString()) as unknown as { at: string }[]
+  }
+
+  /** 近 24 小时的路由统计（面板与 router_status 共用）。 */
+  routingStats24h(): { readonly degraded: number; readonly total: number } {
+    const row = this.db
+      .prepare('SELECT count(*) AS total, coalesce(sum(degraded), 0) AS degraded FROM routing_log WHERE at >= ?')
+      .get(new Date(Date.now() - 24 * 3600_000).toISOString()) as { total: number; degraded: number }
+    return { total: row.total, degraded: row.degraded }
+  }
+
+  /** 记一条路由决策（工具与面板共用，保证字段一致）。 */
+  recordRoutingDecision(input: Parameters<typeof recordRoutingDecision>[1]): void {
+    recordRoutingDecision(this.db, input)
+  }
+
+  /** 列路由表。 */
+  listModelRoutes(role?: string): ReturnType<typeof listModelRoutes> {
+    return listModelRoutes(this.db, role)
+  }
+
+  // ── 阶段 5：端点探测、试跑与模式切换 ────────────────────────────────────
+
+  /** 设备探测结果缓存（探测要跑外部命令，不能每轮都跑）。 */
+  private deviceProbeCache: DeviceProbe | undefined
+
+  /**
+   * 探测宿主的加速能力（**懒执行 + 缓存**）。
+   *
+   * 为什么懒执行：nvidia-smi / clinfo 之类要几十到几百毫秒，
+   * 放在启动路径上会让每次开插件都变慢；而只有在"模型与路由"页真的要看的时候才需要它。
+   * 探测结果是**建议**不是判决 —— 面板上可以手动覆盖。
+   */
+  deviceProbe(): DeviceProbe {
+    if (this.deviceProbeCache !== undefined) return this.deviceProbeCache
+    const probed = probeDevices({
+      platform: process.platform,
+      exists: (path) => existsSync(path),
+      listDir: (path) => {
+        try {
+          return readdirSync(path)
+        } catch {
+          return []
+        }
+      },
+      run: (command, args) => {
+        try {
+          // 短超时：探测命令挂住会拖死面板请求
+          const stdout = execFileSync(command, [...args], { encoding: 'utf8', timeout: 3_000, stdio: ['ignore', 'pipe', 'ignore'] })
+          return { ok: true, stdout }
+        } catch {
+          return { ok: false, stdout: '' }
+        }
+      },
+    })
+    this.deviceProbeCache = probed
+    return probed
+  }
+
+  /** 试跑历史（面板显示"上次试跑真实延迟是多少"）。 */
+  probeHistory(): readonly { readonly at: string; readonly endpointId: string; readonly ok: boolean; readonly latencyMs: number | null; readonly note: string | null }[] {
+    // 读**专门的探测日志表**：第一版我从模式切换审计里捞，结果查了一个不存在的列
+    // （试跑结果和模式切换是两类事件，塞一张表里迟早出这种事）
+    return listEndpointProbes(this.db, 10).map((row) => ({
+      at: String(row['at']),
+      endpointId: String(row['endpoint_id']),
+      ok: row['ok'] === 1,
+      latencyMs: row['latency_ms'] === null ? null : Number(row['latency_ms']),
+      note: row['note'] === null ? null : String(row['note']),
+    }))
+  }
+
+  /**
+   * 切换端点的运行模式（幂等 + 排水 + 失败回滚 + 审计，§2.13.2）。
+   *
+   * **诚实说明**：真正把容器停下/拉起需要容器执行器（阶段 10 的部署接线）。
+   * 对不需要容器的端点（cloud-api / host-native / external-api）这里就是纯粹的登记切换；
+   * 对本地容器端点，如果没有接上执行器，会**明确失败**而不是假装切成功 ——
+   * 假装成功会让面板显示"已按需"，而容器其实还在占内存。
+   *
+   * @param endpointId - 端点 id。
+   * @param mode - 目标模式。
+   * @param reason - 理由（进审计）。
+   * @returns 切换结果。
+   */
+  async switchEndpointMode(
+    endpointId: string,
+    mode: RunMode,
+    reason: string,
+  ): Promise<{ readonly ok: boolean; readonly effectiveMode: string; readonly drained: boolean; readonly rolledBack: boolean; readonly note: string }> {
+    const endpoint = getEndpoint(this.db, endpointId)
+    if (endpoint === undefined) {
+      return { ok: false, effectiveMode: mode, drained: false, rolledBack: false, note: '端点不存在' }
+    }
+
+    const needsContainer = endpoint.type === 'local' || endpoint.type === 'remote-selfhost'
+    const involvesContainerMode = mode === 'resident' || mode === 'on-demand' || endpoint.mode === 'resident' || endpoint.mode === 'on-demand'
+    if (needsContainer && involvesContainerMode && this.containerExecutor === undefined) {
+      const note =
+        '容器端点的模式切换需要容器执行器（阶段 10 的部署接线）。' +
+        '**没有假装切成功**：面板上的模式没有改动，容器仍在按原来的模式运行。'
+      recordModeSwitch(this.db, { endpointId, from: endpoint.mode, to: mode, actor: 'admin', reason, ok: false, note })
+      return { ok: false, effectiveMode: endpoint.mode, drained: false, rolledBack: false, note }
+    }
+
+    const result = await switchMode(
+      { endpointId, from: endpoint.mode as RunMode, to: mode, actor: 'admin', reason },
+      {
+        inFlight: () => this.inFlightRequests(),
+        stopAccepting: async () => {
+          this.acceptingRequests = false
+        },
+        resumeAccepting: async () => {
+          this.acceptingRequests = true
+        },
+        apply: async (request) => {
+          if (this.containerExecutor !== undefined) await this.containerExecutor(request)
+          setEndpointMode(this.db, endpointId, request.to)
+        },
+        audit: (entry) => {
+          recordModeSwitch(this.db, {
+            endpointId: entry.endpointId,
+            from: entry.from,
+            to: entry.to,
+            actor: entry.actor,
+            reason: entry.reason,
+            ok: entry.ok,
+            note: entry.note,
+            at: entry.at,
+          })
+        },
+      },
+    )
+    this.log(`端点 ${endpointId} 模式切换：${endpoint.mode} → ${mode}（${result.note}）`)
+    return { ok: result.ok, effectiveMode: result.effectiveMode, drained: result.drained, rolledBack: result.rolledBack, note: result.note }
+  }
+
+  /** 容器执行器（阶段 10 接线；没接上时容器类切换会明确失败）。 */
+  private containerExecutor: ((request: { readonly endpointId: string; readonly to: string }) => Promise<void>) | undefined
+
+  /** 接上容器执行器（部署接线用）。 */
+  setContainerExecutor(executor: (request: { readonly endpointId: string; readonly to: string }) => Promise<void>): void {
+    this.containerExecutor = executor
+  }
+
+  /**
+   * 一键试跑：真发一次最小请求，记录**真实延迟**与**实际生效的后端**。
+   *
+   * @param endpointId - 端点 id。
+   * @param model - 指定模型（不给则用端点第一个）。
+   * @returns 结果（含实际模型列表，用于发现"这个端点其实还有别的模型"）。
+   */
+  async probeEndpoint(
+    endpointId: string,
+    model?: string,
+  ): Promise<{ readonly ok: boolean; readonly latencyMs?: number; readonly models?: readonly string[]; readonly error?: string; readonly note?: string }> {
+    const endpoint = getEndpoint(this.db, endpointId)
+    if (endpoint === undefined) return { ok: false, error: '端点不存在' }
+
+    const base = endpoint.base_url.replace(/\/$/, '')
+    const started = Date.now()
+    try {
+      const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(8_000) })
+      const latencyMs = Date.now() - started
+      if (!response.ok) {
+        recordEndpointHealth(this.db, endpointId, { ok: false, latencyMs, note: `HTTP ${String(response.status)}` })
+        recordEndpointProbe(this.db, { endpointId, model: model ?? null, ok: false, latencyMs, note: `HTTP ${String(response.status)}` })
+        return { ok: false, latencyMs, error: `HTTP ${String(response.status)}` }
+      }
+      const body = (await response.json()) as { data?: { id?: string }[] }
+      const models = (body.data ?? []).map((item) => item.id ?? '').filter((id) => id !== '')
+      recordEndpointHealth(this.db, endpointId, {
+        ok: true,
+        latencyMs,
+        note: `试跑成功，发现 ${String(models.length)} 个模型`,
+      })
+      recordEndpointProbe(this.db, { endpointId, model: model ?? null, ok: true, latencyMs, note: `延迟 ${String(latencyMs)}ms`, models })
+      return {
+        ok: true,
+        latencyMs,
+        models,
+        note: '延迟是**真实**往返时间（本地容器通常在 1–5ms，局域网外挂 1–20ms，云 provider 100ms+）',
+      }
+    } catch (error) {
+      const latencyMs = Date.now() - started
+      const note = String(error)
+      recordEndpointHealth(this.db, endpointId, { ok: false, latencyMs, note })
+      recordEndpointProbe(this.db, { endpointId, model: model ?? null, ok: false, latencyMs, note })
+      return { ok: false, latencyMs, error: note }
+    }
+  }
+
+  /** 在途请求数（排水依据；没有网关时恒为 0）。 */
+  private inFlightRequestsValue = 0
+
+  /** 当前在途请求数。 */
+  inFlightRequests(): number {
+    return this.inFlightRequestsValue
+  }
+
+  /** 记一次在途请求的开始/结束（网关调用）。 */
+  markInFlight(delta: number): void {
+    this.inFlightRequestsValue = Math.max(0, this.inFlightRequestsValue + delta)
+  }
+
+  /** 是否还在接受新请求（排水期间为 false）。 */
+  acceptingRequests = true
+
+  /**
+   * 压缩成功后重置记账基线（在压缩事务提交后调用）。
+   *
+   * **真实调用点**：`compaction-engine.ts` 的 `applyCompactionDecision()`
+   * （压缩事务 `commit` 之后那一行）—— 那是全仓唯一"压缩真的成功"的位置。
+   */
+  resetCompactionAccounting(): void {
+    const now = new Date().toISOString()
+    this.setState('acct_turns_since_compaction', '0')
+    this.setState('acct_toolcalls_since_compaction', '0')
+    this.setState('acct_tokens_at_last_compaction', this.getState('acct_short_tokens') ?? '0')
+    this.setState('acct_last_compaction_at', now)
+    // ★ 召回周期额度也归零：PLAN §7.6 的 `reset_policy = on_compaction`。
+    // 没有这一跳的话 `resetCycle()` 是**零调用**的死代码，
+    // 于是 `recallThisCycle` 只会单向增长 ⇒ 进程生命周期内累计 5 次 recall 之后
+    // **模型再也想不起长期记忆**（本仓最致命的一条接线缺口）。
+    this.resetCycle()
+  }
+
+  /**
+   * 沉降维护任务：把最久未访问的活跃条目降级为碎片（PLAN §4.1 的第二类压缩）。
+   *
+   * 与压缩的区别：**不调用模型**，纯系统维护 —— 因此可以在任意时刻跑（定时或占比触发），
+   * 代价只是把全文挪进长期记忆、把一个中期条目换成一行 [F→] 指针。
+   *
+   * @param options - 触发条件与批量上限。
+   * @returns 本次沉降统计。
+   */
+  settle(options: { readonly olderThanDays?: number; readonly limit?: number } = {}): {
+    readonly fragmented: number
+    readonly archived: number
+    readonly notes: readonly string[]
+  } {
+    // ★★★ 2026-10-11（`FIX_PLAN.md` §67 / 缺口④）：**L4 压缩进行中 ⇒ 暂不触发 L3 沉降**。
+    //
+    // ## 用户原话
+    // 「当活跃上下文压缩时，中期记忆达到上限**暂时不触发**中期压缩，
+    //   而是**等到短期的完毕之后**才触发中期；★ 也**可以只先触发中期**。」
+    //
+    // ## 为什么（不是"保险起见"）
+    // `PLAN.MD` §1.3 末句：「压缩周期内 L0-L4 全程只追加，缓存持续命中；
+    // **仅在压缩事件发生时 L3 尾部追加、L4 替换，缓存未命中一次**。」
+    // ⇒ ★ 两个压缩**同时**动，就是让 L3/L4 边界**连续失效**（未命中两次甚至更多）。
+    //
+    // ## 判据：`compaction_runs` 里有 `phase='started'` 的行
+    // ★ 这是**现成的**（`compaction-runs.ts` 的 `pendingCompactionRuns`）：
+    //   开始压缩时 `INSERT … phase='started', ended_at=NULL`，
+    //   提交/中止时才写 `ended_at` ⇒ ★ "有一行没结束"就等于"正在跑"。
+    // ★ 不用新表、不用新标志位。
+    //
+    // ## ⚠️ 会不会被残留行**永久堵死**？不会
+    // `recoverPendingCompactions(db)`（`compaction-runs.ts:178`）在**启动时**回滚未完成的运行
+    // ⇒ ★ 崩在压缩中途的那一行，下次启动就被收掉了。
+    // ★ 真机现状（2026-10-11）：`compaction_runs` **表是空的** ⇒ 未完成 = 0 ⇒ 不堵。
+    //
+    // ★ **"也可以只先触发中期"**：本守卫只在"L4 正在跑"时让路；
+    //   没有 L4 在跑时，L3 沉降**照常**（就是下面那条路）—— ★ 两种情形都覆盖了。
+    const pendingCompactions = pendingCompactionRuns(this.db)
+    if (pendingCompactions.length > 0) {
+      return {
+        fragmented: 0,
+        archived: 0,
+        notes: [
+          `L4 压缩进行中（${String(pendingCompactions.length)} 个未完成的运行）` +
+            ' ⇒ 按 PLAN §1.3/§4.1 **暂不触发 L3 沉降**，等它完毕（否则 L3/L4 边界会连续失效）',
+        ],
+      }
+    }
+
+    const olderThanDays = options.olderThanDays ?? defaultFor<number>('tiering.settleAfterDays')
+    const limit = options.limit ?? defaultFor<number>('tiering.settleBatchSize')
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString()
+
+    // ★★★ 2026-10-09（FIX_PLAN.md D1 / P0-b）：PLAN.MD:119 ——
+    //   中期→长期沉降的触发是「中期占比、访问频率、定时」**★三者或★**。
+    //
+    //   原实现是单一时间条件的 `.filter`，而且被当成**★前置过滤器★**：
+    //   候选集先被它砍光，另两个条件连求值机会都没有。于是今天写入的条目
+    //   （created_at 全是今天）永远拿不到候选 ⇒ `long_memory_entries` 恒为 0。
+    //
+    //   ★ 2026-10-10：第三条「**访问频率**」也实现了 —— 用户裁定 ⑥：
+    //   「access_count **1 个月内没有任何访问/间接访问**」⇒ 阈值
+    //   `tiering.frequencyIdleDays = 30`。
+    //
+    //   ★★ 2026-10-11 更正（`FIX_PLAN.md` §62）：这里原来写的是
+    //   「`recall` 路径会 `touchMidEntry` 每一条**选进中期窗口**的条目（本文件 `:553`）」
+    //   —— **那句与代码不符**：
+    //     - `:553` touch 的是 **`recall_longterm` 自己的 FTS 命中**，**不是**"选进窗口"的那批；
+    //     - ★ **渲染路径（`renderView()` / `selectMidWindow()`）一处写操作都没有**。
+    //   ⇒ 所以 `last_accessed_at` 反映的**只有"模型主动取回"这一种访问**。
+    //
+    //   ★ 而"被选进窗口**不该**算访问"是**对的**、也是**必须**的：
+    //     窗口**每轮都重渲染**；若它算访问，则窗口里的条目**永远是"刚用过"**
+    //     ⇒ 沉降的"访问频率"这条**永远不成立** ⇒ 中期区只增不减。
+    //   ★ 依据 `PLAN.MD:72`：「表是权威，窗口是渲染缓存。**渲染是纯函数，不产生副作用**。」
+    //     用户 2026-10-11 也重申：「**触发中期记忆压缩时的任何读取操作不应该修改标记**」。
+    const allActive = this.listEntries({ status: ['active'] })
+    const settleStats = this.stats()
+    const midBudget = defaultFor<number>('memory.midBudgetTokens')
+    const ratioMin = defaultFor<number>('fragment.activeBudgetRatioMin')
+    const idleDays = defaultFor<number>('tiering.frequencyIdleDays')
+    const midRatio = midBudget > 0 ? settleStats.activeTokens / midBudget : 0
+    const idleCutoff = new Date(Date.now() - idleDays * 24 * 60 * 60 * 1000).toISOString()
+    const byTimer = allActive.filter((e) => (e.last_accessed_at ?? e.created_at) < cutoff)
+    const byFrequency = allActive.filter((e) => (e.last_accessed_at ?? e.created_at) < idleCutoff)
+    const byRatio = midRatio >= ratioMin ? allActive : []
+    const fired: string[] = []
+    if (byRatio.length > 0) {
+      fired.push(
+        `中期占比 ${(midRatio * 100).toFixed(1)}% ≥ ${(ratioMin * 100).toFixed(0)}%（预算 ${String(midBudget)} token）`,
+      )
+    }
+    if (byFrequency.length > 0) {
+      fired.push(`access frequency: no direct/indirect access within ${String(idleDays)} days`)
+    }
+      if (byTimer.length > 0) fired.push(`timer: not accessed for ${String(olderThanDays)} days`)
+    // ★ 三条是**或**关系 ⇒ 候选是**并集**。
+    //   占比那条一旦成立就已经包含全部 active 条目，所以并集就是全表；
+    //   否则把「访问频率」与「定时」两批合起来（按 id 去重）。
+    //   统一按「最久未访问」排序（`planFragmentation` 期望的就是这一批）。
+    const merged = new Map(allActive.map((e) => [e.id, e]))
+    const pool =
+      byRatio.length > 0
+        ? allActive
+        : [...new Set([...byFrequency, ...byTimer].map((e) => e.id))].map((id) => merged.get(id)!)
+    const candidates = pool
+      .slice()
+      .sort((a, b) =>
+        String(a.last_accessed_at ?? a.created_at).localeCompare(
+          String(b.last_accessed_at ?? b.created_at),
+        ),
+      )
+      .slice(0, limit)
+      .map((e) => ({
+        id: e.id,
+        summary: e.summary,
+        entities: parseEntities(e.entities),
+        tokenCount: e.token_count,
+        lastAccessedAt: e.last_accessed_at,
+        createdAt: e.created_at,
+      }))
+
+    // ⚠️⚠️ 这一句的**措辞是钉死的**，别扩写：
+    //   `acceptance-phase2.test.ts` 的「沉降任务：没有满足条件的条目时不做事
+    //   （**不产生空洞日志**）」用 `assert.deepEqual(result.notes,
+    //   ['没有满足沉降条件的活跃条目'])` **精确断言**了它。
+    //   「没候选就说这一句、不产空洞日志」是**刻意的决定**。
+    //   （2026-10-09 P0-b 我把它扩写成"占比 X% < 80%…⚠️访问频率尚未实现"，
+    //    全量立刻变红 —— 记在这里，免得下一个人再犯。）
+    //   要诊断"为什么没候选"，看 `startSettleTimer` 每轮打的那一行（D6 修的）。
+    if (candidates.length === 0) {
+      return { fragmented: 0, archived: 0, notes: ['no active entries meet the settling conditions'] }
+    }
+
+    const stats = this.stats()
+    const withHints = candidates.map((c) => ({
+      ...c,
+      hintTokens: estimateTokens(makeFragmentHint(c.summary, c.entities).hint),
+    }))
+    const plan = planFragmentation(withHints, stats)
+
+    let fragmented = 0
+    for (const id of plan.toFragment) {
+      const source = this.listEntries().find((e) => e.id === id)
+      if (source === undefined) continue
+      const entities = parseEntities(source.entities)
+      const { hint } = makeFragmentHint(source.summary, entities)
+      const longId = `long_from_${id}`
+      insertLongEntry(this.db, {
+        id: longId,
+        content: source.content ?? source.summary,
+        summary: source.summary,
+        entities,
+        sourceMidIds: [id],
+        sourceScope: source.source_scope,
+      })
+      fragmentMidEntry(this.db, id, longId, hint, estimateTokens(hint))
+      fragmented += 1
+    }
+
+    // 淘汰：把最久未访问的碎片标记 archived（表保留，可恢复；§5.3 第四层）
+    let archived = 0
+    if (stats.fragmentCount >= defaultFor<number>('fragment.maxCount')) {
+      for (const id of plan.toArchive) {
+        archived += Number(
+          this.db.prepare("UPDATE mid_memory_entries SET status = 'archived', revision = revision + 1 WHERE id = ? AND status = 'fragmented'").run(id).changes,
+        )
+      }
+    }
+
+    if (fragmented > 0 || archived > 0) {
+      this.db.prepare("UPDATE forlife_state SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'render_revision'").run()
+      this.cache = undefined
+    }
+    // ★ 触发原因必须并进 notes（D6 的教训：有话说却不说 = 下一轮分不清"没做事"与"没挂上"）
+    return {
+      fragmented,
+      archived,
+      notes: [`triggered by: ${fired.length === 0 ? '(none)' : fired.join('; ')}`, ...plan.notes],
+    }
+  }
+
+  /**
+   * 压缩后重置周期额度（PLAN §7.6 的 `reset_policy = on_compaction`）。
+   *
+   * ## ★ 真实调用点（不要删）
+   *
+   * `resetCompactionAccounting()`（本文件）—— 它由 `compaction-engine.ts` 的
+   * `applyCompactionDecision()` 在**压缩事务提交后**调用 ⇒ "压缩完成时重置"。
+   *
+   * ⚠️ 这个函数以前**全仓零调用**：`recallThisCycle` 只增不减，
+   * 额度（`recall.maxPerCycle=5`）用光之后 `recall_longterm` 永远返回空 +
+   * "已达上限" —— 跑一会儿之后模型再也想不起长期记忆。
+   *
+   * 策略语义（`defaultFor('recall.resetPolicy')`，基线值 `on_compaction`）：
+   *  - `on_compaction`（基线）⇒ 压缩提交时归零（就是本函数的调用点）；
+   *  - `per_turn` / `each_turn` ⇒ 每轮都归零（`beginTurn()` 里做，这里再做一次也无害）；
+   *  - 未知值 ⇒ 按 `on_compaction` 处理并**喊一声**（宁可多给额度，也不能让额度永久锁死）。
+   */
+  resetCycle(): void {
+    const policy = this.recallResetPolicy()
+    if (!isKnownResetPolicy(policy)) {
+      this.log(`⚠️ 未知的 recall.resetPolicy=${policy}：按 on_compaction 处理（否则 recall 额度会永久锁死）`)
+    }
+    this.recallThisTurn = 0
+    this.recallThisCycle = 0
+    this.turnsThisCycle = 1
+    // 追加额度也随周期一起归零（PLAN §7.5「**临时**提升」）：
+    // 否则额度会跨压缩越攒越多，逃生通道就变成了永久扩额。
+    this.turnExtensionBonus = 0
+    this.cycleExtensionBonus = 0
+    this.lastExtensionTurn = undefined
+    this.queriesThisTurn = []
+  }
+
+  /** 关闭（checkpoint + 释放）。 */
+  close(): void {
+    this.opened.close()
+  }
+
+  /** 读一个持久化状态值（记账用；跨重启保留）。 */
+  private getState(key: string): string | undefined {
+    const value = readState(this.db, key)
+    return value === undefined || value === '' ? undefined : value
+  }
+
+  /** 写一个持久化状态值。 */
+  private setState(key: string, value: string): void {
+    writeState(this.db, key, value)
+  }
+
+  /** 计数器自增。 */
+  private bumpCounter(key: string, delta: number): void {
+    this.setState(key, String(Number(this.getState(key) ?? '0') + delta))
+  }
+
+  private budget(maxPerTurn: number, maxPerCycle: number, maxResults: number): RecallBudget {
+    return {
+      maxPerTurn,
+      maxPerCycle,
+      maxResults,
+      usedThisTurn: this.recallThisTurn,
+      usedThisCycle: this.recallThisCycle,
+      remainingThisTurn: Math.max(0, maxPerTurn - this.recallThisTurn),
+      remainingThisCycle: Math.max(0, maxPerCycle - this.recallThisCycle),
+    }
+  }
+
+  /**
+   * 生效的**每轮**上限 = 配置（基线 `recall.maxPerTurn`）+ 已批准的追加。
+   *
+   * 为什么不是直接读配置：逃生通道批准之后额度必须**真的**变宽，
+   * 否则"批准"只是一句话（模型拿到 `granted:true` 却还是被同一道闸门拦住 ——
+   * 那比不批还糟）。
+   */
+  private effectiveMaxPerTurn(): number {
+    return this.config.recallMaxPerTurn + this.turnExtensionBonus
+  }
+
+  /** 生效的**每周期**上限 = 基线 `recall.maxPerCycle` + 已批准的追加。 */
+  private effectiveMaxPerCycle(): number {
+    return defaultFor<number>('recall.maxPerCycle') + this.cycleExtensionBonus
+  }
+
+  /** 还要等几轮才能再申请追加（0 = 现在可以）。 */
+  private extensionCooldownRemaining(cooldownTurns: number): number {
+    const last = this.lastExtensionTurn
+    if (last === undefined) return 0 // 从没批过 ⇒ 不受冷却限制（与压缩裁决同一条纪律）
+    return Math.max(0, cooldownTurns - (this.turnsThisCycle - last))
+  }
+
+  /**
+   * 组装一次 recall 的返回。
+   *
+   * **`budget` 与 `declaration` 只在这里拼** —— 两个形状必须同源，
+   * 否则迟早出现"平铺字段说还剩 3 次、budget 里说还剩 0 次"那种自相矛盾。
+   *
+   * PLAN §7.4 的**联想深度提示**也在这里附加：它是"这一轮第几次检索"的函数，
+   * 而这里是唯一一处把所有成功路径（有命中 / 无命中 / 退查中期）收口的地方 ——
+   * 放在各分支里迟早会漏掉一条（漏掉的那条就是"提示没出现"的 bug）。
+   */
+  private recallResult(
+    entries: readonly LongEntryRow[],
+    maxPerTurn: number,
+    maxPerCycle: number,
+    maxResults: number,
+    note?: string,
+  ): RecallResult {
+    const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    const associationWarn = this.associationWarn()
+    const notes = [
+      ...(associationWarn === undefined ? [] : [associationWarn.hint]),
+      ...(note === undefined ? [] : [note]),
+    ]
+    return {
+      entries,
+      budget,
+      declaration: this.budgetDeclaration(budget),
+      ...(notes.length === 0 ? {} : { note: notes.join('\n') }),
+      ...(associationWarn === undefined ? {} : { associationWarn }),
+    }
+  }
+
+  /**
+   * **联想深度提示**（PLAN §7.4「同轮连续 3 次以上检索时强制附加提示」）。
+   *
+   * `depth` 取 `recallThisTurn`（同一轮内的累计检索次数，含本次）——
+   * "连续"在这里按**同轮累计**读：中间夹了 `remember` 之类的调用也算，
+   * 因为它要防的是"这一轮一直在检索"（那才是过度联想的形状）。
+   *
+   * ## ★ 参数张力：基线值下这条规则**不可达**（除非追加过额度）
+   *
+   * 基线 `recall.associativeDepthWarn = 3`，而 `recall.maxPerTurn = 2`：
+   * 同一轮里第 3 次检索会先被**每轮闸门**（②）拒掉，`recallThisTurn` 到不了 3。
+   * ⇒ **基线参数下这条提示永远不会出现**（PLAN §7.4 与 §7.6 的内部张力，审计 §7.6 点了名）。
+   *
+   * 仍然实现它的理由（三个，缺一个都不足以支撑"留着"）：
+   *  1. **它并非永远不可达** —— `request_recall_extension` 批准后每轮额度会 +`recall.extensionMax`（2），
+   *     变成 4：同一轮里第 3、4 次检索会真的发生，此时提示**必须**出现
+   *     （追加额度买的正是"同一轮再多查几次"，而那正是过度联想的高发场景）；
+   *  2. 参数是可调的（面板/配置能改 `recall.maxPerTurn`）—— 规则读基线、不写死，
+   *     谁调了参数它就跟上；
+   *  3. 不实现的话，"提示缺失"与"规则不存在"从代码上分不开（本仓已栽过 7 次）。
+   */
+  private associationWarn(): AssociationWarn | undefined {
+    const warnAt = defaultFor<number>('recall.associativeDepthWarn')
+    if (warnAt <= 0 || this.recallThisTurn < warnAt) return undefined
+    const depth = this.recallThisTurn
+    return {
+      depth,
+      warnAt,
+      hint:
+        `⚠️ 联想深度提示：你在同一轮里已经连续检索 ${String(depth)} 次。` +
+        '返回的是候选片段、不是最终答案 —— 不要再围绕已命中的模糊片段继续做推测性检索，' +
+        '也不要把不相关的结果强行关联到当前任务。',
+    }
+  }
+
+  /**
+   * 找出"与本次查询几乎同一个"的历史查询（PLAN §7.4）。
+   *
+   * 阈值**读基线** `recall.duplicateSimilarity`（0.9），判据用 PLAN 的**严格大于**
+   * （`> 0.9`，不是 `>=`）——阈值是判据，不是目标值。
+   * 返回相似度最高的那一条（提示里要说出"你刚查过的是哪一句"才可执行）。
+   */
+  private findDuplicateQuery(query: string): DuplicateQueryMatch | undefined {
+    const threshold = defaultFor<number>('recall.duplicateSimilarity')
+    let best: DuplicateQueryMatch | undefined
+    for (const previous of this.queriesThisTurn) {
+      const similarity = querySimilarity(previous, query)
+      if (similarity > threshold && (best === undefined || similarity > best.similarity)) {
+        best = { query: previous, similarity, threshold }
+      }
+    }
+    return best
+  }
+
+  /**
+   * 重复查询的拒绝返回（PLAN §7.4：「…时拒绝并返回 `duplicate_query`」）。
+   *
+   * **必须说清三件事**（少一件模型就会接着撞墙，或者以为系统坏了）：
+   *  ① 你刚查过哪一条（`matchedQuery`）、有多像（`similarity` vs `threshold`）；
+   *  ② 上一次的结果就在上文里（不必再查一遍也拿得到）；
+   *  ③ 真想换个角度时，要换**真正不同**的检索词 —— 而不是换个说法问同一件事。
+   *
+   * 额度已由调用方扣过（见 `recallLongterm` 的说明），所以这里报出的 `used` 与
+   * 真实计数一致，不会被读成"这次没花钱"。
+   */
+  private recallDuplicateRefused(
+    matched: DuplicateQueryMatch,
+    maxPerTurn: number,
+    maxPerCycle: number,
+    maxResults: number,
+  ): RecallResult {
+    const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    const hint = '上一次的结果就在上文里：直接用它作答；确需换个角度时，请换一个**真正不同**的检索词。'
+    const note =
+      `duplicate_query：你刚查过相近的查询「${matched.query}」` +
+      `（近似相似度 ${(matched.similarity * 100).toFixed(0)}% > 阈值 ${String(matched.threshold)}）。` +
+      `${hint}（本次仍计入额度：本周期 ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}。）`
+    return {
+      entries: [],
+      budget,
+      declaration: this.budgetDeclaration(budget),
+      note,
+      refusal: {
+        code: 'duplicate_query',
+        hint,
+        matchedQuery: matched.query,
+        similarity: matched.similarity,
+        threshold: matched.threshold,
+      },
+    }
+  }
+
+  /**
+   * 额度用尽时的返回（PLAN §7.2）：`entries: []` + 完整预算声明 + 指向**真实存在**的
+   * 逃生通道工具。**绝不静默失败** —— 静默被拒时模型只会换个说法反复试。
+   */
+  private recallRefused(
+    kind: 'turn_exhausted' | 'cycle_exhausted',
+    maxPerTurn: number,
+    maxPerCycle: number,
+    maxResults: number,
+  ): RecallResult {
+    const budget = this.budget(maxPerTurn, maxPerCycle, maxResults)
+    const escape = 'If you truly must search more, call request_recall_extension(reason).'
+    const note =
+      kind === 'cycle_exhausted'
+        ? `This turn's search budget is used up (this cycle ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}, ` +
+          `${resetPhrase(this.recallResetPolicy())}). Answer from what you already have. ${escape}`
+        : `This turn's recall limit is reached (${String(budget.maxPerTurn)}; ${String(budget.remainingThisCycle)} left this cycle, and the next turn continues normally). ${escape}`
+    return {
+      entries: [],
+      budget,
+      declaration: this.budgetDeclaration(budget),
+      note,
+      refusal: { code: kind, hint: escape },
+    }
+  }
+
+  /** PLAN §7.1 的预算声明（字段名逐字对齐；数字与重置语义都取真实值）。 */
+  private budgetDeclaration(budget: RecallBudget): RecallBudgetDeclaration {
+    return {
+      used: budget.usedThisCycle,
+      limit: budget.maxPerCycle,
+      remaining: budget.remainingThisCycle,
+      reset_at: this.recallResetPolicy(),
+      queries_this_turn: [...this.queriesThisTurn],
+      hint: this.budgetHint(budget),
+      per_turn: {
+        used: budget.usedThisTurn,
+        limit: budget.maxPerTurn,
+        remaining: budget.remainingThisTurn,
+      },
+      extension: {
+        grantedThisCycle: this.cycleExtensionBonus,
+        maxPerRequest: defaultFor<number>('recall.extensionMax'),
+        cooldownTurns: defaultFor<number>('recall.extensionCooldownTurns'),
+      },
+    }
+  }
+
+  /**
+   * 预算提示文案（按 PLAN §7.1 / §7.2 的样例组织，**数字与重置语义都是真的**）。
+   *
+   * 三句真话缺一句就会误导：
+   *  ① 本周期还剩几次；② 本轮还剩几次（闸门有两道）；③ 不够时该调哪个工具（真名字）。
+   */
+  private budgetHint(budget: RecallBudget): string {
+    const reset = resetPhrase(this.recallResetPolicy())
+    const parts: string[] = []
+    if (budget.remainingThisCycle <= 0) {
+      parts.push(`This turn's search budget is used up (this cycle ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}), ${reset}.`)
+      parts.push('Answer from what you already have; if you truly must search more, call request_recall_extension(reason).')
+    } else {
+      parts.push(
+        `${String(budget.remainingThisCycle)} searches left (this cycle ${String(budget.usedThisCycle)}/${String(budget.maxPerCycle)}), ${reset}.`,
+      )
+      if (budget.remainingThisTurn <= 0) {
+        parts.push('This turn is used up; the next turn continues normally. If you must search again this turn, call request_recall_extension(reason).')
+      } else if (budget.remainingThisTurn < budget.remainingThisCycle) {
+        parts.push(`Note: only ${String(budget.remainingThisTurn)} left for this turn.`)
+      }
+      // PLAN §7.1 样例里的那句"避免重复检索相近主题"**始终保留** ——
+      // 它是这条声明的主要用途（`queries_this_turn` 就是为它服务的）。
+      parts.push('Avoid re-searching near-identical topics.')
+    }
+    if (this.cycleExtensionBonus > 0) {
+      parts.push(` (${String(this.cycleExtensionBonus)} extra searches granted this cycle)`)
+    }
+    // ★ 2026-10-11（§76）：中文标点变成英文句点后，join('') 会把两句黏成 compaction.Note:。
+    //   ★ 补一个空格 —— 这是**改语言时才会暴露**的排版问题（中文句子自带标点边界）。
+    return parts.join(' ')
+  }
+}
+
+/** 解析数据库绝对路径：`storageRoot` 相对 `DSH_HOME`，也接受绝对路径。 */
+export function resolveDbPath(config: ForlifeConfig, dshHome: string): string {
+  const root = isAbsolute(config.storageRoot) ? config.storageRoot : join(dshHome, config.storageRoot)
+  return join(root, config.dbFile)
+}
+
+/** 沉降只用到这一个方法（便于测试注入替身：不必开真库）。 */
+export interface SettleTimerTarget {
+  settle(options?: { readonly olderThanDays?: number; readonly limit?: number }): {
+    readonly fragmented: number
+    readonly archived: number
+    readonly notes: readonly string[]
+  }
+  /**
+   * ★★ 2026-10-11（用户裁定，`FIX_PLAN.md` §69）：**模型设的间隔**（毫秒）。
+   *
+   * ★ 用户要「**由模型和外部共同决定**」⇒ 外部走环境变量（启动时定死），
+   *   模型走这个回调 —— ★ **每轮现读**，所以模型改了**不用重启**。
+   * ★ 返回 `undefined` = "模型没表过态"，用环境变量/基线的值。
+   * ★ 返回 `0` = **惰性**（也是合法值，不是"没表态"）。
+   */
+  settleIntervalOverrideMs?(): number | undefined
+}
+
+/** 一次沉降的结果（与 `MemoryRuntime.settle()` 的返回同形）。 */
+export interface SettleOutcome {
+  readonly fragmented: number
+  readonly archived: number
+  readonly notes: readonly string[]
+}
+
+/** 沉降定时循环的配置（从环境变量解析；与 gateway 侧共用同一批旋钮）。 */
+export interface SettleTimerConfig {
+  readonly enabled: boolean
+  readonly intervalMs: number
+  /** 每轮批量上限；undefined = 用 `tiering.settleBatchSize`。 */
+  readonly limit: number | undefined
+  /** 没启用时的原因（要能说清"为什么没跑"）。 */
+  readonly reason: string
+}
+
+/**
+ * 从环境变量解析沉降循环配置。
+ *
+ * 旋钮与 `packages/gateway/src/settle-loop.ts` **刻意同名**（`FORLIFE_SETTLE_INTERVAL_MS`
+ * / `FORLIFE_SETTLE_LIMIT`）：那边管的是 blob 文件搬到 HDD，这边管的是中期条目沉到
+ * 长期记忆 —— 同一次"维护"的两半，用户不该去记两套变量名。
+ *
+ * @param env - 环境变量（默认 `process.env`）。
+ * @returns 配置（含"没启用"的原因）。
+ */
+export function settleTimerConfigFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): SettleTimerConfig {
+  const disabled = (env['FORLIFE_SETTLE_DISABLED'] ?? '').trim().toLowerCase()
+  if (disabled === '1' || disabled === 'true' || disabled === 'yes') {
+    return { enabled: false, intervalMs: 0, limit: undefined, reason: 'FORLIFE_SETTLE_DISABLED 已设置' }
+  }
+  // ★★ 2026-10-11（用户裁定）：间隔**可调**，且**最低是惰性（0 = 被动模式）**。
+  //
+  //   优先级（从高到低）：
+  //     ① `FORLIFE_SETTLE_INTERVAL_MS`（**外部**显式配置）
+  //     ② 模型通过工具写的 `forlife_state['settle_interval_ms']`（在 `startSettleTimer` 里每轮现读）
+  //     ③ 基线 `tiering.settleIntervalMs`（**默认 0 = 惰性**）
+  //
+  //   ⚠️ 与旧实现的区别：原来"太小的值"被当成"没配"（退回 30 分钟）。
+  //   ★ 现在 **0 是一个合法的、也是默认的取值**（惰性），不能再被当成"没配"。
+  const rawInterval = env['FORLIFE_SETTLE_INTERVAL_MS']
+  const envInterval = rawInterval === undefined ? undefined : Number(rawInterval)
+  const intervalMs =
+    envInterval !== undefined && Number.isFinite(envInterval) && envInterval >= 0
+      ? Math.trunc(envInterval)
+      : defaultFor<number>('tiering.settleIntervalMs')
+  const rawLimit = Number(env['FORLIFE_SETTLE_LIMIT'] ?? '')
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.trunc(rawLimit) : undefined
+  return { enabled: true, intervalMs, limit, reason: '已启用' }
+}
+
+/** 沉降定时循环的句柄。 */
+export interface SettleTimer {
+  readonly config: SettleTimerConfig
+  /** 手动跑一轮（测试直接调它，不必等定时器）。 */
+  readonly tick: () => SettleOutcome
+  /** 停表（反注册器要能真的停掉它）。 */
+  readonly stop: () => void
+  /**
+   * ★★ 2026-10-11（§69）：**重新按当前配置排表**。
+   *
+   * ★ 为什么需要它：间隔可以**由模型改**（工具 `set_settle_interval`），
+   *   而"惰性 ⇒ 没排计时器"时**没有任何东西会醒来发现配置变了** ——
+   *   ★ 所以改配置的那一方必须**主动踢一下**。
+   * ★ 语义：先取消当前排的表，再按**现读**的间隔决定要不要排下一轮。
+   */
+  readonly reconfigure: () => void
+}
+
+/** 沉降定时循环的选项。 */
+export interface SettleTimerOptions {
+  readonly log: (message: string) => void
+  /** `⚠️` 级别（拿不到定时器、整轮失败这类**必须让人看见**的事）。不传则用 `log`。 */
+  readonly always?: (message: string) => void
+  readonly env?: Readonly<Record<string, string | undefined>>
+  /** 显式间隔（覆盖环境变量；测试用）。 */
+  readonly intervalMs?: number
+  /** 显式批量上限（覆盖环境变量；测试用）。 */
+  readonly limit?: number
+  readonly setTimeoutImpl?: (fn: () => void, ms: number) => { unref?: () => void }
+  readonly clearTimeoutImpl?: (handle: unknown) => void
+}
+
+/**
+ * 启动**插件侧**的沉降定时循环（PLAN §4.1 第二类压缩 / §6.3 的"定时"那一半）。
+ *
+ * ## ★ 为什么必须有一个真的定时器
+ *
+ * `MemoryRuntime.settle()` 只是**一次**沉降（中期条目 → 长期记忆全文 + `[F→]` 指针）。
+ * 交付物要的是「**定时**沉降任务」—— 没有这一层，"沉降能力"就只是躺在模块里的一个函数
+ * （全仓此前只有验收测试在调它，生产路径零调用）。
+ *
+ * 与 `packages/gateway/src/settle-loop.ts` 的分工：那边搬的是 blob **文件**（要挂载点），
+ * 这边搬的是**库里的条目**（不需要任何外部配置）；两者共用 `FORLIFE_SETTLE_*` 旋钮。
+ *
+ * ## 四条设计（都从项目里已有的循环学来）
+ *
+ * 1. **一轮跑完再排下一轮**（不是固定间隔硬塞）—— 沉降可能跑很久，固定间隔会让轮次堆积；
+ * 2. **自己接住异常** —— 定时器里抛异常会**静默杀死整个循环**，沉降从此失效而没人知道；
+ * 3. **`unref()`** —— 一个维护定时器不该让进程无法退出（测试进程尤其明显）；
+ * 4. **能停** —— 反注册器要能真的停掉它（热重载不能重复挂）。
+ *
+ * 拿不到 `setTimeout` 时**不启动**，但**必须喊一声**（静默的话"在跑"和"没挂上"看不出来）。
+ *
+ * @param target - 沉降目标（真跑时就是 `MemoryRuntime`）。
+ * @param options - 日志、环境变量、定时器注入。
+ * @returns 句柄（`tick` / `stop` / `config`）。
+ */
+export function startSettleTimer(target: SettleTimerTarget, options: SettleTimerOptions): SettleTimer {
+  const log = options.log
+  const always = options.always ?? options.log
+  const env = options.env ?? process.env
+  const parsed = settleTimerConfigFromEnv(env)
+  const intervalMs = options.intervalMs ?? parsed.intervalMs
+  const limit = options.limit ?? parsed.limit
+  const config: SettleTimerConfig = { ...parsed, intervalMs }
+
+  /**
+   * ★★ 2026-10-11（§69）：重新排表。★ 先声明成"什么都不做"，
+   * 真正的实现在下面（惰性/未启用那几条提前返回时它就是空的 —— 它们本来就不排表）。
+   * ★ 但**惰性那条也要能"被踢醒"**：模型把间隔从 0 改成非 0 时，
+   * 没有任何计时器会醒来发现这件事 ⇒ 必须由改配置的那一方主动调它。
+   */
+  let reconfigureFn: () => void = () => {}
+
+  const tick = (): SettleOutcome => {
+    try {
+      const result = target.settle(limit === undefined ? {} : { limit })
+      // ★★ 每一轮都要留痕 —— **包括"什么都没做"的那一轮**。
+      //
+      // 原实现是 `if (result.fragmented > 0 || result.archived > 0) { log(...) }`，
+      // 于是「跑了但没候选」与「循环根本没挂上」在日志里**完全一样**。
+      //
+      // 2026-10-09 真机就是这么被误导的：库里有 **11,114 条**中期记忆、
+      // `long_memory_entries` 却恒为 **0**，而日志一片安静 ——
+      // 从日志上看不出这个循环在不在跑、跑了有没有候选、还是候选被门槛挡住了。
+      //
+      // 而 `settle()` 其实**每一轮都产出了原因**：
+      // `runtime.ts:1582` 返回 `notes: ['没有满足沉降条件的活跃条目']`。
+      // 只是被那个 `if` 丢掉了 —— **有话说却不说，比没话说更糟**：
+      // 它让"门槛定错了"看起来和"功能没实现"一模一样。
+      //
+      // 维护循环的第一职责是**能证明自己活着**。所以：
+      //  - 做了事 ⇒ 正常 log（带条数）
+      //  - 没做事 ⇒ 也 log（带**为什么**没做事，即 notes 原话）
+      const didSomething = result.fragmented > 0 || result.archived > 0
+      // notes 为空时如实说"它没给出原因"，不编一句看起来正常的废话
+      const detail = result.notes.length === 0 ? '（它没给出原因）' : result.notes.join('；')
+      log(
+        didSomething
+          ? `沉降一轮：碎片化 ${String(result.fragmented)} 条、淘汰 ${String(result.archived)} 条｜${detail}`
+          : `沉降一轮：没有要动的（碎片化 0 / 淘汰 0）｜${detail}`,
+      )
+      return result
+    } catch (error) {
+      // **绝不让一轮失败杀死循环**（下一轮照跑），但**要让人看见** ——
+      // 静默的沉降失效与"没有东西可沉"从日志上看一模一样。
+      always(`⚠️ 沉降一轮失败（下一轮继续）：${String(error).slice(0, 200)}`)
+      return { fragmented: 0, archived: 0, notes: ['this round failed'] }
+    }
+  }
+
+  if (!parsed.enabled) {
+    log(`沉降循环未启动：${parsed.reason}`)
+    return { config, tick, stop: () => {}, reconfigure: () => { reconfigureFn() } }
+  }
+  // ★★ 2026-10-11（用户裁定）：**0 = 惰性（被动模式）是一个合法取值，而且是默认值**。
+  //
+  //   它**不是**错误：循环照样存在、`tick()` 照样能手动跑，
+  //   只是**不通过计时器主动触发** —— 由模型/外部显式调用。
+  //   ★ 所以这里**不报 ⚠️**（旧实现把它当"间隔非法"喊警告，那会把默认配置变成一条假告警）。
+  //   ★ 用 `note` 级：这是一条**判断**（配置选择），不是异常。
+  if (intervalMs <= 0) {
+    atLevel(log, 'note')(
+      '沉降循环：**被动模式**（间隔 0）—— 不主动跑，只由模型/外部触发。' +
+        '★ 想让它定时跑，把间隔调大（模型可用工具，运维可用 FORLIFE_SETTLE_INTERVAL_MS）。',
+    )
+    return { config, tick, stop: () => {}, reconfigure: () => { reconfigureFn() } }
+  }
+  if (!Number.isFinite(intervalMs)) {
+    always(`⚠️ 沉降循环未启动：间隔非法（${String(intervalMs)}ms）`)
+    return { config, tick, stop: () => {}, reconfigure: () => { reconfigureFn() } }
+  }
+
+  const scheduleFn = options.setTimeoutImpl ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+  const clearFn = options.clearTimeoutImpl ?? ((handle: unknown) => clearTimeout(handle as never))
+
+  let stopped = false
+  let handle: { unref?: () => void } | undefined
+
+  /**
+   * ★★ 2026-10-11（§69）：**每次排表都现读一遍间隔**。
+   *
+   * ★ 用户要「由**模型和外部**共同决定」⇒ 外部（环境变量）在启动时定死，
+   *   模型（`settleIntervalOverrideMs()`）**每轮现读** ⇒ ★ 改了不用重启。
+   * ★ `<= 0` = **惰性** ⇒ **不排下一轮**（循环还在，`tick()` 仍可手动跑）。
+   */
+  const currentIntervalMs = (): number => {
+    const override = target.settleIntervalOverrideMs?.()
+    return override !== undefined && Number.isFinite(override) ? Math.trunc(override) : intervalMs
+  }
+  const schedule = (): void => {
+    if (stopped) return
+    const ms = currentIntervalMs()
+    // ★ 惰性：不排。★ 这里**不报错**（0 是合法配置，不是故障）
+    if (ms <= 0) return
+    handle = scheduleFn(() => {
+      tick()
+      schedule()
+    }, ms)
+    handle.unref?.()
+  }
+  schedule()
+  log(
+    `沉降循环已启动：每 ${String(Math.round(intervalMs / 60_000))} 分钟一轮` +
+      `（中期→长期，每轮最多 ${String(limit ?? defaultFor<number>('tiering.settleBatchSize'))} 条）`,
+  )
+
+  // ★ 真正的 reconfigure：**先取消当前排的表，再按现读的间隔决定要不要排**
+  //   （`schedule()` 里 `ms <= 0` 就不排 ⇒ 从"定时"切到"惰性"也能立刻生效）
+  reconfigureFn = (): void => {
+    if (stopped) return
+    if (handle !== undefined) {
+      clearFn(handle)
+      handle = undefined
+    }
+    schedule()
+  }
+
+  return {
+    config,
+    tick,
+    stop: () => {
+      stopped = true
+      if (handle !== undefined) clearFn(handle)
+    },
+    reconfigure: () => {
+      reconfigureFn()
+    },
+  }
+}
+
+/** `reset_policy` 的已知取值：`on_compaction`（基线）与按轮重置的别名。 */
+function isPerTurnResetPolicy(policy: string): boolean {
+  return policy === 'per_turn' || policy === 'each_turn'
+}
+
+/** 认不认这个策略值（未知值按 `on_compaction` 处理，但要喊一声）。 */
+function isKnownResetPolicy(policy: string): boolean {
+  return policy === 'on_compaction' || isPerTurnResetPolicy(policy)
+}
+
+/**
+ * `queries_this_turn` 里**单条** query 的字符上限。
+ *
+ * PLAN §7.1 只规定"记本轮查过什么"，没给上限。这里封顶纯属防御：
+ * 这个列表每次 recall 都要原样回显进上下文，而 query 是**模型给的字符串** ——
+ * 一条 100KB 的"关键词"足以把上下文顶掉。截断后仍足够认出"这是不是同一个查询"。
+ */
+export const RECALL_QUERY_MAX_CHARS = 200
+
+/**
+ * `queries_this_turn` 的**条数**上限。
+ *
+ * 由基线推导（本周期最多能查 `maxPerCycle + extensionMax` 次），不写死数字：
+ * 改了额度参数，这个上限跟着走。
+ */
+export function recallQueryLogLimit(): number {
+  return defaultFor<number>('recall.maxPerCycle') + defaultFor<number>('recall.extensionMax')
+}
+
+/**
+ * 追加一条"本轮查过的 query"，并**强制有界**（PLAN §7.1）。
+ *
+ * 两条边界都得管：
+ *  - **条数**：超过上限就丢最旧的 —— 去重最需要的是"刚查过什么"；
+ *  - **单条长度**：截断（见 `RECALL_QUERY_MAX_CHARS`）。
+ *
+ * 它被导出只有一个理由：**有界性要能被单独断言**（走真实工具路径时，
+ * 每轮额度只有个位数，永远碰不到上限 ⇒ 靠端到端测试证明不了"有界"）。
+ */
+export function appendBoundedQuery(list: readonly string[], query: string, max: number): readonly string[] {
+  const clipped = query.length <= RECALL_QUERY_MAX_CHARS ? query : `${query.slice(0, RECALL_QUERY_MAX_CHARS)}…`
+  const next = [...list, clipped]
+  if (next.length <= max) return next
+  return next.slice(next.length - Math.max(0, max))
+}
+
+/** 一次"重复查询"的判定结果（`recallLongterm` 的闸门 ③）。 */
+export interface DuplicateQueryMatch {
+  /** 撞上的那条历史查询（`queries_this_turn` 里的原文，可能被 `RECALL_QUERY_MAX_CHARS` 截断过）。 */
+  readonly query: string
+  /** 近似相似度 0..1（**不是语义相似度**，见 `querySimilarity()`）。 */
+  readonly similarity: number
+  /** 判定阈值（读自基线 `recall.duplicateSimilarity`）。 */
+  readonly threshold: number
+}
+
+/**
+ * 两条检索词的**近似**相似度（0..1）。
+ *
+ * ★ **实现已下沉到 `@forlife/memory-core` 的 `textSimilarity()`**（2026-10-07）——
+ * 因为「手动喂食记忆资料」的查重要用**同一个判据**，而喂食的核心在 `@forlife/gateway`，
+ * 网关不能反向依赖本包（会成环）。算法、能力边界、以及下面这句完整说明
+ * 都跟着函数一起搬到了 `packages/memory-core/src/similarity.ts`，**只有那一份实现**。
+ *
+ * ⚠️ 这不是语义相似度：本仓**没有向量库**（PLAN §6.4 的选型未落地），
+ * 能做的是 token 集合 Jaccard 的**词面**近似 —— 抓得住"同一段的表面变体"，
+ * 抓不住"同义改写"；代价是漏检，而不是误判成"记忆里没有"。
+ *
+ * 这里保留这个名字与签名：它是 recall 侧调用点与测试（`recall-guardrails-wiring.test.ts`）
+ * 的既有契约，改名会让"重复查询闸门"这条链路的证据断掉。
+ */
+export const querySimilarity = textSimilarity
+
+/** 申请追加额度的理由长度下限（与 `decideSwitch` 同一条既有约定：太短像随手要的）。 */
+const EXTENSION_MIN_REASON_CHARS = 4
+
+/** `reset_at` 的人话（**由策略派生**，不写死"下次压缩后重置"）。 */
+function resetPhrase(policy: string): string {
+    if (isPerTurnResetPolicy(policy)) return 'resets at the start of each turn'
+    return 'resets after the next compaction'
+}
+
+
+
+
+
+
+/** 宽松解析 entities（表里是 JSON 文本；坏数据不该让沉降崩掉）。 */
+function parseEntities(raw: string): readonly string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

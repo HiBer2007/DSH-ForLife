@@ -1,0 +1,25 @@
+{
+  "name": "@forlife/loop-guard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "独立的模型输出监控：文字与工具调用的死循环检测 + 中止本轮（零依赖，可脱离记忆模块单独装载）",
+  "exports": {
+    ".": "./src/index.ts",
+    "./detector": "./src/detector.ts",
+    "./hook": "./src/hook.ts",
+    "./tool": "./src/tool.ts",
+    "./install": "./src/install.ts",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

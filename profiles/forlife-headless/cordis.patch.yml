@@ -1,0 +1,116 @@
+# 验证用 profile：配置尽量小，只为证明插件真的被加载。
+- id: forlife-memory
+  name: forlife-memory
+  config:
+    storageRoot: ./forlife
+    verbose: true
+
+# 压缩引擎：禁用宿主的 compaction-basic，挂我们的结构化压缩实现。
+# 为什么必须替换而不是并存：`ctx.compaction` 是**单实现**服务
+# （CompactionEngine 基类构造函数里 super(ctx, "compaction")），两个实现会互相覆盖。
+- id: compaction-basic
+  disabled: true
+
+- insert:
+    - id: forlife-compaction
+      name: 'forlife-memory/compaction'
+# 时间感知兜底（阶段 4 §2.15.2 P0）
+#
+# 为什么还要挂宿主这个插件：我们的 QQ 轮次走**网关的尾部注入**（更新鲜、更权威），
+# 但通过 DSH 本身（web/TUI 直接对话）进行的轮次不经过网关 —— 那些路径没有时间读数。
+# 所以这里挂上它作为兜底，并把节流放宽到 30 分钟：**避免两个来源频繁打架**，
+# 同时保证"任何路径下模型手里都有一个钟"。
+- insert:
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        timeZone: Asia/Shanghai
+        refreshIntervalMs: 1800000
+
+# ── 默认模型 ─────────────────────────────────────────────────────────────
+#
+# **id 必须用短名** —— base bundle 里是 `agent-default-model`，
+# 不是完整包名 `@deepseek-ai/dsh-agent-default-model`。
+# 用包名匹配不上，而且**静默无效**（改了没反应，很难查）。
+#
+# provider / model 的**定义**在 harness home 的 `settings.yaml` 里 ——
+# profile 的 config 只决定"挂哪些插件"，不决定"跑哪些 provider"。
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoningEffort: high
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      opencode-go:
+        displayName: OpenCode Go
+        apiKeyEnv: FORLIFE_OPENCODE_GO_KEY
+        api: openai-completions
+        baseURL: https://opencode.ai/zen/go/v1
+        # **OpenCode Go 强制要求**：每个请求带 `x-opencode-session`。
+        # 不带的话真机报 400 MissingSessionID —— 它是**路由与提示词缓存**的依据，
+        # 不是可选元数据。id 要**稳定**（变了会掉缓存）。
+        headers:
+          x-opencode-session: dsh-forlife
+        models:
+          - id: deepseek-v4.1-flash
+            name: DeepSeek V4.1 Flash
+            # ★ 2026-10-09 用户裁定 ①：这个模型的总上下文是 **1M**，不是 262144。
+            # 262144 是 `dsh-llm-pi-ai` 的**通用兜底默认值**（`lib/index.js` 的
+            # `DEFAULT_CONTEXT_WINDOW = 262144`），不是本模型的事实 —— 照抄它会让
+            # 压缩阈值变成 `contextWindow × ratio` = 0.6 × 262144 ≈ **157k**，
+            # 而用户口径是 **600k**（0.6 × 1M）。**分母错了，比例改对了也没用。**
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：none | low | high | max
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: deepseek-v4-pro
+            name: DeepSeek V4 Pro
+            # ★ 2026-10-09 补齐（用户裁定：**把所有值都补上**）。原来写的 262144 **不是**
+            # 本模型的事实 —— 它是 `dsh-llm-pi-ai` 的通用兜底 `DEFAULT_CONTEXT_WINDOW`
+            # （`lib/index.js:923`），照抄进 profile 反而**盖掉**了包内目录里的真值。
+            # 真值来源（同一上游 models.dev 的两份快照，都可核对）：
+            #  ① pi-ai 包内目录 `@earendil-works/pi-ai/dist/providers/data/opencode-go.json`
+            #     （`generatedAt 2026-09-05`）该模型 `contextWindow: 1000000`；
+            #  ② https://models.dev/providers/opencode-go/ 同值。
+            # ⚠️ 声明值 > 真值 ⇒ 压缩永不触发（上下文直接溢出），所以**查不到就别填**；
+            #     这三个都查到了，才敢填。
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：none | low | high | max
+            reasoningEfforts:
+              off:
+              low: low
+              high: high
+              max: max
+          - id: glm-5.3-flash
+            name: GLM 5.3 Flash
+            # ★ 2026-10-09 补齐：真值 **1M**（原来抄的 204800 是本仓第一次登记时的
+            # 臆测值，不是本模型的事实）。来源与核对方式见上面 `deepseek-v4-pro` 那段注释。
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：low | high | max
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
+          - id: glm-5.3
+            name: GLM 5.3
+            # ★ 2026-10-09 补齐：真值 **1M**（同上，204800 不是本模型的事实）。
+            contextWindow: 1000000
+            # **档位必须显式声明** —— 不声明时宿主认为"不支持任何档位"，
+            # 真机报错：does not support reasoning effort "high"。
+            # 按项目规定（**没有 medium**）：low | high | max
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max

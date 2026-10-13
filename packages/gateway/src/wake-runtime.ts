@@ -1,0 +1,439 @@
+/**
+ * 唤醒引擎的运行时装配（PLAN 阶段 8）。
+ *
+ * ## 三条通道，一个引擎
+ *
+ * ```
+ * timer    ──(引擎自己 tick)──────────────────┐
+ * watcher  ──(监视源 tick → 设 next_fire_at)──┤
+ * system   ──(事件源 observe → 设 next_fire_at)┤──> 同一个 tick 扫到 → 过闸 → 派发
+ * external ──(HTTP → 设 next_fire_at)─────────┘
+ * ```
+ *
+ * **三条通道最终都落在"把 next_fire_at 设成现在"这一个动作上** ——
+ * 这不是偷懒，而是刻意的：**只有一个入口，就不会出现"某条通道绕过了六道闸"这种事**。
+ *
+ * ## 监视 tick 与引擎 tick 分开
+ *
+ * 引擎 tick 是 1 秒（要准时）；监视 tick 默认也是 1 秒，但它**可以更慢** ——
+ * 监视条件的求值要读文件（可能很慢），而引擎 tick 必须轻快。
+ * 所以它们是两个独立的定时器，间隔可分别配置。
+ *
+ * ## 监视源没配工作区时**明确禁用**
+ *
+ * 与端口出口同一纪律：没配 `FORLIFE_WORKSPACE_ROOT` 时，监视条件**无法求值**
+ * （路径没有沙箱根可比）。这时不启动监视 tick，并给出原因 ——
+ * 而不是让它每秒钟失败一次（那会把日志刷满，把真正的错误淹掉）。
+ *
+ * @module @forlife/gateway/wake-runtime
+ */
+import type { DatabaseSync } from 'node:sqlite'
+
+import { createWakeBridge, isHeaderSafe } from './wake-bridge.ts'
+import { enqueueWakeRequest } from '@forlife/store'
+import { createSystemEventHooks } from './wake-system-hooks.ts'
+import { createWakeEngine, type WakeEngine, type WakeDispatcher } from './wake-engine.ts'
+import { buildWakePrompt } from './wake-prompt.ts'
+import { createSystemWakeSource, type SystemWakeSource } from './wake-system-source.ts'
+import { createWatchSource, type WatchSource } from './wake-watch-source.ts'
+import { createLivenessMonitor, startLivenessWatch, type LivenessMonitor, type LivenessWatch } from './wake-liveness.ts'
+import { createProgramRunner, type ProgramRunner } from './wake-program-runner.ts'
+import { createRealSpawn } from './wake-spawn.ts'
+import { describeWakeProducerGaps } from './wake.ts'
+import { atLevel, createLogger } from './admin/log.ts'
+
+/**
+ * 监视程序执行器的轮询间隔。
+ *
+ * 为什么是 1 分钟：一个程序**最长能跑 10 分钟**（`DEFAULT_LIMITS.maxRuntimeMs`），
+ * 而这一层是**串行**的（见下面防重叠那段）⇒ 间隔比这个再小没有意义，
+ * 只会让"上一轮还没跑完就又来了"更频繁地被 `ticking` 挡掉。
+ *
+ * ⚠️ 暂时**不可配置**：等真有人需要更快/更慢再开环境变量，不提前加旋钮。
+ */
+const PROGRAM_TICK_MS = 60_000
+
+/** 装配配置。 */
+export interface WakeRuntimeOptions {
+  readonly db: DatabaseSync
+  readonly env: Record<string, string | undefined>
+  readonly log: (message: string) => void
+  readonly fetchImpl?: Parameters<typeof createWakeBridge>[0]['fetchImpl']
+  readonly setIntervalImpl?: (fn: () => void, ms: number) => { unref?: () => void }
+  readonly clearIntervalImpl?: (handle: unknown) => void
+  readonly now?: () => Date
+  /**
+   * 跑一轮的入口（**gateway 自己的 driver**）。
+   *
+   * **为什么需要它**：真机发现 QQ 的每一轮是 gateway 起 `dsh headless`
+   * 子进程跑的（driver.ts:64），**不是** web app 的会话。
+   * 而唤醒轮询器在 web app 里 —— 两者没有交集，
+   * `resolveAgent("onebot11:*")` 永远失败。
+   *
+   * 唤醒的目标是 QQ 会话，那就该走**和普通 QQ 轮次完全相同**的路径。
+   * 没有它时退回队列（那条路是给"唤醒 web app 会话"用的）。
+   */
+  readonly runTurn?: (input: {
+    readonly conversationKey: string
+    readonly prompt: string
+    readonly sourceKind: string
+    readonly summary: string
+  }) => Promise<{
+    readonly ok: boolean
+    readonly reason: string
+    readonly modelDid?: string
+    readonly costTokens?: number
+  }>
+}
+
+/** 装配结果。 */
+export interface WakeRuntime {
+  readonly engine: WakeEngine | undefined
+  /** 系统事件源（QQ 掉线等由调用方 observe；未启用时为 undefined）。 */
+  readonly systemSource: SystemWakeSource | undefined
+  /** 监视源（未配工作区时为 undefined）。 */
+  readonly watchSource: WatchSource | undefined
+  /**
+   * ★ QQ 存活监视循环（**唤醒条件 `bot_offline` 的唯一生产者**）。
+   *
+   * 引擎未启用时它也是 undefined —— 那时"检测到离线"没有任何出口，
+   * 假装在监视只会让人以为有人在看（与 `engine` 同一条纪律）。
+   */
+  readonly liveness: LivenessWatch | undefined
+  /**
+   * 存活判据本体：**连接状态与心跳要喂给它**
+   * （`observeTransport(connected)` / `observeHeartbeat({ online, intervalMs })`）。
+   *
+   * 不喂也不会崩 —— 它会如实报「判不了：一次心跳都没收到」，
+   * 而不是拿"这段时间没人说话"当离线证据（安静时段那是正常的）。
+   */
+  readonly livenessMonitor: LivenessMonitor | undefined
+  /**
+   * 监视程序执行器（`FIX_PLAN.md` §30）。
+   *
+   * `undefined` ⇒ 没配 `FORLIFE_WORKSPACE_ROOT`（**路径没有沙箱根可比 ⇒ 不许跑脚本**），
+   * 与 `watchSource` 同一个禁用条件、同一个理由。
+   */
+  readonly programRunner: ProgramRunner | undefined
+  /** 引擎禁用原因（界面要显示它）。 */
+  readonly disabledReason: string | undefined
+  /** 监视源禁用原因 —— **与引擎的原因分开**（它们可能一个启用一个没启用）。 */
+  readonly watchDisabledReason: string | undefined
+  readonly stop: () => void
+}
+
+/** 从环境变量读唤醒桥配置。 */
+export function wakeConfigFromEnv(env: Record<string, string | undefined>): {
+  readonly bridgeUrl?: string
+  readonly bridgeSecret?: string
+  readonly workspaceRoot?: string
+  readonly tickMs: number
+  readonly watchTickMs: number
+} {
+  const url = env['FORLIFE_WAKE_BRIDGE_URL']
+  const secret = env['FORLIFE_WAKE_BRIDGE_SECRET']
+  const root = env['FORLIFE_WORKSPACE_ROOT']
+  const tick = Number(env['FORLIFE_WAKE_TICK_MS'] ?? '1000')
+  const watchTick = Number(env['FORLIFE_WATCH_TICK_MS'] ?? '1000')
+  return {
+    ...(url === undefined || url === '' ? {} : { bridgeUrl: url }),
+    ...(secret === undefined || secret === '' ? {} : { bridgeSecret: secret }),
+    ...(root === undefined || root === '' ? {} : { workspaceRoot: root }),
+    tickMs: Number.isFinite(tick) && tick >= 100 ? tick : 1000,
+    // 监视 tick 允许更慢（它要读文件）；下限给 500ms
+    watchTickMs: Number.isFinite(watchTick) && watchTick >= 500 ? watchTick : 1000,
+  }
+}
+
+/** 装配唤醒引擎与三个事件源。 */
+export function createWakeRuntime(options: WakeRuntimeOptions): WakeRuntime {
+  const { db, log } = options
+  const runTurn = options.runTurn
+  const config = wakeConfigFromEnv(options.env)
+
+  // **密钥必须是 latin-1**（它要当 HTTP 头发出去）。
+  // 不拦的话，每一次唤醒都会以一句 `Cannot convert argument to a ByteString` 失败 ——
+  // 而那句话完全看不出真正原因。
+  const secretCheck = config.bridgeSecret === undefined ? { ok: true as const } : isHeaderSafe(config.bridgeSecret)
+
+  const setIntervalFn = options.setIntervalImpl ?? ((fn, ms) => setInterval(fn, ms))
+  const clearIntervalFn = options.clearIntervalImpl ?? ((h) => clearInterval(h as never))
+  const handles: unknown[] = []
+
+  // ── 监视源（与引擎独立装配，原因分开报）──
+  let watchSource: WatchSource | undefined
+  let watchDisabledReason: string | undefined
+  if (config.workspaceRoot === undefined) {
+    watchDisabledReason = '监视源未启用：缺少环境变量 FORLIFE_WORKSPACE_ROOT（路径没有沙箱根可比）'
+  } else {
+    watchSource = createWatchSource({
+      db,
+      workspaceRoot: config.workspaceRoot,
+      log,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    })
+  }
+
+  // ── 引擎：**没配桥就明确禁用**（不假装能唤醒）──
+  if (!secretCheck.ok) {
+    return {
+      engine: undefined,
+      systemSource: undefined,
+      watchSource,
+      liveness: undefined,
+      livenessMonitor: undefined,
+      programRunner: undefined,
+      disabledReason: `唤醒引擎未启用：FORLIFE_WAKE_BRIDGE_SECRET ${secretCheck.reason}` ,
+      watchDisabledReason,
+      stop: () => {},
+    }
+  }
+
+  if (config.bridgeUrl === undefined || config.bridgeSecret === undefined) {
+    const missing = [
+      ...(config.bridgeUrl === undefined ? ['FORLIFE_WAKE_BRIDGE_URL'] : []),
+      ...(config.bridgeSecret === undefined ? ['FORLIFE_WAKE_BRIDGE_SECRET'] : []),
+    ]
+    return {
+      engine: undefined,
+      systemSource: undefined,
+      watchSource,
+      liveness: undefined,
+      livenessMonitor: undefined,
+      programRunner: undefined,
+      disabledReason: `唤醒引擎未启用：缺少环境变量 ${missing.join('、')}（需要 DSH 侧挂上唤醒桥）`,
+      watchDisabledReason,
+      stop: () => {},
+    }
+  }
+
+  // 保留：桥的密钥校验/忙判定/flush 守卫逻辑在**轮询侧原样复用**。
+  // 将来 DSH 若提供免鉴权路由机制，可以切回这条路径。
+  void createWakeBridge
+  const bridge = createWakeBridge({
+    url: config.bridgeUrl,
+    secret: config.bridgeSecret,
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  })
+
+  /** 取这个触发器上一次唤醒时"模型做了什么"。 */
+  const lastActionOf = (triggerId: string): string | undefined => {
+    const row = db
+      .prepare(
+        `SELECT model_did FROM wake_trigger_events
+         WHERE trigger_id = ? AND model_did IS NOT NULL
+         ORDER BY fired_at DESC LIMIT 1`,
+      )
+      .get(triggerId) as { model_did: string | null } | undefined
+    return row?.model_did ?? undefined
+  }
+
+  const dispatch: WakeDispatcher = async ({ trigger, reason, payload }) => {
+    // scope 为 `*` 的触发器**没有会话可唤醒**。这不是错误配置 ——
+    // 有些触发器只是"记账"用的，但要**明确说出来**，而不是发空 sessionId 让桥去 404。
+    if (trigger.scope === '*' || trigger.scope.trim() === '') {
+      return { ok: false, reason: '触发器没有绑定会话（scope=*），无处唤醒' }
+    }
+
+    const lastAction = lastActionOf(trigger.id)
+    const prompt = buildWakePrompt({
+      trigger,
+      reason,
+      payload,
+      ...(lastAction === undefined ? {} : { lastAction }),
+      ...(trigger.budget_tokens > 0 ? { budgetTokens: trigger.budget_tokens } : {}),
+    })
+
+    // **写队列，不调 HTTP 桥**（方向性调整）。
+    // 原因：DSH 注册的路由是在**它自己鉴权之后**才被调用的（没法绕过），
+    // 而它的 token 重启即失效 —— gateway 拿不到稳定凭据（真机 401）。
+    // 改成写一行，由**插件侧**（DSH 进程内）轮询认领并直接调 agent.followup()。
+    // **包住入队异常并给一句人话** ——
+    // 原始 SQLite 错误（如 "no such table"）看不出是"入队失败"，
+    // 而"入队失败"和"派发失败"要采取的措施完全不同。
+    let requestId: string
+    // **优先走 gateway 自己的 driver**（和普通 QQ 轮次同一条路）。
+    if (runTurn !== undefined) {
+      return await runTurn({
+        conversationKey: trigger.scope,
+        prompt,
+        sourceKind: `wake-${trigger.kind}`,
+        summary: trigger.title,
+      })
+    }
+
+    try {
+    const requestId = enqueueWakeRequest(db, {
+    triggerId: trigger.id,
+    sessionId: trigger.scope,
+    text: prompt,
+    sourceKind: `wake-${trigger.kind}`,
+    summary: trigger.title,
+    })
+    // **decision 的语义变了**：以前 fired = "桥确认收到了"；
+    // 现在是"**已入队，等插件执行**"。这个区别必须写进 reason ——
+    // 否则看 wake_events 的人会以为"模型已经动了"，而实际可能还在队列里。
+    return { ok: true, reason: `已入队（${requestId}），等插件侧认领执行` }
+    } catch (error) {
+      return { ok: false, reason: `入队失败：${String(error).slice(0, 160)}` }
+    }
+
+
+  }
+
+  // 系统事件钩子（预算超限等要能变成 system 触发）
+  const systemSource = createSystemWakeSource({
+    db,
+    log,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  })
+
+  const systemHooks = createSystemEventHooks({ source: systemSource, log })
+
+  const engine = createWakeEngine({
+    // **预算超限 ⇒ system 触发** —— 六道闸里早就判了，但以前没人往外说，
+    // 于是"预算超了"只能靠人去面板上看。
+    onGateBlocked: (trigger, decision, reason) => {
+      if (decision === 'budget') systemHooks.budgetExceeded(trigger.scope, reason)
+    },
+    db,
+    dispatch,
+    log,
+    tickMs: config.tickMs,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.setIntervalImpl === undefined ? {} : { setIntervalImpl: options.setIntervalImpl }),
+    ...(options.clearIntervalImpl === undefined ? {} : { clearIntervalImpl: options.clearIntervalImpl }),
+  })
+
+  // ── 系统事件源（QQ 掉线等由调用方 observe）──
+
+  // ── 监视 tick：**独立定时器** ──
+  if (watchSource !== undefined) {
+    const watch = watchSource
+    const handle = setIntervalFn(() => {
+      // **自己接住异常** —— 定时器里抛异常会静默杀死整个循环，
+      // 监视从此失效而没人知道
+      try {
+        for (const o of watch.tick()) {
+          if (o.triggered) log(`监视触发「${o.title}」：${o.detail}`)
+        }
+      } catch (error) {
+        atLevel(log, 'fault')(`监视 tick 异常：${String(error).slice(0, 200)}`)
+      }
+    }, config.watchTickMs)
+    handle.unref?.()
+    handles.push(handle)
+    log(`监视源已启用：${config.workspaceRoot}，tick ${String(config.watchTickMs)}ms`)
+  } else {
+    log(watchDisabledReason ?? '监视源未启用')
+  }
+
+  log(`唤醒引擎已启用：桥 ${config.bridgeUrl}，tick ${String(config.tickMs)}ms`)
+
+  // ── ★★ 监视程序执行器（`FIX_PLAN.md` §30）──────────────────────────────
+  //
+  //   用户 2026-10-10 裁定「**建，按我给的策略**」，四条逐条落位：
+  //
+  //   | 策略 | 落在哪 |
+  //   | :--- | :--- |
+  //   | ① 只允许工作区根下的脚本 | `wake-program-runner.ts:123` 的 `resolveInWorkspace`（**spawn 之前**） |
+  //   | ② 扩展名白名单 | `wake-spawn.ts` 的 `ALLOWED_SCRIPT_EXTENSIONS` |
+  //   | ③ 并发/时长/输出上限 | **并发靠这里的防重叠 + `tick()` 串行**；时长/输出走 `DEFAULT_LIMITS` |
+  //   | ④ 指纹变更后停用并要求重新登记 | `wake-program-runner.ts:137-142` 的 `checkScriptUnchanged` |
+  //
+  //   ⚠️ **没配 `FORLIFE_WORKSPACE_ROOT` 就明确禁用并说原因** —— 与监视源同一条纪律
+  //   （"路径没有沙箱根可比"时不能跑脚本），而不是让它每一轮失败一次把日志刷满。
+  //
+  //   ⚠️ 一个程序最长能跑 `DEFAULT_LIMITS.maxRuntimeMs`（10 分钟），
+  //   所以 tick **必须防重叠** —— 否则一个慢程序会让每一轮都叠一批新进程上去。
+  let programRunner: ProgramRunner | undefined
+  if (config.workspaceRoot !== undefined && config.workspaceRoot.trim() !== '') {
+    programRunner = createProgramRunner({
+      db,
+      workspaceRoot: config.workspaceRoot,
+      spawn: createRealSpawn(),
+      log,
+    })
+    let ticking = false
+    const handle = setIntervalFn(() => {
+      if (ticking) return
+      ticking = true
+      void (programRunner as ProgramRunner)
+        .tick()
+        .catch((error: unknown) => {
+          log(`监视程序 tick 异常：${String(error).slice(0, 200)}`)
+        })
+        .finally(() => {
+          ticking = false
+        })
+    }, PROGRAM_TICK_MS)
+    handle.unref?.()
+    handles.push(handle)
+    log(`监视程序执行器已启用：tick ${String(PROGRAM_TICK_MS)}ms（串行；单程序上限 10 分钟）`)
+  } else {
+    log('监视程序执行器未启用：没配 FORLIFE_WORKSPACE_ROOT，路径没有沙箱根可比')
+  }
+
+  // ★ 把"配了也不会发生"的条件打出来（`wake.ts` 的生产者登记表）。
+  //
+  // 为什么必须在启动时说：那些条件的开关/概率在面板上**照样能点**，
+  // 而它们没有生产者时**不抛异常、不留痕** —— 用户会以为配好了。
+  // 这一行让它在启动第一眼就可见（而不是等一次入站事件审计才发现）。
+  const gaps = describeWakeProducerGaps()
+  if (gaps !== undefined) log(gaps)
+
+  // ── ★ QQ 存活监视（"什么算离线"的判据与状态机）──────────────────────────
+  //
+  // 为什么装配在这一层：它是唤醒条件 `bot_offline` 的**唯一生产者**，
+  // 而这一层已经拿着三样必需的东西 —— 库（唤醒矩阵 + 时间线）、`system` 事件源
+  // （上报出口）、以及一套已经在用的定时器装配方式。
+  //
+  // ⚠️ 心跳**可能**一直收不到（★ 2026-10-12 更正：观察者早就接上了 —— `onebot.ts` 的
+  //   `onHeartbeat` → `runtime.ts`；真正常见的原因是 **QQ 没登录**：NapCat 停在扫码页就不发心跳）：
+  // 那时它每一轮都如实报「判不了：一次心跳都没收到」，日志里能直接看出
+  // 「我们为什么检测不到假活」—— 而不是显示成"一切正常"。
+  const livenessMonitor = createLivenessMonitor({ log })
+  // ★★ 2026-10-12（`FIX_PLAN.md` §57 待办⑤）：存活判定要**带模块与真等级**进日志库。
+  //
+  //   原来它只经 `log(message)` 出去 ⇒ 落到库里是**猜的等级 + 通用模块** ⇒
+  //   ① 面板按模块筛不到"QQ 存活"；② ★ "QQ 静默离线（假活）"会以 `info` 混在噪音里，
+  //   而它恰恰是最该跳出来的那一条（35 小时假活那次事故就是没人看见）。
+  //   ⇒ 传一个**专用模块**的结构化 logger：`qq-liveness`。
+  //     ★ 与采集端采进来的 `napcat`（协议端自己说的话）**分属两个模块**，
+  //       面板上按模块筛就能把"我们怎么看它"和"它自己说了什么"对起来。
+  const livenessLog = createLogger('qq-liveness')
+  const liveness = startLivenessWatch({
+    db,
+    monitor: livenessMonitor,
+    log,
+    logger: livenessLog,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.setIntervalImpl === undefined ? {} : { setIntervalImpl: options.setIntervalImpl }),
+    ...(options.clearIntervalImpl === undefined ? {} : { clearIntervalImpl: options.clearIntervalImpl }),
+    report: (state, detail) => {
+      // 去重交给事件源（边沿检测在它内部）；这里只如实报当前状态。
+      // `alive` 也照报：不报恢复的话，模型会一直以为它是坏的。
+      systemSource.observe('qq.silent', 'onebot11', state, detail)
+    },
+  })
+
+  return {
+    engine,
+    systemSource,
+    watchSource,
+    liveness,
+    livenessMonitor,
+    programRunner,
+    disabledReason: undefined,
+    watchDisabledReason,
+    stop: () => {
+      engine.stop()
+      liveness.stop()
+      for (const h of handles) clearIntervalFn(h)
+      // ⚠️ **如实说明边界**：这里只是不再起新的 tick；
+      //   已经跑起来的子进程会**跑到它自己的超时**（`maxRuntimeMs`）才被 `SIGKILL`。
+      //   要"立刻全杀掉"需要给 runner 加一个 kill 开关 —— **那属于另一件事**，
+      //   不在这里假装做到了。
+    },
+  }
+}

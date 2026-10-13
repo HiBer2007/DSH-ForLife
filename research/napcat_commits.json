@@ -1,0 +1,1232 @@
+[
+  {
+    "sha": "00729e48076a225791ede1dcbd208755194e8e2a",
+    "node_id": "C_kwDOLlsW3toAKDAwNzI5ZTQ4MDc2YTIyNTc5MWVkZTFkY2JkMjA4NzU1MTk0ZThlMmE",
+    "commit": {
+      "author": {
+        "name": "sj817",
+        "email": "74231782+sj817@users.noreply.github.com",
+        "date": "2026-10-05T03:07:59Z"
+      },
+      "committer": {
+        "name": "sj817",
+        "email": "74231782+sj817@users.noreply.github.com",
+        "date": "2026-10-05T03:07:59Z"
+      },
+      "message": "feat(onebot): 群文件夹返回最后修改时间与修改者\n\nget_group_root_files 返回的文件夹新增 modify_time、modifier、modifier_name，\n取自 NT 原始数据 folderInfo 的 modifyTime / modifyUin / modifyName，\n命名与群文件已有的 modify_time 保持一致。\n\nCloses #1964",
+      "tree": {
+        "sha": "3a827131d5c549425a1d047a2ffd529a86a1d8d6",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/3a827131d5c549425a1d047a2ffd529a86a1d8d6"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/00729e48076a225791ede1dcbd208755194e8e2a",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\niHUEABYKAB0WIQTNGspAvN07h/NM1v0CP3ChuPjBlgUCasMUjwAKCRACP3ChuPjB\nlvi5AQDUYX4Jg+12nfiR/6d4LcgIriE1v4o3CZApl7+ZhqZpcQD+Od/i+/q79dld\n2jygWM+Uah23iYQAbW2cOO569BbNdwg=\n=+aop\n-----END PGP SIGNATURE-----",
+        "payload": "tree 3a827131d5c549425a1d047a2ffd529a86a1d8d6\nparent 5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363\nauthor sj817 <74231782+sj817@users.noreply.github.com> 1791169679 +0800\ncommitter sj817 <74231782+sj817@users.noreply.github.com> 1791169679 +0800\n\nfeat(onebot): 群文件夹返回最后修改时间与修改者\n\nget_group_root_files 返回的文件夹新增 modify_time、modifier、modifier_name，\n取自 NT 原始数据 folderInfo 的 modifyTime / modifyUin / modifyName，\n命名与群文件已有的 modify_time 保持一致。\n\nCloses #1964\n",
+        "verified_at": "2026-10-05T03:09:38Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/00729e48076a225791ede1dcbd208755194e8e2a",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/00729e48076a225791ede1dcbd208755194e8e2a",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/00729e48076a225791ede1dcbd208755194e8e2a/comments",
+    "author": {
+      "login": "sj817",
+      "id": 74231782,
+      "node_id": "MDQ6VXNlcjc0MjMxNzgy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/74231782?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/sj817",
+      "html_url": "https://github.com/sj817",
+      "followers_url": "https://api.github.com/users/sj817/followers",
+      "following_url": "https://api.github.com/users/sj817/following{/other_user}",
+      "gists_url": "https://api.github.com/users/sj817/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/sj817/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/sj817/subscriptions",
+      "organizations_url": "https://api.github.com/users/sj817/orgs",
+      "repos_url": "https://api.github.com/users/sj817/repos",
+      "events_url": "https://api.github.com/users/sj817/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/sj817/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "sj817",
+      "id": 74231782,
+      "node_id": "MDQ6VXNlcjc0MjMxNzgy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/74231782?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/sj817",
+      "html_url": "https://github.com/sj817",
+      "followers_url": "https://api.github.com/users/sj817/followers",
+      "following_url": "https://api.github.com/users/sj817/following{/other_user}",
+      "gists_url": "https://api.github.com/users/sj817/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/sj817/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/sj817/subscriptions",
+      "organizations_url": "https://api.github.com/users/sj817/orgs",
+      "repos_url": "https://api.github.com/users/sj817/repos",
+      "events_url": "https://api.github.com/users/sj817/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/sj817/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363"
+      }
+    ]
+  },
+  {
+    "sha": "5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363",
+    "node_id": "C_kwDOLlsW3toAKDVlZjRmNmNiN2M5M2U5YWE2ZWFhZjc2NDY2ZjNhMTkxMGVhMzUzNjM",
+    "commit": {
+      "author": {
+        "name": "sj817",
+        "email": "74231782+sj817@users.noreply.github.com",
+        "date": "2026-10-05T03:07:59Z"
+      },
+      "committer": {
+        "name": "sj817",
+        "email": "74231782+sj817@users.noreply.github.com",
+        "date": "2026-10-05T03:07:59Z"
+      },
+      "message": "fix(webui): Passkey 检查不再阻塞 Token 登录\n\n在电脑端注册 Passkey 后用手机打开 WebUI，本机没有对应 Passkey 时\nnavigator.credentials.get 可能一直不返回，而检查期间 Token 输入框和回车登录\n都被禁用，页面就卡在「正在检查Passkey」。\n\n- 检查 Passkey 期间不再禁用 Token 输入框和回车登录\n- credentials.get 加 30 秒超时和 AbortController\n- 提交 Token 或离开页面时取消仍在等待的 Passkey 验证\n\nCloses #2076",
+      "tree": {
+        "sha": "79d6cc58202efcfbed5fe9b566797a939a6f4821",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/79d6cc58202efcfbed5fe9b566797a939a6f4821"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\niHUEABYKAB0WIQTNGspAvN07h/NM1v0CP3ChuPjBlgUCasMUjwAKCRACP3ChuPjB\nlmwLAQCrEnpxCm7JVOVXGPZC3Gk/ZCVP/iAwzbWGkyvfSpii0wD/fg/P19HpWYL/\nt89MgUuWC1KGGPjuPcSr44pi+0JQcQk=\n=9EaK\n-----END PGP SIGNATURE-----",
+        "payload": "tree 79d6cc58202efcfbed5fe9b566797a939a6f4821\nparent 13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec\nauthor sj817 <74231782+sj817@users.noreply.github.com> 1791169679 +0800\ncommitter sj817 <74231782+sj817@users.noreply.github.com> 1791169679 +0800\n\nfix(webui): Passkey 检查不再阻塞 Token 登录\n\n在电脑端注册 Passkey 后用手机打开 WebUI，本机没有对应 Passkey 时\nnavigator.credentials.get 可能一直不返回，而检查期间 Token 输入框和回车登录\n都被禁用，页面就卡在「正在检查Passkey」。\n\n- 检查 Passkey 期间不再禁用 Token 输入框和回车登录\n- credentials.get 加 30 秒超时和 AbortController\n- 提交 Token 或离开页面时取消仍在等待的 Passkey 验证\n\nCloses #2076\n",
+        "verified_at": "2026-10-05T03:09:38Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/5ef4f6cb7c93e9aa6eaaf76466f3a1910ea35363/comments",
+    "author": {
+      "login": "sj817",
+      "id": 74231782,
+      "node_id": "MDQ6VXNlcjc0MjMxNzgy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/74231782?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/sj817",
+      "html_url": "https://github.com/sj817",
+      "followers_url": "https://api.github.com/users/sj817/followers",
+      "following_url": "https://api.github.com/users/sj817/following{/other_user}",
+      "gists_url": "https://api.github.com/users/sj817/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/sj817/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/sj817/subscriptions",
+      "organizations_url": "https://api.github.com/users/sj817/orgs",
+      "repos_url": "https://api.github.com/users/sj817/repos",
+      "events_url": "https://api.github.com/users/sj817/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/sj817/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "sj817",
+      "id": 74231782,
+      "node_id": "MDQ6VXNlcjc0MjMxNzgy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/74231782?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/sj817",
+      "html_url": "https://github.com/sj817",
+      "followers_url": "https://api.github.com/users/sj817/followers",
+      "following_url": "https://api.github.com/users/sj817/following{/other_user}",
+      "gists_url": "https://api.github.com/users/sj817/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/sj817/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/sj817/subscriptions",
+      "organizations_url": "https://api.github.com/users/sj817/orgs",
+      "repos_url": "https://api.github.com/users/sj817/repos",
+      "events_url": "https://api.github.com/users/sj817/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/sj817/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec"
+      }
+    ]
+  },
+  {
+    "sha": "13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec",
+    "node_id": "C_kwDOLlsW3toAKDEzYThhMmI4ZGQ5NjJmYTYzYjNiYzk5YTJkMjllYWMwYmY3OGU4ZWM",
+    "commit": {
+      "author": {
+        "name": "sj817",
+        "email": "74231782+sj817@users.noreply.github.com",
+        "date": "2026-10-05T03:07:42Z"
+      },
+      "committer": {
+        "name": "sj817",
+        "email": "74231782+sj817@users.noreply.github.com",
+        "date": "2026-10-05T03:07:42Z"
+      },
+      "message": "fix(onebot): get_group_notice 返回「发给新成员」公告\n\nget_t_list 会把「发给新成员」类公告单独放在 inst 数组里，之前只遍历 feeds，\n这类公告（群规通常发在这里）完全拿不到。现在把 inst 条目追加在 feeds 之后返回，\n已有条目的顺序不变，并按 fid 去重。\n\n新增字段：\n- send_to_new_member：是否为「发给新成员」公告\n- pinned：由 inst 条目的 settings.inst_no_pinned 映射（0 = 置顶），\n  feeds 条目读不到置顶状态，不带该字段\n\nCloses #2082",
+      "tree": {
+        "sha": "bef4e0efecff812b258f65673108062895bbf4f7",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/bef4e0efecff812b258f65673108062895bbf4f7"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\niHUEABYKAB0WIQTNGspAvN07h/NM1v0CP3ChuPjBlgUCasMUjwAKCRACP3ChuPjB\nlpbyAP4oWIbb+gLDS/Cwi5xi6a/uSBiZzJPlBWEP0FxgUE792gD/dOg7QuplvoWm\ndVcWHL5fHcngQfbWhRIyZIMqUDBFOgY=\n=sYeB\n-----END PGP SIGNATURE-----",
+        "payload": "tree bef4e0efecff812b258f65673108062895bbf4f7\nparent 8d69a8e086edeca3408046abd00d99aad6f2eacf\nauthor sj817 <74231782+sj817@users.noreply.github.com> 1791169662 +0800\ncommitter sj817 <74231782+sj817@users.noreply.github.com> 1791169662 +0800\n\nfix(onebot): get_group_notice 返回「发给新成员」公告\n\nget_t_list 会把「发给新成员」类公告单独放在 inst 数组里，之前只遍历 feeds，\n这类公告（群规通常发在这里）完全拿不到。现在把 inst 条目追加在 feeds 之后返回，\n已有条目的顺序不变，并按 fid 去重。\n\n新增字段：\n- send_to_new_member：是否为「发给新成员」公告\n- pinned：由 inst 条目的 settings.inst_no_pinned 映射（0 = 置顶），\n  feeds 条目读不到置顶状态，不带该字段\n\nCloses #2082\n",
+        "verified_at": "2026-10-05T03:09:38Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/13a8a2b8dd962fa63b3bc99a2d29eac0bf78e8ec/comments",
+    "author": {
+      "login": "sj817",
+      "id": 74231782,
+      "node_id": "MDQ6VXNlcjc0MjMxNzgy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/74231782?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/sj817",
+      "html_url": "https://github.com/sj817",
+      "followers_url": "https://api.github.com/users/sj817/followers",
+      "following_url": "https://api.github.com/users/sj817/following{/other_user}",
+      "gists_url": "https://api.github.com/users/sj817/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/sj817/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/sj817/subscriptions",
+      "organizations_url": "https://api.github.com/users/sj817/orgs",
+      "repos_url": "https://api.github.com/users/sj817/repos",
+      "events_url": "https://api.github.com/users/sj817/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/sj817/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "sj817",
+      "id": 74231782,
+      "node_id": "MDQ6VXNlcjc0MjMxNzgy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/74231782?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/sj817",
+      "html_url": "https://github.com/sj817",
+      "followers_url": "https://api.github.com/users/sj817/followers",
+      "following_url": "https://api.github.com/users/sj817/following{/other_user}",
+      "gists_url": "https://api.github.com/users/sj817/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/sj817/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/sj817/subscriptions",
+      "organizations_url": "https://api.github.com/users/sj817/orgs",
+      "repos_url": "https://api.github.com/users/sj817/repos",
+      "events_url": "https://api.github.com/users/sj817/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/sj817/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "8d69a8e086edeca3408046abd00d99aad6f2eacf",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/8d69a8e086edeca3408046abd00d99aad6f2eacf",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/8d69a8e086edeca3408046abd00d99aad6f2eacf"
+      }
+    ]
+  },
+  {
+    "sha": "8d69a8e086edeca3408046abd00d99aad6f2eacf",
+    "node_id": "C_kwDOLlsW3toAKDhkNjlhOGUwODZlZGVjYTM0MDgwNDZhYmQwMGQ5OWFhZDZmMmVhY2Y",
+    "commit": {
+      "author": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-10-04T12:24:08Z"
+      },
+      "committer": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-10-04T12:24:08Z"
+      },
+      "message": "feat",
+      "tree": {
+        "sha": "2cc94035664e545e195f04fcba68352bf7330883",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/2cc94035664e545e195f04fcba68352bf7330883"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/8d69a8e086edeca3408046abd00d99aad6f2eacf",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/8d69a8e086edeca3408046abd00d99aad6f2eacf",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/8d69a8e086edeca3408046abd00d99aad6f2eacf",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/8d69a8e086edeca3408046abd00d99aad6f2eacf/comments",
+    "author": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "26d7533e0f5800fdff865ab2f2ad7692917e1076",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/26d7533e0f5800fdff865ab2f2ad7692917e1076",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/26d7533e0f5800fdff865ab2f2ad7692917e1076"
+      }
+    ]
+  },
+  {
+    "sha": "26d7533e0f5800fdff865ab2f2ad7692917e1076",
+    "node_id": "C_kwDOLlsW3toAKDI2ZDc1MzNlMGY1ODAwZmRmZjg2NWFiMmYyYWQ3NjkyOTE3ZTEwNzY",
+    "commit": {
+      "author": {
+        "name": "Shxiao",
+        "email": "shxiao1115@163.com",
+        "date": "2026-09-29T07:18:10Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-09-29T07:18:10Z"
+      },
+      "message": "fix: get_friend_msg_history 未透传 quick_reply 参数 (#2073)\n\npayload schema 声明了 quick_reply，但 _handle 调用 parseMessage 时\n没有传入，字段被静默忽略；与 get_group_msg_history 行为不一致。\n将 payload.quick_reply 作为第 5 个参数透传，并补充回归测试。",
+      "tree": {
+        "sha": "4432b7eb9a49d9c427f5c173887a7e892ff6d184",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/4432b7eb9a49d9c427f5c173887a7e892ff6d184"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/26d7533e0f5800fdff865ab2f2ad7692917e1076",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqu2YyCRC1aQ7uu5UhlAAAVkYQAE7AmVBU/sJ6+xNHYJfcZayd\nF+bG2RvslLOPq00V5+ZgyUuU6gZFXBSzYQNHbYfgkd8G434SzbgV7XtaNkAF3WpG\nrnXxa099b43K2vgd0Jzc3N26dl99LRqUrscfyxjTXSJiWG44WWfb1fGMgJjX26rA\n7wyAqNGnCRHnOS62sEXEM/dV9pAhTILc4nIcK7Ktx1QhybWjht3VT9/zYmVFIXIQ\n+XeCdR5I0SbVOwIjpGXtw5awhuYndA1pKaWYlXwuc1xBhMOHsjhKExpiHA3y/VDf\nXmcHssF6DqkBjxiT08j3a8jbAbiSQNvBlf8GakQDuQjpC95t0cs/0B7GdJEB/bjd\nJtvgIJlVAVGbSd2LPsC8FWwr1gQKR59+VdicDPBk280W46t26UpEgzlCZN+m/bC1\nfZEtJ7Gq2mt7qP8CNaeLN1KHRsufpOsxw0umGWXXQ7ZbW8v2Sn01A2rs18VP558a\ndT9978DNhAT+8+jAM9zSioznEHUYIlKMehVmi3q/J4rCBKSwoP+w+biBfRUi5xTr\niEcOx/SywxDAkBUAWGcGUBK1x63NWuGsr1otkJx7XKxqktC2yzkP7wueMs+Fy2R3\ntHln8MJEg1B53eSFDOIG76YFqza45dBsczrCPwT3SYMmBC0FOeC0KXvdke9xTej2\nectlC/MYawvD4P+v7LLN\n=YABc\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 4432b7eb9a49d9c427f5c173887a7e892ff6d184\nparent 870a6060b802c1b1a24e2481bcb8b4541d256851\nauthor Shxiao <shxiao1115@163.com> 1790666290 +0900\ncommitter GitHub <noreply@github.com> 1790666290 +0800\n\nfix: get_friend_msg_history 未透传 quick_reply 参数 (#2073)\n\npayload schema 声明了 quick_reply，但 _handle 调用 parseMessage 时\n没有传入，字段被静默忽略；与 get_group_msg_history 行为不一致。\n将 payload.quick_reply 作为第 5 个参数透传，并补充回归测试。",
+        "verified_at": "2026-09-29T07:18:11Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/26d7533e0f5800fdff865ab2f2ad7692917e1076",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/26d7533e0f5800fdff865ab2f2ad7692917e1076",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/26d7533e0f5800fdff865ab2f2ad7692917e1076/comments",
+    "author": {
+      "login": "Shxiao101",
+      "id": 222913928,
+      "node_id": "U_kgDODUlliA",
+      "avatar_url": "https://avatars.githubusercontent.com/u/222913928?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Shxiao101",
+      "html_url": "https://github.com/Shxiao101",
+      "followers_url": "https://api.github.com/users/Shxiao101/followers",
+      "following_url": "https://api.github.com/users/Shxiao101/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Shxiao101/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Shxiao101/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Shxiao101/subscriptions",
+      "organizations_url": "https://api.github.com/users/Shxiao101/orgs",
+      "repos_url": "https://api.github.com/users/Shxiao101/repos",
+      "events_url": "https://api.github.com/users/Shxiao101/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Shxiao101/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "870a6060b802c1b1a24e2481bcb8b4541d256851",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/870a6060b802c1b1a24e2481bcb8b4541d256851",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/870a6060b802c1b1a24e2481bcb8b4541d256851"
+      }
+    ]
+  },
+  {
+    "sha": "870a6060b802c1b1a24e2481bcb8b4541d256851",
+    "node_id": "C_kwDOLlsW3toAKDg3MGE2MDYwYjgwMmMxYjFhMjRlMjQ4MWJjYjhiNDU0MWQyNTY4NTE",
+    "commit": {
+      "author": {
+        "name": "风澪",
+        "email": "eolynya@zhou2008.cn",
+        "date": "2026-09-29T07:18:04Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-09-29T07:18:04Z"
+      },
+      "message": "fix(onebot): 私聊引用丢失 reply 段——按 clientSeq 反查被引用消息 (#2016)\n\n私聊被引用时，引用元素里的 replayMsgSeq 常为 0（客户端未填序号），\nreplyElement 的三条 seq 查询与协议兜底都会落空，最终返回 null；null 段\n被 parseMessageSegments 过滤掉，于是事件里没有 reply 段、也没有报错（#1508）。\n\n同一元素携带的 replyMsgClientSeq / replyMsgTime 在这种场景下依然准确，而\nNapCat 已有按 (peer, clientSeq, time) 查询的 getMsgByClientSeqAndTime\n（此前无调用点）。这里在 seq 查询链失败之后用它反查被引用消息，命中即用\n真实的 msgId 构造 reply 段。\n\n新路径仅在 seq 链失败后追加，群聊与带真实序号的私聊行为不变。\n\n实测（NapCat 4.18.28 / OneBot 私聊）：\n- 日志复现「方法1/2/3 查询失败，序号: 0」→「所有查找方法均失败」\n- 修复后 reply 段的 id 等于被引用消息自身事件里的 message_id，\n  get_msg 可反查，带 reply 段回发引用正常\n\n注：本 PR 先前版本改为直用 records.msgId，实测证伪——那是每次事件一份的\n快照 id，get_msg 查不到、回发引用会被静默丢弃，已放弃该方案。",
+      "tree": {
+        "sha": "4f9d9d1e174c8ca2f7aea24c9ed37766341cb3b8",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/4f9d9d1e174c8ca2f7aea24c9ed37766341cb3b8"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/870a6060b802c1b1a24e2481bcb8b4541d256851",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqu2YsCRC1aQ7uu5UhlAAAw5kQAHascxaBPVRyL208+JTBJTm7\nJDwH/NZ0uadynZ1SSDdx9O9+SbzVRmewvfNioVzCk5cQJn1Y/R8zjdx5a3boNRmm\nKLlBfHV4vmV8uHyT8rMnfcAKpY2QI5CzGiGmK1yLX2HUz9KXrU6tHXlQd1W/8ikH\nutfFDwjz+f91qPHXXUVis+mybWcaDuyl8rbOzu/gQIKbtTo1rRirc63EMRGlPmsI\nOKqrZsBrsESleMlbNLpkFree0IKlWyrsDGuED+SNps2j8TlTloBpJ/OVrb9DJ7cm\naLzmW4QPgFKIQvVWaPRILYs3ViMxserQwYvX6enR9gytdvIMTnWAurcEdFN3gMaC\n394MMZQlk9+vkeyw6FhRGDOEacpZPjlNU7NSxYQp1q9pPr6IDJTZ2fA3csrrX1W1\ngQQHYv8vr4fiJiJyszSXkPXI7tlyn7FA1OPVg5p2SpUbQquNN311HrGsQQK5CBfX\n6E8BGd95UpoyCovIV3jPhXeO+7J9vC/CjhnxPtjoExPz96/BKVhVjHaMdXq2hX/K\nmf7a2kbjLHn8oeKZMeejDEGt1emISxua+0EeJ92TscjWXRRDQyknL1U2QFzhAWsh\nMhWCHqtt3DtADaf2qjWBP+/z4C6ExRKlxTmCdFGPOmg7DVCIXZo64xK/RmJh5Djz\nEpnP4QUG7kX7qU8Spy+T\n=AQ+W\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 4f9d9d1e174c8ca2f7aea24c9ed37766341cb3b8\nparent 0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5\nauthor 风澪 <eolynya@zhou2008.cn> 1790666284 +0800\ncommitter GitHub <noreply@github.com> 1790666284 +0800\n\nfix(onebot): 私聊引用丢失 reply 段——按 clientSeq 反查被引用消息 (#2016)\n\n私聊被引用时，引用元素里的 replayMsgSeq 常为 0（客户端未填序号），\nreplyElement 的三条 seq 查询与协议兜底都会落空，最终返回 null；null 段\n被 parseMessageSegments 过滤掉，于是事件里没有 reply 段、也没有报错（#1508）。\n\n同一元素携带的 replyMsgClientSeq / replyMsgTime 在这种场景下依然准确，而\nNapCat 已有按 (peer, clientSeq, time) 查询的 getMsgByClientSeqAndTime\n（此前无调用点）。这里在 seq 查询链失败之后用它反查被引用消息，命中即用\n真实的 msgId 构造 reply 段。\n\n新路径仅在 seq 链失败后追加，群聊与带真实序号的私聊行为不变。\n\n实测（NapCat 4.18.28 / OneBot 私聊）：\n- 日志复现「方法1/2/3 查询失败，序号: 0」→「所有查找方法均失败」\n- 修复后 reply 段的 id 等于被引用消息自身事件里的 message_id，\n  get_msg 可反查，带 reply 段回发引用正常\n\n注：本 PR 先前版本改为直用 records.msgId，实测证伪——那是每次事件一份的\n快照 id，get_msg 查不到、回发引用会被静默丢弃，已放弃该方案。",
+        "verified_at": "2026-09-29T07:18:05Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/870a6060b802c1b1a24e2481bcb8b4541d256851",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/870a6060b802c1b1a24e2481bcb8b4541d256851",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/870a6060b802c1b1a24e2481bcb8b4541d256851/comments",
+    "author": {
+      "login": "eolynya",
+      "id": 315476113,
+      "node_id": "U_kgDOEs3IkQ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/315476113?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/eolynya",
+      "html_url": "https://github.com/eolynya",
+      "followers_url": "https://api.github.com/users/eolynya/followers",
+      "following_url": "https://api.github.com/users/eolynya/following{/other_user}",
+      "gists_url": "https://api.github.com/users/eolynya/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/eolynya/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/eolynya/subscriptions",
+      "organizations_url": "https://api.github.com/users/eolynya/orgs",
+      "repos_url": "https://api.github.com/users/eolynya/repos",
+      "events_url": "https://api.github.com/users/eolynya/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/eolynya/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5"
+      }
+    ]
+  },
+  {
+    "sha": "0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5",
+    "node_id": "C_kwDOLlsW3toAKDBiNGNmZTY1ZWQ4ODlhYThlODA2MWVlNGM1YjdlZGRkZWMwZDEwZjU",
+    "commit": {
+      "author": {
+        "name": "Shxiao",
+        "email": "shxiao1115@163.com",
+        "date": "2026-09-23T08:52:24Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-09-23T08:52:24Z"
+      },
+      "message": "fix: set_qq_profile 无法将性别设置为 0（未知） (#2065)",
+      "tree": {
+        "sha": "9435bba11ac2a00738a2cce1bc660e00146462ab",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/9435bba11ac2a00738a2cce1bc660e00146462ab"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqs5NICRC1aQ7uu5UhlAAAIUIQAFYXuVkIMpcWVTmGOj7V9rL3\nSPtHRe6o2JYkSu3P4w8HNxpc2TS2yMmrop5PzvzRqt/+cuLQREtlrFDs4jxg91e3\n01ieP+REFmOSTsSaxWAVYkzNTg1LHeSUOxLOagbzS0ngBek6f5QA3r9PwLw7s08Q\n9xs5IrVD6JAFYu4ZLIO1YcLYOj3iVd00RgC0ntUFvxjG4gFt0CBAVDZJgenPajNI\nlt8heZfnfbIp8phb18b1YHEfFF55qOnNPTateKUXoHRMHQuHQOLdV0cWeVtQ0K2l\n6SngCcU8BvNHl8FqID1bSM6LQRu4+mxwauCaCl+ilVyQJppbxw1T1TVSYM2oT+4E\ndvLwUBRfQDELlB/mV4XDkI/7BdjSQVvAf4DOwMdKNXiN2Fv57vshaoGUUOW+orwB\neF6+UHCVrg6/x37YhS7sP8zc+qoi5A4XUBsbpyZKXpWRoHkKixwUfuNzzJOqpmzz\nKCwOgnMxPdupkzcEaixRvdiG7B2aQPDmn0dv7mSNe0jaiZPJIoFa0AuJN6NGe69Y\nRuBHFM3SgNPE8dgu5Va33qkriNJdDtxQvOGvkxMGBqlKpmofnXO3tc9pmnP8Otao\nR17NS7ngDmrPiCAph33WX7MdVhP4LEw6upllKZPoO6l8ytB8TbObSItxjq2IAhmd\nyvKHC/n/HSXloBUtXPcb\n=4njW\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 9435bba11ac2a00738a2cce1bc660e00146462ab\nparent 46e505f4baa289ba4aa02f5ace3b51a4bddea1ee\nauthor Shxiao <shxiao1115@163.com> 1790153544 +0900\ncommitter GitHub <noreply@github.com> 1790153544 +0800\n\nfix: set_qq_profile 无法将性别设置为 0（未知） (#2065)",
+        "verified_at": "2026-09-23T08:52:25Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/0b4cfe65ed889aa8e8061ee4c5b7edddec0d10f5/comments",
+    "author": {
+      "login": "Shxiao101",
+      "id": 222913928,
+      "node_id": "U_kgDODUlliA",
+      "avatar_url": "https://avatars.githubusercontent.com/u/222913928?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Shxiao101",
+      "html_url": "https://github.com/Shxiao101",
+      "followers_url": "https://api.github.com/users/Shxiao101/followers",
+      "following_url": "https://api.github.com/users/Shxiao101/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Shxiao101/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Shxiao101/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Shxiao101/subscriptions",
+      "organizations_url": "https://api.github.com/users/Shxiao101/orgs",
+      "repos_url": "https://api.github.com/users/Shxiao101/repos",
+      "events_url": "https://api.github.com/users/Shxiao101/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Shxiao101/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "46e505f4baa289ba4aa02f5ace3b51a4bddea1ee",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/46e505f4baa289ba4aa02f5ace3b51a4bddea1ee",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/46e505f4baa289ba4aa02f5ace3b51a4bddea1ee"
+      }
+    ]
+  },
+  {
+    "sha": "46e505f4baa289ba4aa02f5ace3b51a4bddea1ee",
+    "node_id": "C_kwDOLlsW3toAKDQ2ZTUwNWY0YmFhMjg5YmE0YWEwMmY1YWNlM2I1MWE0YmRkZWExZWU",
+    "commit": {
+      "author": {
+        "name": "Shxiao",
+        "email": "shxiao1115@163.com",
+        "date": "2026-09-23T02:08:42Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-09-23T02:08:42Z"
+      },
+      "message": "fix: 移出精华消息时 msg_random 与 msg_seq 参数顺序错误 (#2064)",
+      "tree": {
+        "sha": "53eca13a429335b1779fafe497174f37988cd4e9",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/53eca13a429335b1779fafe497174f37988cd4e9"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/46e505f4baa289ba4aa02f5ace3b51a4bddea1ee",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqszSqCRC1aQ7uu5UhlAAACV4QAHfWe0aYSk2XWEi9M00l3CS0\nwmSwOU/BiZfbD3cmIEJWf6XiEAwE+JrTUU6ArOvIa5iM1a4IThwF0hfdYXs6PjqV\nnZRAYjQ4jMOPpMEReIewhlPSt8DTOWGlQzprA7C/nF8CsH2a+HkTsYaF5kQ/McVv\nHUXWJO44NkTXJgJYr9yz1EFZu22ArlKaXsZdE3vcUafk1fWs685Dcem8GlYw2xCX\n8XKt2uI0mlElKh4tyi70CdZAJhn5L9Ndn2WsTw3+RTQUx2aHk0solqb8i986XY2H\nwhTBkfEXsTyUYHMqUW9WPIFaG0Tgy16zuDIoyrcvknt1ZW6emiz9A6Xr8BBq84DZ\nzjyCsaUl4pOaMORPcgM/8NZxQBJNSOP/S6PtJ3HJl7A+qPWNHY+6qpA33EAt4pMZ\ntNVrfzO9Q06Zj/C5uRp4zYIs6o2cA8BsJlahGDlI9P4EQKhC4Gy1NyJ0XC0Ha8q+\nYkzLD3IX+ojUrQbQ7wurinodXRbl1jyTeslD9hjl3GbFosnGiHCJvrTjmZCoGLZr\naR40DK0RRJtBw3IjcKaJctdeZ51rW3ativyYl7SKytZTPE5runXExCdLht/1s/a2\nhRHLOyiORk/ZDLPgAamUoO7Wd8HisClILAeTDogft+pskx+ACsDLfkYhfw/D+n58\nUZZMpsQTqKsJDClB+/2r\n=ZDoy\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 53eca13a429335b1779fafe497174f37988cd4e9\nparent 2049e64260d378e9f1f1f318ae033347d46ab994\nauthor Shxiao <shxiao1115@163.com> 1790129322 +0900\ncommitter GitHub <noreply@github.com> 1790129322 +0800\n\nfix: 移出精华消息时 msg_random 与 msg_seq 参数顺序错误 (#2064)",
+        "verified_at": "2026-09-23T02:08:43Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/46e505f4baa289ba4aa02f5ace3b51a4bddea1ee",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/46e505f4baa289ba4aa02f5ace3b51a4bddea1ee",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/46e505f4baa289ba4aa02f5ace3b51a4bddea1ee/comments",
+    "author": {
+      "login": "Shxiao101",
+      "id": 222913928,
+      "node_id": "U_kgDODUlliA",
+      "avatar_url": "https://avatars.githubusercontent.com/u/222913928?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Shxiao101",
+      "html_url": "https://github.com/Shxiao101",
+      "followers_url": "https://api.github.com/users/Shxiao101/followers",
+      "following_url": "https://api.github.com/users/Shxiao101/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Shxiao101/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Shxiao101/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Shxiao101/subscriptions",
+      "organizations_url": "https://api.github.com/users/Shxiao101/orgs",
+      "repos_url": "https://api.github.com/users/Shxiao101/repos",
+      "events_url": "https://api.github.com/users/Shxiao101/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Shxiao101/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "2049e64260d378e9f1f1f318ae033347d46ab994",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/2049e64260d378e9f1f1f318ae033347d46ab994",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/2049e64260d378e9f1f1f318ae033347d46ab994"
+      }
+    ]
+  },
+  {
+    "sha": "2049e64260d378e9f1f1f318ae033347d46ab994",
+    "node_id": "C_kwDOLlsW3toAKDIwNDllNjQyNjBkMzc4ZTlmMWYxZjMxOGFlMDMzMzQ3ZDQ2YWI5OTQ",
+    "commit": {
+      "author": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T04:36:00Z"
+      },
+      "committer": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T04:36:00Z"
+      },
+      "message": "Add newer QQ appids and arch-aware lookup\n\nUpdated the external QQ appid, native, and packet tables for newer Linux and Windows builds, including architecture-specific Linux AppID entries. QQBasicInfoWrapper now prefers the matching x64/arm64 AppID before falling back to version-only lookups, and regression tests cover Linux/Windows version resolution and fallback behavior.",
+      "tree": {
+        "sha": "63ca0fee51d5111512b14ff5b3f099bdb08ac182",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/63ca0fee51d5111512b14ff5b3f099bdb08ac182"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/2049e64260d378e9f1f1f318ae033347d46ab994",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/2049e64260d378e9f1f1f318ae033347d46ab994",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/2049e64260d378e9f1f1f318ae033347d46ab994",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/2049e64260d378e9f1f1f318ae033347d46ab994/comments",
+    "author": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "7a35ef035a7d5f4e77f78edb29138542c87ac8ba",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/7a35ef035a7d5f4e77f78edb29138542c87ac8ba",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/7a35ef035a7d5f4e77f78edb29138542c87ac8ba"
+      }
+    ]
+  },
+  {
+    "sha": "7a35ef035a7d5f4e77f78edb29138542c87ac8ba",
+    "node_id": "C_kwDOLlsW3toAKDdhMzVlZjAzNWE3ZDVmNGU3N2Y3OGVkYjI5MTM4NTQyYzg3YWM4YmE",
+    "commit": {
+      "author": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T04:01:24Z"
+      },
+      "committer": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T04:01:24Z"
+      },
+      "message": "Pin Windows QQ package for release build\n\nThe Windows release workflow now uses a fixed QQ installer URL and SHA256 hash, verifies the downloaded installer before packaging, and makes the download cache key sensitive to the selected QQ URL, hash, and Node version. The workflow also switches QQ downloads to curl with retries for transient HTTP errors and centralizes the Node version variable to keep the build config consistent.",
+      "tree": {
+        "sha": "cbbf20521e5e1568860833f9de2af2ac7f9b5a0d",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/cbbf20521e5e1568860833f9de2af2ac7f9b5a0d"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/7a35ef035a7d5f4e77f78edb29138542c87ac8ba",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/7a35ef035a7d5f4e77f78edb29138542c87ac8ba",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/7a35ef035a7d5f4e77f78edb29138542c87ac8ba",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/7a35ef035a7d5f4e77f78edb29138542c87ac8ba/comments",
+    "author": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "c75d2f7f86df7d152b34020994f81a8cd2501307",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/c75d2f7f86df7d152b34020994f81a8cd2501307",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/c75d2f7f86df7d152b34020994f81a8cd2501307"
+      }
+    ]
+  },
+  {
+    "sha": "c75d2f7f86df7d152b34020994f81a8cd2501307",
+    "node_id": "C_kwDOLlsW3toAKGM3NWQyZjdmODZkZjdkMTUyYjM0MDIwOTk0ZjgxYThjZDI1MDEzMDc",
+    "commit": {
+      "author": {
+        "name": "五加一5plus1",
+        "email": "82319593+five-plus-one@users.noreply.github.com",
+        "date": "2026-09-14T03:46:32Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-09-14T03:46:32Z"
+      },
+      "message": "fix(webui): recover QR login after forced logout (#2030)",
+      "tree": {
+        "sha": "e9ce7b45ceb4ea53ba98078dea506ed83f6c9348",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/e9ce7b45ceb4ea53ba98078dea506ed83f6c9348"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/c75d2f7f86df7d152b34020994f81a8cd2501307",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqp24YCRC1aQ7uu5UhlAAABWoQAF9uqYdZdUt7W3LoZRtaNW41\n8A4+WluNL4hY98Gvt4Nlla/tmQGGB57NMBZnaAMdguTfkmOun+gBFqiMq+VqBtUq\nnuWGICxT6vS11B5xY59MT9uSdk0uiGNl4ElzW8wQNnhQ/z+VlQog+j+sMbuJ/dKM\nXRr7AJc4EdQAM/gr7obaWLya4XV2SNMHHC9VR1oOzPVbaJCSyxGPaenMFOyb8OHp\n78m/M1oOHe0NbK7wsc8pXt5QaJQHbs3RBmAksJwfWTHTNp8KrUHrOanr6b3wZCYl\nNXN6pH41X4TlpOlm19XHMhCgeKdaQsKo0JEa4RmejoRk2n1j7FvZ0cgoE7BVettH\n5Q5VcltYSSivA35zuzI2iflx1J65Ti2Ax+NlI/+W/h9L2OOI+pLSDFBD4+GxbZzQ\nG/fiJvl5xB5sJc9EE8aN/0Le2mzlOlKErR45pTFh4xaQBXYjlbySIaxQXblykoN6\nubC5pQl1O0DnWbsAiGyhYj/T7NUOjK66L0GBwQlrMoxwKIHJQ/UlvwUsVX6r2Mli\nRAfyHW0RfAD7FFzHycb2t+ffyNlRrmr1S3X1vzoTPy0mtBSWigcHg3YfP1JZZo3r\nlPzLV6CQKIKvg6WbndFf8M+DluftBFg+1Ra5WEdGA3VuEmpcyAEWBHoxZMm9Yeck\nWTuK3p1tVADBSB5/dr2f\n=eqhp\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree e9ce7b45ceb4ea53ba98078dea506ed83f6c9348\nparent fa3fe9fdb25250379396c92edb430299bddb2d4b\nauthor 五加一5plus1 <82319593+five-plus-one@users.noreply.github.com> 1789357592 +0800\ncommitter GitHub <noreply@github.com> 1789357592 +0800\n\nfix(webui): recover QR login after forced logout (#2030)",
+        "verified_at": "2026-09-14T03:46:32Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/c75d2f7f86df7d152b34020994f81a8cd2501307",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/c75d2f7f86df7d152b34020994f81a8cd2501307",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/c75d2f7f86df7d152b34020994f81a8cd2501307/comments",
+    "author": {
+      "login": "five-plus-one",
+      "id": 82319593,
+      "node_id": "MDQ6VXNlcjgyMzE5NTkz",
+      "avatar_url": "https://avatars.githubusercontent.com/u/82319593?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/five-plus-one",
+      "html_url": "https://github.com/five-plus-one",
+      "followers_url": "https://api.github.com/users/five-plus-one/followers",
+      "following_url": "https://api.github.com/users/five-plus-one/following{/other_user}",
+      "gists_url": "https://api.github.com/users/five-plus-one/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/five-plus-one/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/five-plus-one/subscriptions",
+      "organizations_url": "https://api.github.com/users/five-plus-one/orgs",
+      "repos_url": "https://api.github.com/users/five-plus-one/repos",
+      "events_url": "https://api.github.com/users/five-plus-one/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/five-plus-one/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "fa3fe9fdb25250379396c92edb430299bddb2d4b",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/fa3fe9fdb25250379396c92edb430299bddb2d4b",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/fa3fe9fdb25250379396c92edb430299bddb2d4b"
+      }
+    ]
+  },
+  {
+    "sha": "fa3fe9fdb25250379396c92edb430299bddb2d4b",
+    "node_id": "C_kwDOLlsW3toAKGZhM2ZlOWZkYjI1MjUwMzc5Mzk2YzkyZWRiNDMwMjk5YmRkYjJkNGI",
+    "commit": {
+      "author": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T03:43:29Z"
+      },
+      "committer": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T03:43:29Z"
+      },
+      "message": "Use pnpm setup in release workflow\n\nThe release publishing workflow now installs pnpm via pnpm/action-setup instead of globally via npm, and applies the same improvement to the APIFox update job. This keeps the workflow consistent and avoids relying on the environment's global pnpm installation.",
+      "tree": {
+        "sha": "ab7ce188533ebb77e55be045967f47c6f287e539",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/ab7ce188533ebb77e55be045967f47c6f287e539"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/fa3fe9fdb25250379396c92edb430299bddb2d4b",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/fa3fe9fdb25250379396c92edb430299bddb2d4b",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/fa3fe9fdb25250379396c92edb430299bddb2d4b",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/fa3fe9fdb25250379396c92edb430299bddb2d4b/comments",
+    "author": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "464bc3d4a7387146d6f125f41e5758b9171bdbfd",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/464bc3d4a7387146d6f125f41e5758b9171bdbfd",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/464bc3d4a7387146d6f125f41e5758b9171bdbfd"
+      }
+    ]
+  },
+  {
+    "sha": "464bc3d4a7387146d6f125f41e5758b9171bdbfd",
+    "node_id": "C_kwDOLlsW3toAKDQ2NGJjM2Q0YTczODcxNDZkNmYxMjVmNDFlNTc1OGI5MTcxYmRiZmQ",
+    "commit": {
+      "author": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T03:38:46Z"
+      },
+      "committer": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T03:38:46Z"
+      },
+      "message": "Revert \"Disable npm install scripts\"\n\nThis reverts commit 3c03b162f52b559df7a6cb99ef1b65ae187c3e79.",
+      "tree": {
+        "sha": "0aa5f6c9fc141651e52c0940f812bf895bcd8637",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/0aa5f6c9fc141651e52c0940f812bf895bcd8637"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/464bc3d4a7387146d6f125f41e5758b9171bdbfd",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/464bc3d4a7387146d6f125f41e5758b9171bdbfd",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/464bc3d4a7387146d6f125f41e5758b9171bdbfd",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/464bc3d4a7387146d6f125f41e5758b9171bdbfd/comments",
+    "author": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "3c03b162f52b559df7a6cb99ef1b65ae187c3e79",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/3c03b162f52b559df7a6cb99ef1b65ae187c3e79",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/3c03b162f52b559df7a6cb99ef1b65ae187c3e79"
+      }
+    ]
+  },
+  {
+    "sha": "3c03b162f52b559df7a6cb99ef1b65ae187c3e79",
+    "node_id": "C_kwDOLlsW3toAKDNjMDNiMTYyZjUyYjU1OWRmN2E2Y2I5OWVmMWI2NWFlMTg3YzNlNzk",
+    "commit": {
+      "author": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T03:03:09Z"
+      },
+      "committer": {
+        "name": "手瓜一十雪",
+        "email": "nanaeonn@outlook.com",
+        "date": "2026-09-14T03:03:09Z"
+      },
+      "message": "Disable npm install scripts\n\nAdd a project-level .npmrc so npm does not skip package lifecycle scripts during installation. This ensures dependency setup and initialization continue to run as expected.",
+      "tree": {
+        "sha": "063a9c8ade472e0f65fc5800fb22ef8db9734cad",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/063a9c8ade472e0f65fc5800fb22ef8db9734cad"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/3c03b162f52b559df7a6cb99ef1b65ae187c3e79",
+      "comment_count": 0,
+      "verification": {
+        "verified": false,
+        "reason": "unsigned",
+        "signature": null,
+        "payload": null,
+        "verified_at": null
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/3c03b162f52b559df7a6cb99ef1b65ae187c3e79",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/3c03b162f52b559df7a6cb99ef1b65ae187c3e79",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/3c03b162f52b559df7a6cb99ef1b65ae187c3e79/comments",
+    "author": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "MliKiowa",
+      "id": 61873808,
+      "node_id": "MDQ6VXNlcjYxODczODA4",
+      "avatar_url": "https://avatars.githubusercontent.com/u/61873808?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/MliKiowa",
+      "html_url": "https://github.com/MliKiowa",
+      "followers_url": "https://api.github.com/users/MliKiowa/followers",
+      "following_url": "https://api.github.com/users/MliKiowa/following{/other_user}",
+      "gists_url": "https://api.github.com/users/MliKiowa/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/MliKiowa/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/MliKiowa/subscriptions",
+      "organizations_url": "https://api.github.com/users/MliKiowa/orgs",
+      "repos_url": "https://api.github.com/users/MliKiowa/repos",
+      "events_url": "https://api.github.com/users/MliKiowa/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/MliKiowa/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "4079214dc51bd5db5e689d184b9b8e6cba5395a0",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/4079214dc51bd5db5e689d184b9b8e6cba5395a0",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/4079214dc51bd5db5e689d184b9b8e6cba5395a0"
+      }
+    ]
+  },
+  {
+    "sha": "4079214dc51bd5db5e689d184b9b8e6cba5395a0",
+    "node_id": "C_kwDOLlsW3toAKDQwNzkyMTRkYzUxYmQ1ZGI1ZTY4OWQxODRiOWI4ZTZjYmE1Mzk1YTA",
+    "commit": {
+      "author": {
+        "name": "Shxiao",
+        "email": "shxiao1115@163.com",
+        "date": "2026-09-14T02:54:08Z"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-09-14T02:54:08Z"
+      },
+      "message": "fix: Rkey 服务响应缺少必要字段时输出明确错误 (#2044)\n\n部分内置 Rkey 服务返回 HTTP 200 但响应缺少 group_rkey/private_rkey，\nrefreshRkey 直接执行 temp.group_rkey.slice(6) 触发\nTypeError: Cannot read properties of undefined (reading 'slice')，\n报错信息看不出是服务返回结构变化。\n\n在解析前校验响应结构：非对象响应（如 JSON null）不再走 'retcode' in\ntemp 的原始 TypeError 路径；group_rkey/private_rkey 须为可截去 6 字符\n前缀的非空字符串，expired_time 须为正数，无效时按现有失败计数逻辑\n禁用该 URL 并抛出明确错误，与其他服务的异常路径保持一致。\n\nFixes #2010",
+      "tree": {
+        "sha": "0aa5f6c9fc141651e52c0940f812bf895bcd8637",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/trees/0aa5f6c9fc141651e52c0940f812bf895bcd8637"
+      },
+      "url": "https://api.github.com/repos/NapNeko/NapCatQQ/git/commits/4079214dc51bd5db5e689d184b9b8e6cba5395a0",
+      "comment_count": 0,
+      "verification": {
+        "verified": true,
+        "reason": "valid",
+        "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJqp2HQCRC1aQ7uu5UhlAAAk9wQAG/6/+Alv9n1P+UzesXBJEL0\nPfygKRAGJKvQSU4kvhDnZgn2/o4X0PR+X2OWvVvnFewdrv4JxhvTPEHdFfJAVxwk\nJr5h9TQVNCVFygd502aZQQ3yLIH5Ol9ffu7jwSc9hWph30XEXp6HRIp9Btmhuqky\nG69W4GDYUdjsTlHW+F3IaOZTY7WatSxqxdZ3JKBrLBExznmKqPdUzg5DriGM5hde\nvAh8jcTIPkZ3hdQx5HwrjnL7Z6FRyrub4RwmEg9ByJ5tNmueypcTM709kqCEeF0k\n6bVsI6RzzX6eowUut9in4S+el6DBQ6iHStFRV7PfiFkXCE1nbnqsX9ClLt3A31g/\n3MpR1RGljQpE0UAQvXq11N85nYfpqRj/V2AvHNdRTf1tQaWo2kNIaKNz98If/d4z\nqji7dUYokO4yQZ8ZdVIWFjNsXD3Q3vdqnKCoMT9iiM9qadvsC/td7p0qLhl9X65u\nMKsVliSfCIdEDU6HQl/olW95/iFA+hHTDyaUk79G6IAtK7U2PgWkX1fOEF1KXk4m\neKAEXxLMwwgWWYYTX7N0xg49qAebgLHXiVws2NdH/c0X6ZeznujrTFfUrdtR2IgO\njRbnFwl1v1M7tYVa2JGvFqFtBzg/Y4S8K4vY8r5acU3fqRrh8tktPVjWP/XF8RLI\nnxAALdQQtytqNW3VvzAx\n=UJUw\n-----END PGP SIGNATURE-----\n",
+        "payload": "tree 0aa5f6c9fc141651e52c0940f812bf895bcd8637\nparent 109d0c1dff755875f3b79795e99cee6115289fbb\nauthor Shxiao <shxiao1115@163.com> 1789354448 +0900\ncommitter GitHub <noreply@github.com> 1789354448 +0800\n\nfix: Rkey 服务响应缺少必要字段时输出明确错误 (#2044)\n\n部分内置 Rkey 服务返回 HTTP 200 但响应缺少 group_rkey/private_rkey，\nrefreshRkey 直接执行 temp.group_rkey.slice(6) 触发\nTypeError: Cannot read properties of undefined (reading 'slice')，\n报错信息看不出是服务返回结构变化。\n\n在解析前校验响应结构：非对象响应（如 JSON null）不再走 'retcode' in\ntemp 的原始 TypeError 路径；group_rkey/private_rkey 须为可截去 6 字符\n前缀的非空字符串，expired_time 须为正数，无效时按现有失败计数逻辑\n禁用该 URL 并抛出明确错误，与其他服务的异常路径保持一致。\n\nFixes #2010",
+        "verified_at": "2026-09-14T02:54:08Z"
+      }
+    },
+    "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/4079214dc51bd5db5e689d184b9b8e6cba5395a0",
+    "html_url": "https://github.com/NapNeko/NapCatQQ/commit/4079214dc51bd5db5e689d184b9b8e6cba5395a0",
+    "comments_url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/4079214dc51bd5db5e689d184b9b8e6cba5395a0/comments",
+    "author": {
+      "login": "Shxiao101",
+      "id": 222913928,
+      "node_id": "U_kgDODUlliA",
+      "avatar_url": "https://avatars.githubusercontent.com/u/222913928?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/Shxiao101",
+      "html_url": "https://github.com/Shxiao101",
+      "followers_url": "https://api.github.com/users/Shxiao101/followers",
+      "following_url": "https://api.github.com/users/Shxiao101/following{/other_user}",
+      "gists_url": "https://api.github.com/users/Shxiao101/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/Shxiao101/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/Shxiao101/subscriptions",
+      "organizations_url": "https://api.github.com/users/Shxiao101/orgs",
+      "repos_url": "https://api.github.com/users/Shxiao101/repos",
+      "events_url": "https://api.github.com/users/Shxiao101/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/Shxiao101/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "committer": {
+      "login": "web-flow",
+      "id": 19864447,
+      "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/web-flow",
+      "html_url": "https://github.com/web-flow",
+      "followers_url": "https://api.github.com/users/web-flow/followers",
+      "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+      "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+      "organizations_url": "https://api.github.com/users/web-flow/orgs",
+      "repos_url": "https://api.github.com/users/web-flow/repos",
+      "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/web-flow/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "parents": [
+      {
+        "sha": "109d0c1dff755875f3b79795e99cee6115289fbb",
+        "url": "https://api.github.com/repos/NapNeko/NapCatQQ/commits/109d0c1dff755875f3b79795e99cee6115289fbb",
+        "html_url": "https://github.com/NapNeko/NapCatQQ/commit/109d0c1dff755875f3b79795e99cee6115289fbb"
+      }
+    ]
+  }
+]

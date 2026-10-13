@@ -1,0 +1,186 @@
+/**
+ * 设计令牌 —— 界面的"唯一真源"。
+ *
+ * 三条要求的落点：
+ *  - **美观**：一套克制的灰阶 + 一个品牌色，阴影与圆角统一，不做花哨渐变；
+ *  - **深色模式**：所有颜色都是语义令牌（`--c-surface` / `--c-text` …），
+ *    深色只覆盖令牌值，组件一行都不用改；三种模式 system/light/dark 由 `data-theme` 表达。
+ *  - **手机端**：字号与间距用 `clamp()` 做流体缩放，触控目标最小 44px，安全区用 `env(safe-area-inset-*)`。
+ *
+ * 命名规则：`--c-*` 颜色，`--s-*` 间距，`--r-*` 圆角，`--t-*` 字号，`--sh-*` 阴影。
+ * 组件里**只准**用这些令牌，不准写死颜色 —— 否则深色模式必然出现"某处还是白的"。
+ */
+
+:root {
+  /* ── 灰阶（浅色）────────────────────────────────────────────── */
+  --c-bg: #f7f8fa; /* 页面底 */
+  --c-surface: #ffffff; /* 卡片/面板 */
+  --c-surface-2: #f2f4f7; /* 次级面（表头、内嵌块） */
+  --c-surface-3: #e9edf2; /* 三级面（hover、选中） */
+  --c-border: #e3e6eb;
+  --c-border-strong: #cdd3dc;
+
+  --c-text: #14161a; /* 主文字 */
+  --c-text-2: #4a515b; /* 次要文字 */
+  --c-text-3: #737c89; /* 弱化文字/说明 */
+  --c-text-invert: #ffffff;
+
+  /* ── 品牌与状态 ─────────────────────────────────────────────── */
+  --c-brand: #3b6ef5;
+  --c-brand-hover: #2f5fe0;
+  --c-brand-soft: #eaf0ff; /* 品牌色浅底（选中态） */
+  --c-brand-text: #1f4bd0;
+
+  --c-ok: #16a34a;
+  --c-ok-soft: #e7f7ed;
+  --c-warn: #d97706;
+  --c-warn-soft: #fdf3e3;
+  --c-err: #dc2626;
+  --c-err-soft: #fdecec;
+  --c-info: #0d7ea8;
+  --c-info-soft: #e6f4fa;
+
+  /* ── 图表/徽标配色（有序，避免每次现编色）──────────────────── */
+  --c-1: #3b6ef5;
+  --c-2: #8b5cf6;
+  --c-3: #0d9488;
+  --c-4: #d97706;
+  --c-5: #db2777;
+  --c-6: #64748b;
+
+  /* ── 间距（4 的倍数，流体缩放）─────────────────────────────── */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* ── 圆角 ───────────────────────────────────────────────────── */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  /* ── 字号（流体：手机略小、桌面略大，不用媒体查询也能看）──── */
+  --t-xs: 12px;
+  --t-sm: 13px;
+  --t-base: 14px;
+  --t-md: 15px;
+  --t-lg: 18px;
+  --t-xl: clamp(20px, 1.4vw + 14px, 24px);
+  --t-2xl: clamp(24px, 2vw + 16px, 30px);
+
+  --lh-tight: 1.25;
+  --lh-base: 1.55;
+
+  /* ── 阴影（浅色下很淡，深色下几乎不用）─────────────────────── */
+  --sh-1: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 4%);
+  --sh-2: 0 2px 8px rgb(16 24 40 / 8%), 0 1px 3px rgb(16 24 40 / 4%);
+  --sh-3: 0 12px 32px rgb(16 24 40 / 14%), 0 2px 8px rgb(16 24 40 / 6%);
+
+  /* ── 布局尺寸 ───────────────────────────────────────────────── */
+  --w-sidebar: 244px;
+  --h-topbar: 56px;
+  --w-content-max: 1360px;
+
+  /* ── 动效（尊重"减少动态效果"偏好）────────────────────────── */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── 字体 ───────────────────────────────────────────────────── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* 触控目标最小尺寸（手机端可用性硬要求） */
+  --touch-min: 44px;
+}
+
+/* ── 深色：只覆盖令牌，组件代码零改动 ──────────────────────────── */
+:root[data-theme='dark'] {
+  --c-bg: #0f1115;
+  --c-surface: #171a1f;
+  --c-surface-2: #1d2127;
+  --c-surface-3: #262b33;
+  --c-border: #262b33;
+  --c-border-strong: #39404a;
+
+  --c-text: #e8eaee;
+  --c-text-2: #a8b0bc;
+  --c-text-3: #7d8593;
+  --c-text-invert: #0f1115;
+
+  --c-brand: #5b8cff;
+  --c-brand-hover: #78a1ff;
+  --c-brand-soft: #1b2a4d;
+  --c-brand-text: #a8c2ff;
+
+  --c-ok: #34d399;
+  --c-ok-soft: #10291f;
+  --c-warn: #fbbf24;
+  --c-warn-soft: #2b2113;
+  --c-err: #f87171;
+  --c-err-soft: #2d1618;
+  --c-info: #38bdf8;
+  --c-info-soft: #0d2630;
+
+  --c-1: #5b8cff;
+  --c-2: #a78bfa;
+  --c-3: #2dd4bf;
+  --c-4: #fbbf24;
+  --c-5: #f472b6;
+  --c-6: #94a3b8;
+
+  /* 深色下阴影几乎不可见，改用更强的边框来表达层级 */
+  --sh-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --sh-2: 0 2px 8px rgb(0 0 0 / 45%);
+  --sh-3: 0 16px 40px rgb(0 0 0 / 55%);
+}
+
+/* system 模式下，如果用户系统是深色，就套用深色令牌（值复用上面那份） */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] {
+    --c-bg: #0f1115;
+    --c-surface: #171a1f;
+    --c-surface-2: #1d2127;
+    --c-surface-3: #262b33;
+    --c-border: #262b33;
+    --c-border-strong: #39404a;
+
+    --c-text: #e8eaee;
+    --c-text-2: #a8b0bc;
+    --c-text-3: #7d8593;
+    --c-text-invert: #0f1115;
+
+    --c-brand: #5b8cff;
+    --c-brand-hover: #78a1ff;
+    --c-brand-soft: #1b2a4d;
+    --c-brand-text: #a8c2ff;
+
+    --c-ok: #34d399;
+    --c-ok-soft: #10291f;
+    --c-warn: #fbbf24;
+    --c-warn-soft: #2b2113;
+    --c-err: #f87171;
+    --c-err-soft: #2d1618;
+    --c-info: #38bdf8;
+    --c-info-soft: #0d2630;
+
+    --c-1: #5b8cff;
+    --c-2: #a78bfa;
+    --c-3: #2dd4bf;
+    --c-4: #fbbf24;
+    --c-5: #f472b6;
+    --c-6: #94a3b8;
+
+    --sh-1: 0 1px 2px rgb(0 0 0 / 40%);
+    --sh-2: 0 2px 8px rgb(0 0 0 / 45%);
+    --sh-3: 0 16px 40px rgb(0 0 0 / 55%);
+  }
+}

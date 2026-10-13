@@ -1,0 +1,168 @@
+/**
+ * `@forlife/router` —— 复杂度评分与模型路由。
+ *
+ * 三层结构（模型路由.MD §5.1）：守卫规则（<1ms）→ L1 评分器（5–30ms）→ 启发式兜底（<1ms）。
+ * 与 `@forlife/gateway` 的分工：那边管"要不要理它"，这边管"用多强的脑子理它"。
+ *
+ * @module @forlife/router
+ */
+export { DEFAULT_GUARDS, runGuards } from './guards.ts'
+export type { GuardContext, GuardRule, GuardVerdict, Tier } from './guards.ts'
+
+export { hasCodeBlock, hasPlanningKeywords, heuristicScore, heuristicTier } from './heuristic.ts'
+export type { HeuristicInput, HeuristicScore } from './heuristic.ts'
+
+export { defaultScoringPrompt, HeuristicTierScorer, HttpTierScorer, parseScoringOutput } from './scorer.ts'
+export type { HttpScorerOptions, ScoreResult, ScoringInput, ScoringPrompt, TierScorer } from './scorer.ts'
+
+export { deescalate, describeDecision, escalate, routeBatch, Router, startPreScore } from './pipeline.ts'
+export type { RouterOptions, RoutingDecision } from './pipeline.ts'
+
+// ★ 判档那一条链（2026-10-10 接线时才发现**它没被导出**）：
+//   `dsh-component/src/model-router.ts` 要按档位选模型，而入口是 `initialRoute()` ——
+//   它一直只存在于 `initial.ts` 里，**barrel 没往外给**。
+//   ⇒ 于是"按档位选模型"这件事**从外面根本调不到**：不是因为逻辑没写，
+//     而是因为**门没开**。（这与 §23 那个洞是同一种病：找不到入口。）
+//   ⚠️ 记在这里：**导出清单也是一种接线** —— 漏一个名字，等于一整块功能不存在。
+export { decideTier, initialRoute, pickModel, scoreCandidate } from './initial.ts'
+export type { InitialRouteDecision, PreScore, RouteCandidate, TierSource } from './initial.ts'
+
+export {
+  assertNotSubagentSwitch,
+  assertTierForTurn,
+  decideSwitch,
+  defaultRouteEntries,
+  defaultSwitchPolicy,
+  emptyFallbackState,
+  lockTierForTurn,
+  recordRouteFailure,
+  recordRouteSuccess,
+  ROUTE_ROLES,
+  selectRoute,
+} from './routes.ts'
+export type {
+  FallbackState,
+  RouteEntry,
+  RouteRole,
+  RouteSelection,
+  SelectionContext,
+  SwitchPolicy,
+  SwitchVerdict,
+  TurnRouteState,
+} from './routes.ts'
+
+export { reviewCases, summarizeReview } from './review.ts'
+export type { ReviewCase, SuggestionKind, TuningSuggestion } from './review.ts'
+
+
+export {
+  ACCELERATOR_BACKENDS,
+  candidateModels,
+  emptyDeviceProbe,
+  ENDPOINT_TYPES,
+  planBackend,
+  probeDevices,
+  RUN_MODES,
+  suggestBackend,
+  suggestSizing,
+  validateEndpoint,
+} from './endpoints.ts'
+export type {
+  AcceleratorBackend,
+  Architecture,
+  BackendPlan,
+  BackendPlanInput,
+  CandidateModel,
+  DeviceProbe,
+  EndpointHealth,
+  EndpointLimits,
+  EndpointType,
+  InferenceEndpoint,
+  ModelCapability,
+  ProbePort,
+  Quantization,
+  RunMode,
+  SizingAdvice,
+  ValidationIssue,
+} from './endpoints.ts'
+
+export { checkRemoteGuard, estimateContainerMemoryMb, planDeploy, runDeploy } from './deploy.ts'
+export type {
+  DeployExecutor,
+  DeployPlan,
+  DeployResult,
+  DeploySpec,
+  DeployStep,
+  DeployStepKind,
+  DeployTarget,
+  DeployTargetKind,
+  ExternalApiTarget,
+  LocalDockerTarget,
+  PreflightResult,
+  RemoteGuard,
+  RemoteSshTarget,
+  StepResult,
+} from './deploy.ts'
+
+export { fileSha256, resumableDownload, sameSha256 } from './download.ts'
+export type { DownloadOptions, DownloadProgress, DownloadResult } from './download.ts'
+
+export { adviseAutoSwitch, defaultSwitchOptions, switchMode } from './mode-switch.ts'
+export type {
+  AutoSwitchAdvice,
+  AutoSwitchSignals,
+  ModeSwitchEffects,
+  SwitchModeOptions,
+  SwitchModeRequest,
+  SwitchModeResult,
+} from './mode-switch.ts'
+
+
+export {
+  decideImageRoute,
+  decideVerification,
+  decideVisionCall,
+  decideVisionCallForRow,
+  describePrompt,
+  findImportantFields,
+  markMemorySource,
+  parseDescription,
+  renderDescriptionBlock,
+  verificationPrompt,
+} from './vision.ts'
+export type {
+  DescriptionBlockInput,
+  DescriptionTemplate,
+  ImageRoute,
+  ImageRouteDecision,
+  ImportantField,
+  ImportantFieldKind,
+  InputModalities,
+  MemorySourceMark,
+  ParsedDescription,
+  VerificationDecision,
+  VisionCallCounter,
+} from './vision.ts'
+
+
+export { assignAll, assignSubagent, assertNoRuntimeModelChange, ROLE_PURPOSE, ROLE_TIER, SUBAGENT_ROLES } from './subagents.ts'
+export type {
+  AssignmentContext,
+  ModelInfoLike,
+  SubagentAgentOptions,
+  SubagentAssignment,
+  SubagentRole,
+} from './subagents.ts'
+
+
+export { assertRouteForStep, classifyFailure, isSwappable, onRequestError, startStep } from './failover.ts'
+export type {
+  FailureKind,
+  FailoverDecision,
+  FailoverPolicy,
+  ModelRef,
+  RequestFailure,
+  StepFailoverState,
+} from './failover.ts'
+export * from './catalog.ts'
+export * from './initial.ts'

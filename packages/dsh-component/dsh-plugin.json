@@ -1,0 +1,38 @@
+{
+  "$schema": "https://dsh.community/schemas/dsh-plugin-0.15.schema.json",
+  "manifestVersion": "0.15",
+  "id": "forlife-memory",
+  "name": "DSH-ForLife Memory",
+  "version": "0.1.0",
+  "description": "长期记忆 + QQ 生命体运行时：中期/长期记忆、压缩引擎、路由、表情与媒体库、触发与自唤醒。",
+  "license": "UNLICENSED",
+  "facets": {
+    "host": {
+      "entry": "./src/facet.ts",
+      "apiVersion": "lifecycle.dsh/v1alpha1"
+    }
+  },
+  "requires": {
+    "contracts": [
+      { "apiVersion": "tools.dsh/v1alpha1", "kind": "Tool" },
+      { "apiVersion": "session.dsh/v1alpha1", "kind": "SessionEvent", "optional": true },
+      { "apiVersion": "ui.dsh/v1alpha1", "kind": "ContributionHost", "optional": true },
+      { "apiVersion": "storage.dsh/v1alpha1", "kind": "LocalStorage", "optional": true }
+    ]
+  },
+  "permissions": [
+    { "name": "storage.local.read", "scope": "forlife", "reason": "读取记忆表、表情库与媒体库" },
+    { "name": "storage.local.write", "scope": "forlife", "reason": "写入记忆表与审计日志" }
+  ],
+  "subscriptions": [
+    { "apiVersion": "session.dsh/v1alpha1", "kind": "SessionEvent", "scope": "forlife.*" }
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "forlife.doctor", "title": "ForLife 诊断", "description": "输出存储、契约与运行环境诊断" }
+    ]
+  },
+  "compat": {
+    "hosts": ["dsh-tui >=0.11", "dsh-web >=0.1.7"]
+  }
+}

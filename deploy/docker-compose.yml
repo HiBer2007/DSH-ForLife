@@ -1,0 +1,462 @@
+# DSH-ForLife · 部署编排（阶段 0：拓扑骨架）
+#
+# 阶段 0 的目标是"结构正确、能被解析"，不是"能起来"：
+#   - 本文件刻意不使用 compose 的较新特性（profiles / up --wait / depends_on: condition 的复杂形式），
+#     因为开发机实测版本是 Compose v2.13.0，CI 会用同版本解析；
+#   - dsh 与 gateway 此时用 node 镜像占位，真实镜像在阶段 9/10 构建；
+#   - QQ 客户端一律**引用官方镜像**，绝不把它的二进制打进我们的产物（许可与安全双重原因）。
+#
+# 验证：docker compose -f deploy/docker-compose.yml config --quiet
+
+name: forlife
+
+services:
+  # ── 唯一公网入口：TLS + 路由 + TCP 穿透 ────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    # ★ **这两个变量必须设**，否则 Caddy 会以一条看不懂的解析错误启动失败：
+    #
+    # `email {$ACME_EMAIL}` 在变量没设时展开成 `email `（有指令没参数）⇒
+    # 报 `wrong argument count or unexpected line ending after 'email'`。
+    #
+    # **那条报错完全没提环境变量** —— 排障的人会去改 Caddyfile 的 email 行，
+    # 而真正的原因在部署侧的 env。**报错指的地方和原因差了一层。**
+    #
+    # 用 `${VAR:?消息}`：**变量没设时 compose 自己报错并打出消息**，
+    # 失败提前到 `up` 那一刻，而且消息里写清了要设什么。
+    #
+    # **不用 `${VAR:-默认值}`** —— 那会让一个用假域名/假邮箱起来的 Caddy
+    # **静默地申请错误的证书**。
+    environment:
+      FORLIFE_HOST: ${FORLIFE_HOST}
+      ACME_EMAIL: ${ACME_EMAIL}
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-admin:/run/caddy # Admin API 走 unix socket（绝不暴露 2019）
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── DSH 运行时（我们的便携组件挂在这里）────────────────────────────────────
+  dsh:
+    # **构建自 deploy/Dockerfile.app**（多阶段：构建前端 → 运行）
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.app
+      # ★★ 2026-10-10 真机实测：**构建容器拿不到可用的 DNS**，必须走宿主网络。
+      #
+      #   现象：`pnpm install` / `corepack` 报 `getaddrinfo EAI_AGAIN`，
+      #   连 `registry.npmmirror.com`（**镜像源**）都解析不了 —— 不只是 npmjs。
+      #
+      #   根因（对照实验做出来的）：
+      #   | 容器 | resolv.conf 里的 nameserver | 能解析吗 |
+      #   | :--- | :--- | :--- |
+      #   | **现在新建**的 | `192.168.1.1`（来自 `/run/systemd/resolve/resolv.conf`） | ❌ **不能** |
+      #   | **已有**的四个（`forlife-*`） | `127.0.0.11`（Docker 内嵌解析器） | ✅ 能 |
+      #
+      #   ⇒ 宿主 systemd-resolved 的上游指向了那台路由，而**它解析不了这些域名**；
+      #     早先创建的容器碰巧用的是 Docker 内嵌解析器，所以一直没事。
+      #   ⇒ 构建走 **host 网络**：实测同一个镜像 + `--network=host` **能解析**。
+      #
+      #   ⚠️ 为什么不去改 `/etc/docker/daemon.json` 加 `"dns"`：
+      #   那要**重启 Docker 守护进程** ⇒ 会**停/起所有容器（含 `qq`）**，
+      #   而硬约束是**绝不重启 qq 容器**（重启一次就要重新扫码登录）。
+      #   ⇒ 用**只影响构建**的这条，绕开那个代价。
+      network: host
+    image: forlife-app:local
+    restart: unless-stopped
+    working_dir: /app
+    # **真命令**（原来是占位：command: ["node", "--version"]）
+    # ★★ 2026-10-07 真机部署发现（**缺陷 5 的后半截**）：
+    #   **DSH 只从 `$DSH_HOME/profiles/<名>` 找 profile**，而 `DSH_HOME=/data/dsh`
+    #   是一个**命名卷** —— 镜像里的 `/app/profiles/…` **不在它下面**。
+    #   ⇒ 必须先建符号链接，否则：
+    #     Error: dsh: profile "forlife-web" does not exist;
+    #            create it with 'dsh plugin --profile forlife-web add <package>'
+    #     ⇒ **dsh 崩溃重启循环**。
+    # ★★ 2026-10-07 真机部署发现（**缺陷 5 的后半截** + **第 11 处缺陷**）：
+    #
+    #   ① **profile 符号链接**：DSH 只从 `$DSH_HOME/profiles/<名>` 找 profile，
+    #      而 `DSH_HOME=/data/dsh` 是**命名卷** —— 镜像里的 `/app/profiles/…` 不在它下面。
+    #      少了它：`Error: dsh: profile "forlife-web" does not exist` ⇒ **崩溃重启循环**。
+    #   ② **冷层子目录**：`tiers/cold` / `archives` / `backups` 没人建，
+    #      在**空的**冷盘上 `touch` 会 `No such file or directory`，而**应用一句话都不报**
+    #      ⇒ 沉降/归档/备份全部写不进去。
+    #
+    # ⚠️⚠️ **这些说明必须在 `command:` 这一行之前** ——
+    #   写成下面的 `>-` 块**里面**的话，`#` 是**内容不是注释**，
+    #   而 `>-` 会把多行**折叠成一行** ⇒ 整条命令变成一句注释、什么都不执行
+    #   ⇒ 容器退出码 **0** ⇒ `restart: unless-stopped` 无限重启。
+    #   （**现场症状就是 `Restarting (0)`** —— 退出码 0 是那个关键线索。）
+    #
+    # ★★ 2026-10-11 真机事故（**同一个症状的另一种成因，必须与上面那条分开看**）：
+    #   现场：`forlife-dsh-1` 每 ~20-36 秒重启一次（`RestartCount` 两小时 **206** 次），
+    #         `ExitCode=0`，容器 healthy，而**面板整个不可用**。
+    #   证据（读**启动诊断日志**，不是看容器状态）：
+    #     `StartupError: dsh: startup failed: 1 required plugin did not activate`
+    #     `Error: atomic-write: timed out waiting for the writer lock at
+    #             /data/dsh/.credentials.yaml.lock`
+    #   根因（`@deepseek-ai/dsh-atomic-write` 的锁语义，逐字读出来的）：
+    #     锁 = 用 `wx` 创建的 `<文件>.lock`，**内容是持有者的 PID**；
+    #     竞争者若发现"记录的 PID 不存在"会**立刻接管**，
+    #     但 **"记录不完整"（含**空文件**）的锁一律只能等** ⇒ 2 秒超时 ⇒ 启动失败。
+    #   现场那个锁文件是 **0 字节**（`mtime` 早于本次容器启动）：
+    #     上一次容器在"创建锁"与"写入 PID"之间被杀（本仓 2026-10-11 早上正好有过一次
+    #     磁盘写满事故），于是留下一个**永远没人能接管**的锁 ⇒ 每次启动都在 2 秒后失败。
+    #   ⇒ 容器启动时先清掉**空**锁。**只看 0 字节**是一条安全判据：
+    #     非空锁里有 PID，库自己会判断持有者是否还活着 —— 那种**不许我们插手**。
+    #   ⚠️ 这条清理用 `;` 收尾（**不能**接进 `&&` 链）：
+    #     接进去会变成 `A && B || rm && exec` ⇒ **前面的失败被 `rm` 的成功吃掉**，
+    #     而上面那些 `mkdir` / `test -f` 恰恰是**故意**用来"不满足就别启动"的。
+    command:
+      - sh
+      - -c
+      - >-
+        [ -s /data/dsh/.credentials.yaml.lock ] || rm -f /data/dsh/.credentials.yaml.lock ;
+        mkdir -p /cold/tiers/cold /cold/archives /cold/backups &&
+        mkdir -p /data/dsh/profiles &&
+        ln -sfn /app/profiles/forlife-web /data/dsh/profiles/forlife-web &&
+        ln -sfn /app/profiles/forlife-headless /data/dsh/profiles/forlife-headless &&
+        ln -sfn /app/profiles/forlife-qq /data/dsh/profiles/forlife-qq &&
+        test -f /data/dsh/profiles/forlife-web/cordis.patch.yml &&
+        test -f /data/dsh/profiles/forlife-headless/cordis.patch.yml &&
+        test -f /data/dsh/profiles/forlife-qq/cordis.patch.yml &&
+        exec dsh --profile forlife-web --no-open
+    environment:
+      # 关键：DSH_HOME 指向容器内数据卷，与宿主 ~/.dsh 零关系
+      DSH_HOME: /data/dsh
+      FORLIFE_MODE: container
+      # ★★ 2026-10-07 **真机部署**发现：**原来一个 tier 根都没设** ⇒
+      #   冷热分层根本没生效（`resolveTierRoots()` 连 HOT 都拿不到，而它没有默认值）。
+      #   ⇒ 三层的根全落在同一个卷上，**HDD 冷层形同虚设**。
+      #
+      #   生产：把 `FORLIFE_COLD_DIR` 指向**真 HDD 的挂载点**即可，容器侧路径不用改。
+      #   单盘：不设也行（cold 会退回 warm，面板显示"冷层退回了"）。
+      # ★★ 2026-10-10（`FIX_PLAN.md` §26）：**插件与网关的日志目录必须显式对齐**。
+      #
+      #   背景：插件（`dsh` 容器）与管理面板的七级日志库（`gateway` 容器）是**两个进程**；
+      #   插件原来只 `console.log` ⇒ **面板上看不到记忆/沉降/投喂/判档/唤醒的任何活动**。
+      #   现在插件会把日志**追写到网关读的那同一个 JSONL 文件**（共享卷 `dsh-home`）。
+      #
+      #   ⚠️ 两边各自**能**推出一个目录，但**推出来的不是同一个**：
+      #     插件侧兜底 = `<DSH_HOME>/forlife/logs`；
+      #     网关侧兜底 = `dirname(FORLIFE_DB)/logs` = `/data/dsh/forlife/db/logs`
+      #   ⇒ **不显式设这一行，这次修复等于没生效**（而单测全绿）。
+      #   ⇒ 两个服务都设成**同一个值**。
+      FORLIFE_LOG_DIR: /data/dsh/forlife/logs
+      FORLIFE_ROOT_HOT: /data/tiers/hot
+      FORLIFE_ROOT_WARM: /data/tiers/warm
+      FORLIFE_ROOT_COLD: /cold/tiers/cold
+      FORLIFE_ARCHIVE_DIR: /cold/archives
+      FORLIFE_BACKUP_DIR: /cold/backups
+
+      # ── provider 密钥（**引用名在此，真值在 deploy/.env**）──────────────────
+      # 用户给的三个 OpenCode Go key，优先级 **GO → QQ → CL**（哪个有额度用哪个，CL 最后）。
+      # `apiKeyEnv` 在 profiles/*/cordis.patch.yml 里指向 FORLIFE_OPENCODE_GO_KEY。
+      FORLIFE_OPENCODE_GO_KEY: ${FORLIFE_OPENCODE_GO_KEY:-}
+      FORLIFE_OPENCODE_QQ_KEY: ${FORLIFE_OPENCODE_QQ_KEY:-}
+      FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
+      # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
+      FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
+
+      # ── DSH 内置 provider 的凭据 ──────────────────────────────────────────
+      # ★ 变量名必须是 **DEEPSEEK_API_KEY** —— 那是 DSH 内置 provider（provider id =
+      #   `deepseek-official`）认的名字（在 dsh 包里 grep 出来的，不是我们起的）。
+      #   值仍只放 deploy/.env（引用名在此）。
+      #   它给 L2/L3/scorer 当**跨 provider 的兜底**（见 seedDeepSeekFallback）。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+
+      # ── 模型路由（中介层）─────────────────────────────────────────────
+      # off（默认）| observe（**只打日志、不改模型**）| apply（真改）
+      # ★ 先跑 observe 确认钩子真的响（agent/created · agent/pre-step · agent/turn-stopping），
+      #   再开 apply。默认 off —— 不让没验证过的接线擅自改模型。
+      FORLIFE_ROUTER_MODE: ${FORLIFE_ROUTER_MODE:-observe}
+
+      # ── 唤醒桥：**我们自己的监听**（FIX_PLAN D7 / 用户裁定 D-B）────────────
+      # 为什么需要它：DSH 的 webServer **只绑回环**（它硬禁 --host 0.0.0.0，
+      # 理由是 /api 暴露 = RCE）⇒ 同 docker 网络的 gateway **够不到它** ⇒
+      # 面板那张「DSH 后端」卡永远显示"未配置/连接超时"。
+      # ⇒ 我们另起一个只服务唤醒端点、带密钥校验的监听（绑容器网卡）。
+      # ★ 端口取 3098：DSH 自己是 3080、napcat-probe 占 3099、NapCat WebUI 是 6099。
+      # ★ 它是**密钥保护的提权入口**，所以只 `expose`（容器网络内可达），
+      #   **不 publish 到宿主** —— 公网碰不到它。
+      FORLIFE_WAKE_BRIDGE_PORT: ${FORLIFE_WAKE_BRIDGE_PORT:-3098}
+      # ★★ 2026-10-11 补：**这一行原来漏了** —— 上面写着"带密钥校验的监听"，
+      #   但密钥只给了 gateway、**没给 dsh** ⇒ 桥按安全纪律拒绝挂载
+      #   （启动日志：「⚠️ 未配置 FORLIFE_WAKE_BRIDGE_SECRET：唤醒桥端点未挂载」）
+      #   ⇒ **3098 没人听** ⇒ gateway 探 `http://dsh:3098` **连接超时**
+      #   ⇒ 面板「DSH 后端」卡显示不出来、`wake_*` 三张表全空。
+      #   ★ 与 gateway 块里那个必须是**同一个值**（`:291` 自己的要求）。
+      FORLIFE_WAKE_BRIDGE_SECRET: ${FORLIFE_WAKE_BRIDGE_SECRET:-}
+      # ★★ 2026-10-11 补：**沙箱根**（与 gateway 块同一个值，原因见那边）。
+      #   dsh 侧用它的是 `registerProgram`（`index.ts:190`）—— 没配就登记不了监视程序。
+      FORLIFE_WORKSPACE_ROOT: ${FORLIFE_WORKSPACE_ROOT:-/data/dsh/workspace}
+    volumes:
+      - forlife-data:/data # db / vectors / attachments / workspace / models
+      - dsh-home:/data/dsh # DSH 自己的 sessions / storages / logs
+      # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
+      #   将来换真 HDD：把盘挂到那个路径（或改这个变量），**内容 rsync 过去即可**。
+      - ${FORLIFE_COLD_DIR:-/mnt/forlife-cold}:/cold
+    networks: [edge, internal]
+    # 只在内网暴露，公网一律经 Caddy
+    # ★ 3098 = 唤醒桥的自建监听（见上面 FORLIFE_WAKE_BRIDGE_PORT 的说明）。
+    #   `expose` 只是文档性的 —— 同一 docker 网络内的容器本来就能打到任意端口，
+    #   写在这里是为了让"这个容器对外提供哪些端口"一眼可见。
+    expose: ["3080", "3098"]
+
+    # ★★ 2026-10-07 真机部署发现：**镜像里那条 HEALTHCHECK 探的是 8081**（gateway 的端口），
+    #   而 dsh 跑在 **3080** ⇒ 容器**永远 unhealthy**（服务其实是好的）。
+    #   ⚠️ 「永远红」的下场是**人开始忽略健康状态**，那比不检查更糟 ⇒ 必须覆盖。
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  # ── 伴生服务：QQ 适配、队列、轮次驱动、后台、端口发布、触发引擎 ────────────
+  gateway:
+    # **同一个镜像** —— dsh 与 gateway 共用同一份代码与 node_modules，
+    # 打两个镜像的话，同一份代码会有两个版本，而它们的契约必须一致
+    # （那正是"版本漂移"最容易出事的地方）。
+    # ★★ 2026-10-08 真机实测（--no-cache 冷构建）：这里原来也有 build: ——
+    #   而两个服务的 image: 指向同一个 tag ⇒ BuildKit 并行 export 撞车：
+    #
+    #     ERROR: image "docker.io/library/forlife-app:local": already exists
+    #     failed to solve: image "...": already exists
+    #
+    #   ⚠ 只在 --no-cache 下暴露 —— 缓存热时两边都命中缓存、export 极快，撞不上。
+    #   （正是“只有干净重跑才会暴露”的那类缺陷。）
+    #
+    #   ⇒ 只让 dsh 构建，这里纯引用同一个 tag。
+    #     两个服务本来就该用同一份镜像 —— 打两个会让同一份代码出现两个版本，
+    #     而它们的契约必须一致，那正是“版本漂移”最容易出事的地方。
+    #     镜像由 dsh 的 build: 产出，docker compose up 会先构建再起两个服务。
+    image: forlife-app:local
+    restart: unless-stopped
+    working_dir: /app
+    # ★★ 2026-10-12（`FIX_PLAN.md` §57 待办②）：**只绑回环**地把管理 API 露给宿主。
+    #
+    #   为什么需要：日志采集端在**宿主**上跑（读 `docker logs` —— ★ 不用给容器加权限、
+    #   ★★ **不用重建 qq**），它要把归一后的记录 POST 给 `/api/admin/log-ingest`，
+    #   而 gateway 原来**只在 docker 网络里**（宿主够不着 ⇒ 真机实测 `fetch failed`）。
+    #
+    #   ⚠️ **只绑 `127.0.0.1`**：不对外、不进 LAN。这条与管理 API 的鉴权是**两层**：
+    #      回环绑 = 谁能连，会话/令牌 = 谁能用（`/api/admin/*` 全都要会话或采集令牌）。
+    #   ★ 与 Caddy 那条"绝不 publish 2019"不冲突：那是 Caddy 的 Admin API（**零鉴权**），
+    #      而这个 API 每个写端点都要鉴权。
+    ports:
+      - "127.0.0.1:8081:8081"
+    # **真命令**（原来是占位）—— 入口是 server.ts，**不是 index.ts**
+    command: ["node", "packages/gateway/src/server.ts"]
+    environment:
+      FORLIFE_GATEWAY_PORT: "8081"
+      # ★★ 2026-10-07 **真机部署**发现：**原来一个 tier 根都没设** ⇒
+      #   冷热分层根本没生效（`resolveTierRoots()` 连 HOT 都拿不到，而它没有默认值）。
+      #   ⇒ 三层的根全落在同一个卷上，**HDD 冷层形同虚设**。
+      #
+      #   生产：把 `FORLIFE_COLD_DIR` 指向**真 HDD 的挂载点**即可，容器侧路径不用改。
+      #   单盘：不设也行（cold 会退回 warm，面板显示"冷层退回了"）。
+      # ★★ 2026-10-10（`FIX_PLAN.md` §26）：**插件与网关的日志目录必须显式对齐**。
+      #
+      #   背景：插件（`dsh` 容器）与管理面板的七级日志库（`gateway` 容器）是**两个进程**；
+      #   插件原来只 `console.log` ⇒ **面板上看不到记忆/沉降/投喂/判档/唤醒的任何活动**。
+      #   现在插件会把日志**追写到网关读的那同一个 JSONL 文件**（共享卷 `dsh-home`）。
+      #
+      #   ⚠️ 两边各自**能**推出一个目录，但**推出来的不是同一个**：
+      #     插件侧兜底 = `<DSH_HOME>/forlife/logs`；
+      #     网关侧兜底 = `dirname(FORLIFE_DB)/logs` = `/data/dsh/forlife/db/logs`
+      #   ⇒ **不显式设这一行，这次修复等于没生效**（而单测全绿）。
+      #   ⇒ 两个服务都设成**同一个值**。
+      FORLIFE_LOG_DIR: /data/dsh/forlife/logs
+      # ★★ 2026-10-12（`FIX_PLAN.md` §57 待办①）：**宿主侧日志采集端**的令牌。
+      #
+      #   为什么需要：`qq`（NapCat）与 gateway **不共享任何卷** ⇒ 它的 stdout
+      #   （16,310 行，其中 2,526 行含 error/warn/断开/掉线/重连）在我们的日志库里
+      #   **一条都没有**。2026-10-11 真发生过：NapCat 反向 WS 连败 3 次、第 4 次接上，
+      #   而那 3 次失败**在网关日志、面板、库里全看不见**。
+      #
+      #   采集端在**宿主**上读 `docker logs`（★ 不用给容器加权限、★ **不用重建 qq**），
+      #   归一后 POST 到 `/api/admin/log-ingest`，带这个令牌。
+      #
+      #   ⚠️ **不配 = 端点如实报 503"未启用"**（`api.ts` 里那条分支）——
+      #      ★ 绝不退化成"谁都能写日志库"。令牌文件：`deploy/.log-ingest-token`（600）。
+      FORLIFE_LOG_INGEST_TOKEN: ${FORLIFE_LOG_INGEST_TOKEN:-}
+      FORLIFE_ROOT_HOT: /data/tiers/hot
+      FORLIFE_ROOT_WARM: /data/tiers/warm
+      FORLIFE_ROOT_COLD: /cold/tiers/cold
+      FORLIFE_ARCHIVE_DIR: /cold/archives
+      FORLIFE_BACKUP_DIR: /cold/backups
+      FORLIFE_DATA_DIR: /data
+      # ★★ 2026-10-07 真机部署发现：**没设这个** ⇒ 库落到 `/app/.runtime/`：
+      #   ① `/app` 在镜像层 ⇒ **EACCES**（容器以 node 跑）；
+      #   ② 即使能写，**镜像重建就丢** —— 而 gateway 的沉降/维护循环写的就是这个库。
+      #   ⇒ 显式指向**与 dsh 同一个库**（两个进程本来就该共用一份，契约必须一致）。
+      # ★★ 2026-10-09 修（第 19 处缺陷的**真根因**）：这里**原来没设 DSH_HOME**。
+      #   gateway 会拉起 `dsh --profile forlife-headless` 做唤醒，
+      #   而 dsh 只从 `$DSH_HOME/profiles/<名>` 找 profile ——
+      #   没设时它去**默认位置**（容器里的 ~/.dsh）找 ⇒ 那里什么都没有
+      #   ⇒ 报 `profile "forlife-headless" does not exist` ⇒ **QQ 唤醒从来没成功过**。
+      #   ⚠️ 症状是**静默的**：两个容器都 healthy，gateway 只把 stderr 打出来。
+      #   ⚠️ 与 dsh 服务**必须是同一个值**（它们共享同一个卷）。
+      DSH_HOME: /data/dsh
+      FORLIFE_DB: /data/dsh/forlife/db/forlife.sqlite
+      FORLIFE_CADDY_ADMIN_SOCKET: /run/caddy/admin.sock
+
+      # ★★ 2026-10-08 真机实测（**第 14 处缺陷**）：**面板里的 NapCat 页白屏**。
+      #
+      #   根因：CSP 的 `frame-src` 是 **`'self'`** —— 只允许同源。
+      #   而面板要把 `http://<当前主机名>:6099/webui` 放进 iframe ⇒ **被 CSP 拦掉**。
+      #
+      #   `buildCsp(hostname, options.napcat?.webuiPort)` **只在 `napcat` 有值时才放行**，
+      #   所以**不设这个变量 ⇒ 不放行 ⇒ 页面白屏**（而且没有任何报错，只在浏览器控制台）。
+      #
+      #   ⇒ 端口给默认值也有用（它同时决定 iframe 拼出来的地址）。
+      FORLIFE_NAPCAT_WEBUI_PORT: "6099"
+      # NapCat WebUI 的 token —— 它是**密钥**，所以这里只放**引用名**，
+      # 真值写在 `deploy/.env`（不进仓库）。不设时 NapCat 页仍能打开，只是要手动填 token。
+      FORLIFE_NAPCAT_TOKEN: ${FORLIFE_NAPCAT_TOKEN:-}
+
+      # ── provider 密钥（**引用名在此，真值在 deploy/.env**）──────────────────
+      # 用户给的三个 OpenCode Go key，优先级 **GO → QQ → CL**（哪个有额度用哪个，CL 最后）。
+      # `apiKeyEnv` 在 profiles/*/cordis.patch.yml 里指向 FORLIFE_OPENCODE_GO_KEY。
+      FORLIFE_OPENCODE_GO_KEY: ${FORLIFE_OPENCODE_GO_KEY:-}
+      FORLIFE_OPENCODE_QQ_KEY: ${FORLIFE_OPENCODE_QQ_KEY:-}
+      FORLIFE_OPENCODE_CL_KEY: ${FORLIFE_OPENCODE_CL_KEY:-}
+      # DeepSeek 官方 key（2026-10-08 用户新给，**等级低于 GO**）。
+      FORLIFE_DEEPSEEK_OFFICIAL_KEY: ${FORLIFE_DEEPSEEK_OFFICIAL_KEY:-}
+
+      # ── DSH 后端地址（面板那张「DSH 后端」卡的数据来源）────────────────────
+      # ★★ 这就是那张卡一直显示 **「未配置」** 的根因：`dsh-status.ts:64-78`
+      #   读 `FORLIFE_DSH_URL`，没有它就从 `FORLIFE_WAKE_BRIDGE_URL` 推 host ——
+      #   **两个变量容器里都没有** ⇒ 如实回答"未配置"。
+      # ★ 为什么是自建监听的端口（3098）而不是 DSH 自己的 3080：
+      #   3080 **只绑回环**，从 gateway 容器里打不通；3098 才是容器网络可达的那个。
+      #   （面板显示的 URL 就是这个"gateway 到底在探哪儿"，不是给用户点的链接。）
+      FORLIFE_DSH_URL: ${FORLIFE_DSH_URL:-http://dsh:3098}
+      # 真正发唤醒用的那个端点（同一 host:port，走 /forlife/wake）
+      FORLIFE_WAKE_BRIDGE_URL: ${FORLIFE_WAKE_BRIDGE_URL:-http://dsh:3098/forlife/wake}
+      # 与 dsh 容器里那个**必须是同一个值**（否则唤醒会 401，而 401 看起来像"桥没通"）
+      FORLIFE_WAKE_BRIDGE_SECRET: ${FORLIFE_WAKE_BRIDGE_SECRET:-}
+
+      # ── QQ 链路（OneBot 反向 WS）────────────────────────
+      # ★ 主编排**默认不开** —— gateway 只在 FORLIFE_ONEBOT=1 时才起 OneBot 服务，
+      #   否则日志里只有一行明确的提示（**不报错**）。
+      FORLIFE_ONEBOT: "1"
+      # accessToken 是唯一门槛：**必须与 NapCat 侧 onebot11_<QQ>.json 里的 token 完全一致**。
+      # 它也是密钥 ⇒ 这里只放**引用名**，真值在 deploy/.env。
+      FORLIFE_ONEBOT_TOKEN: ${FORLIFE_ONEBOT_TOKEN:-}
+      # NapCat 反向连过来的端口。qq 与 gateway 同在 internal 网络，
+      # 所以 NapCat 侧要写 ws://gateway:3010/ ——
+      # **不是 host.docker.internal**：那是 Docker Desktop 专有的，
+      # Linux 上不解析，真机表现是 getaddrinfo ENOTFOUND。
+      FORLIFE_ONEBOT_PORT: "3010"
+      # ★ 不设时默认 fake（**不真的驱动 DSH**）。
+      #   真机表现是“消息进来了但模型不动”。
+      FORLIFE_DRIVER: headless
+      # ★★ 2026-10-11 补：**单轮次限时 30 分钟**（用户要求：「限制单个轮次时间为30分钟」）。
+      #
+      #   原来没设 ⇒ `server.ts:372` 读 `?? '0'`、`:385` 只在 `timeout > 0` 时才加
+      #   `timeoutMs` ⇒ **0 = 不限时** ❌ —— 一轮卡住会**一直挂着**（真机上 QQ 掉线时尤其危险）。
+      #   1800000 ms = 30 分钟。
+      FORLIFE_TURN_TIMEOUT_MS: "1800000"
+      # ★★ 2026-10-11 补：**监视/脚本的沙箱根**（用户要求：「沙箱根选一个安全的即可」）。
+      #
+      #   没配它时，`wake-runtime.ts:24` 那条纪律会让**监视源无法求值**、
+      #   **监视程序执行器不启用**（`:374`），`registerProgram` 也直接失败（`index.ts:190-192`）
+      #   —— 全是**刻意 fail-closed**，而且每处都说明了原因（不是静默）。
+      #   ⇒ 不配 = 这两个功能**一直禁用**。
+      #
+      #   ★ 选 `/data/dsh/workspace` 的理由：在 DSH home 卷内（持久化）、
+      #     gateway 与 dsh **两边都看得到**（gateway 的 `FORLIFE_DB` 就在 `/data/dsh/…`），
+      #     且是**专用空目录** ⇒ 路径比较的范围最小。
+      #   ⚠️ 必须在卷里**真的建出这个目录**（见部署步骤）。
+      FORLIFE_WORKSPACE_ROOT: ${FORLIFE_WORKSPACE_ROOT:-/data/dsh/workspace}
+    volumes:
+      - forlife-data:/data
+      # ★★ 2026-10-07 真机部署发现（**缺陷 7 的后半截**）：
+      #   不挂这个 ⇒ gateway 的 `/data/dsh` 落在 **forlife-data 卷**里，
+      #   而 dsh 的 `/data/dsh` 是 **dsh-home 卷** ⇒
+      #   **两个进程各写各的 SQLite，互不相同的两个库**（契约会漂移）。
+      #   ⚠️ 这条**比崩溃更难发现**：两个容器都是 Up、日志也不报错。
+      - dsh-home:/data/dsh
+      # ★ 冷层 = **独立文件系统**（生产是 HDD）。宿主路径由 `FORLIFE_COLD_DIR` 决定。
+      #   将来换真 HDD：把盘挂到那个路径（或改这个变量），**内容 rsync 过去即可**。
+      - ${FORLIFE_COLD_DIR:-/mnt/forlife-cold}:/cold
+      - caddy-admin:/run/caddy
+    networks: [edge, internal]
+    expose: ["8081"]
+    depends_on: [caddy]
+
+  # ── QQ 协议端：只引用官方镜像（内网，绝不 publish 端口）────────────────────
+  qq:
+    # 主选 NapCat（官方镜像，无需图形环境，扫码走其自带 WebUI）
+    # 备选 SnowLuma：需自建带 Xvfb/VNC 的镜像，且其许可禁止打进第三方镜像 ⇒ 更倾向直接用其官方镜像
+    image: mlikiowa/napcat-docker:latest
+    restart: unless-stopped
+    environment:
+      NAPCAT_UID: "1000"
+      NAPCAT_GID: "1000"
+    volumes:
+      - qq-config:/app/.config/QQ
+      - qq-napcat-config:/app/napcat/config
+      - qq-napcat-plugins:/app/napcat/plugins
+    # ★★ 2026-10-13 修：**必须也在 edge 上** —— Caddyfile 的 napcat 块要反代 qq:6099，
+    #   而 Caddy 在 edge、qq 只在 internal ⇒ Caddy **解析不了 qq** ⇒ 页面 **502 Bad Gateway**
+    #   （真机日志：dial tcp: lookup qq on 127.0.0.11:53: server misbehaving）。
+    #   ★ Caddyfile 自己的注释早就写了这个前提（Caddyfile:97-99），而这一行**没有兑现它**。
+    #   ★ 只加网络、**不暴露端口**：6099 仍然不上公网（OneBot 端口照旧只在内部）。
+    networks: [edge, internal] # edge：给 Caddy 反代用；internal：OneBot 端口不上公网
+    expose: ["3001", "6099"]
+
+  # ── 本地评分器（PLAN 阶段 10 的第五个服务）──────────────────────────────
+  #
+  # 用本地小模型给"这条消息重不重要"打分，比调远端便宜也快。
+  #
+  # **默认不起**（profiles）：它要几个 GB 的模型权重，而开发机上没有；
+  # 默认拉起来会让 `docker compose up` 直接失败，
+  # 而那种失败会让人以为"整个 compose 是坏的"。
+  # 要它的时候：`docker compose --profile scorer up`
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    profiles: [scorer]
+    environment:
+      # 上下文给足：评分要看完整对话，截断会让打分失真
+      LLAMA_ARG_CTX_SIZE: "4096"
+      LLAMA_ARG_HOST: "0.0.0.0"
+      LLAMA_ARG_PORT: "8080"
+    # **权重挂载进来，不打进镜像**：几个 GB 打进镜像的话，
+    # 每次改配置都要重建镜像，镜像仓库也存不下。
+    # 挂载让"换模型"变成"换个文件"。
+    volumes:
+      - ${FORLIFE_MODELS_DIR:-./models}:/models:ro
+    command: ["-m", "/models/scorer.gguf"]
+    networks: [internal] # 只有内网；与 qq 同理，对外没有暴露的理由
+    expose: ["8080"]
+    # **没有 healthcheck**：llama.cpp 的镜像里没有 curl/wget，
+    # 写一个必然失败的 healthcheck 比不写更糟（它会一直报 unhealthy，
+    # 而人就会开始忽略 health 状态）。
+
+volumes:
+  forlife-data:
+  dsh-home:
+  caddy-data:
+  caddy-config:
+  caddy-admin:
+  qq-config:
+  qq-napcat-config:
+  qq-napcat-plugins:
+
+networks:
+  edge: {} # 与 Caddy 同网，只放需要对外服务的容器
+  internal:
+    internal: true # QQ 侧与内部通信，无出网/入网路由

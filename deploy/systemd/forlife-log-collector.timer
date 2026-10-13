@@ -1,0 +1,21 @@
+[Unit]
+# ★ 每 5 分钟采一次（`FIX_PLAN.md` §57 待办②）。
+#
+# 为什么是 5 分钟而不是"实时"：
+#   - 采集端读的是 `docker logs`（一次进程启动 + 一次 HTTP 往返），**不适合每秒跑**；
+#   - ★ 我们要的是"**那 3 次 ECONNREFUSED 失败看得见**"，不是"秒级实时"；
+#   - ★ 游标保证不漏：跑得再稀，中间的日志也会被采到（只是晚几分钟进库）。
+#
+# 面板上要"立刻看到"时，手动跑一次即可：
+#   sudo systemctl start forlife-log-collector.service
+Description=forlife log collector timer (every 5 minutes)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# ★ 采完落盘要快，别让同一时刻堆积
+AccuracySec=30s
+Unit=forlife-log-collector.service
+
+[Install]
+WantedBy=timers.target

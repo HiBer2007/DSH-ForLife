@@ -1,0 +1,274 @@
+/**
+ * `forlife-gateway` 插件行：把 QQ 网关挂进 DSH 进程。
+ *
+ * ## 为什么它是一个"不注入任何服务"的插件
+ *
+ * 网关自己管网络（OneBot 反向 WS）、自己管队列（共享 SQLite）、自己驱动模型
+ * （headless 子进程或长连接），**不需要 DSH 的任何服务**。所以 `inject: []`。
+ * 好处很实际：它可以被单独挂载、单独测试，也不会因为宿主缺某个服务就静默不工作
+ * （本项目已经被 `ctx.inject([...], cb)` 静默不触发坑过一次）。
+ *
+ * ## 拓扑上的位置
+ *
+ * 生产部署里它是**独立容器**（`deploy/docker-compose.yml` 的 gateway 服务），
+ * 与 DSH 通过共享卷上的同一个 SQLite 交换任务（见 gateway/src/outbox.ts 的说明）。
+ * 这个插件是给本地开发用的：一条命令就能把网关跑起来，不必起 compose。
+ *
+ * @module forlife-memory/gateway-plugin
+ */
+import { defaultFor } from '@forlife/contracts'
+import { Gateway, OneBotTransport } from '@forlife/gateway'
+import z from '@deepseek-ai/schemastery'
+
+import { createDriver, type TurnDriver } from '@forlife/gateway'
+import { defaultConditionOf, defaultScopeOf, TurnRunner } from '@forlife/gateway'
+import { backlogNotice, renderBacklogNotice, seedBacklogWakeRule, seedWakeRules } from '@forlife/gateway'
+import { createVisionFromEnv, defaultAttachmentRoot } from '@forlife/gateway'
+import { lastTimeReading, recordTimeDrift, recordTimeReading } from '@forlife/store'
+
+import { activeRuntimes, whenRuntimeReady, type MemoryRuntime } from './index.ts'
+
+/**
+ * 等记忆运行时就绪（把回调式 API 包成 Promise，并带超时）。
+ *
+ * @param timeoutMs - 超时毫秒。
+ * @returns 运行时，或 undefined（超时）。
+ */
+function waitForRuntime(timeoutMs: number): Promise<MemoryRuntime | undefined> {
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        resolve(undefined)
+      }
+    }, timeoutMs)
+    whenRuntimeReady((runtime) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(runtime)
+    })
+  })
+}
+
+/** 插件配置。 */
+export const Config = z.object({
+  /** 是否启用（默认启用；关掉可让 DSH 只做记忆、不发 QQ）。 */
+  enabled: z.boolean().default(true),
+  /** OneBot 反向 WS 监听端口。 */
+  port: z.natural().default(3080),
+  /** 监听地址：默认仅回环；容器部署时才绑 0.0.0.0。 */
+  host: z.string().default('127.0.0.1'),
+  /** 反向 WS 路径。 */
+  path: z.string().default('/'),
+  /** 共享密钥；**强烈建议设置**（否则同网段任何人都能冒充 QQ 端）。 */
+  accessToken: z.string().default(''),
+  /** 驱动方式：headless（每轮一个子进程）或 longconnection（复用常驻会话）。 */
+  driver: z.union([z.const('headless'), z.const('longconnection')]).default('headless'),
+  /** headless 驱动用的 profile。 */
+  driverProfile: z.string().default('forlife-headless'),
+  /** 防抖窗口（毫秒，PLAN §8.4 给的范围是 2–3 秒）。 */
+  debounceMs: z.natural().default(3000),
+})
+
+/** 模块名（cordis 用）。 */
+export const name = 'forlife-gateway'
+
+/** 不依赖任何宿主服务（自管网络与队列）。 */
+export const inject: readonly string[] = []
+
+/**
+ * 挂载网关。
+ *
+ * @param ctx - cordis 上下文。
+ * @param config - 插件配置。
+ */
+export function apply(ctx: { effect: (callback: () => () => void) => void; logger?: { info?: (m: string) => void } }, config: unknown): void {
+  const resolved = config as {
+    enabled: boolean
+    port: number
+    host: string
+    path: string
+    accessToken: string
+    driver: 'headless' | 'longconnection'
+    driverProfile: string
+    debounceMs: number
+  }
+  if (!resolved.enabled) return
+
+  // 同步打印一行：**真机验证就看这一行**（异步的"监听中"可能来不及打就退出了）
+  // eslint-disable-next-line no-console
+  console.log(
+    `[forlife] QQ 网关已挂载（反向 WS ws://${resolved.host}:${String(resolved.port)}${resolved.path}，驱动 ${resolved.driver}）`,
+  )
+
+  let gateway: Gateway | undefined
+  let transport: OneBotTransport | undefined
+
+  // 用 ctx.effect 登记清理：返回的函数就是 disposer（本项目已被"误以为回调返回值是 disposer"坑过，
+  // 这里严格按契约返回一个真正会停止网关的函数）。
+  ctx.effect(() => {
+    void (async (): Promise<void> => {
+      // 等记忆运行时就绪（同一个共享库；迁移由先挂载的记忆插件完成）。
+      // whenRuntimeReady 是回调式（宿主上下文的自定义属性是只读的，我们只能用注册表 + 回调）。
+      const runtime = await waitForRuntime(30_000)
+      if (runtime === undefined) {
+        console.warn('[forlife] 网关启动失败：记忆运行时未就绪（超时 30 秒）')
+        return
+      }
+
+      // 播种唤醒规则（幂等；保证"零配置也按文档工作"）
+      seedWakeRules(runtime.db)
+      // ★ 离线积压那一组是**单独的一组参数**（用户明确要求），
+      //   它不在 `WAKE_CONDITIONS` 里（那个文件本轮属于另一个改动，见 backlog.ts 的说明），
+      //   所以这里要单独播种 —— 不播种的话 `wake_rules` 里没有它的行，
+      //   最小间隔等设置会在第一次被修改时被硬编码兜底覆盖掉。
+      seedBacklogWakeRule(runtime.db)
+
+      const driver: TurnDriver = createDriver({
+        kind: resolved.driver,
+        headless: {
+          profile: resolved.driverProfile,
+          ...(process.env['DSH_HOME'] === undefined ? {} : { env: { DSH_HOME: process.env['DSH_HOME'] } }),
+        },
+        longConnection: { endpoint: `http://${resolved.host}:${String(resolved.port)}/turn` },
+      })
+
+      // ★ P1-1：视觉桥接。**与生产路径同一份装配逻辑**（`createVisionFromEnv`），
+      //   免得"本地能看图、线上看不见"这种最难查的漂移。
+      const attachmentRoot = defaultAttachmentRoot(process.env)
+      const visionWiring = createVisionFromEnv({
+        db: runtime.db,
+        storageRoot: attachmentRoot,
+        log: (message) => console.log(`[forlife] 视觉｜${message}`),
+      })
+      console.log(`[forlife] ${visionWiring.note}`)
+
+      transport = new OneBotTransport({
+        port: resolved.port,
+        host: resolved.host,
+        path: resolved.path,
+        ...(resolved.accessToken === '' ? {} : { accessToken: resolved.accessToken }),
+      })
+      await transport.start()
+
+      const runner = new TurnRunner({
+        db: runtime.db,
+        driver,
+        scopeOf: defaultScopeOf,
+        conditionOf: defaultConditionOf,
+        // 时间感知（阶段 4）：判定与落库都在这里接上，网关只负责"要不要给、给什么"
+        timeHooks: {
+          lastReadingAt: (conversationKey) => {
+            const row = lastTimeReading(runtime.db)
+            void conversationKey
+            return row === undefined ? undefined : new Date(row.at)
+          },
+          lastInteractionAt: (conversationKey) => runtime.lastInteractionAt(conversationKey),
+          lastActionAt: () => runtime.lastActionAt(),
+          compactedSince: (_conversationKey, since) => {
+            const row = runtime.db
+              .prepare("SELECT max(ended_at) AS at FROM compaction_runs WHERE phase = 'committed'")
+              .get() as { at: string | null }
+            if (row.at === null) return false
+            return since === undefined ? true : Date.parse(row.at) > since.getTime()
+          },
+          wokeSince: (_conversationKey, since) => {
+            // "刚被唤醒"= 最近一条 wake 事件比上一条读数新
+            const row = runtime.db
+              .prepare("SELECT max(at) AS at FROM wake_events WHERE decision = 'wake'")
+              .get() as { at: string | null }
+            if (row.at === null) return false
+            return since === undefined ? true : Date.parse(row.at) > since.getTime()
+          },
+          clockSettings: (conversationKey) => {
+            const settings = runtime.clockSettings(conversationKey)
+            return { conversationTimezone: settings.conversationTimezone, hour24: settings.hour24 }
+          },
+          record: (conversationKey, at, reason, timezone, text) => {
+            recordTimeReading(runtime.db, {
+              at: at.toISOString(),
+              reason,
+              timezone,
+              text,
+              tokenCount: Math.ceil(text.length / 2),
+              conversationKey,
+            })
+          },
+          recordDrift: (input) => {
+            recordTimeDrift(runtime.db, {
+              claimed: input.claim,
+              actualAt: input.actualAt.toISOString(),
+              driftMs: input.driftMs,
+              severity: input.severity,
+              excerpt: input.excerpt,
+            })
+            // 严重漂移（差一天以上）要让人在日志里也看得见，而不是只躺在表里
+            if (input.severity === 'bad') {
+              console.warn(`[forlife] 检测到时间幻觉：「${input.claim}」与真实时间相差 ${String(Math.round(input.driftMs / 60_000))} 分钟`)
+            }
+          },
+          intervalMs: defaultFor<number>('clock.intervalMs'),
+          idleThresholdMs: defaultFor<number>('clock.idleThresholdMs'),
+        },
+        unreadSummaryOf: (scope) => {
+          // ★ 任务②(a)：**只告诉模型"有 N 条没读"，不把正文塞进上下文。**
+          //
+          // 旧行为是 `readPending(db, {scope, limit: 5, markRead: false})` 然后把
+          // 5 条摘要拼起来塞进提示词 —— 两个问题：
+          //  ① 积压 300 条时那 5 条既不完整、又白占窗口；
+          //  ② 模型看不到"还有多少"，无法判断该不该现在处理。
+          // 这与本项目刚修过的**中期记忆窗口**是同一条原则：
+          // 不要一次把大量外部内容塞进活跃上下文 —— 先给索引，让它自己去取。
+          //
+          // `scope` 参数在这里**刻意不用**：积压是全局现象，
+          // 只报当前会话那一条会让"另外 3 个群还堆着 120 条"彻底不可见。
+          void scope
+          const notice = backlogNotice(runtime.db)
+          if (notice.unread === 0) return undefined
+          return renderBacklogNotice(notice)
+        },
+        log: (message) => console.log(`[forlife] 轮次｜${message}`),
+      })
+
+      gateway = new Gateway({
+        db: runtime.db,
+        transport,
+        runner,
+        debounceMs: resolved.debounceMs,
+        // ★ P0-2 + 任务②：**把系统监督循环接上**。
+        //
+        //   `reports.ts` 那套（铁律 1：后台任何影响模型的操作都要报告）写好了、
+        //   单测全绿，但**生产路径零调用** ⇒ 好友申请 / 群邀请 / 被撤回 / 被踢
+        //   这些"记进 effects 就再没人看"的事件**永远到不了模型**。
+        //   这一行就是那条链路的唯一开关 —— 没有它，上面所有东西都还是死的。
+        supervisor: { enabled: true },
+        // ★ P1-1：图片理解。与生产路径（`gateway/src/runtime.ts`）**同一份装配逻辑**
+        //   （`createVisionFromEnv`）—— 两处各写一遍必然漂移。
+        imageStorageRoot: attachmentRoot,
+        ...(visionWiring.vision === undefined ? {} : { imageVision: visionWiring.vision }),
+        log: (message) => console.log(`[forlife] 网关｜${message}`),
+      })
+      gateway.start()
+      console.log(`[forlife] QQ 网关监听中（等 QQ 端连入；送达确认窗口 ${String(defaultFor<number>('delivery.confirmTimeoutMs'))}ms）`)
+    })().catch((error: unknown) => {
+      console.error(`[forlife] 网关启动异常：${String(error)}`)
+    })
+
+    return () => {
+      void (async (): Promise<void> => {
+        await gateway?.stop()
+        await transport?.stop()
+      })()
+    }
+  })
+}
+
+/** 供诊断脚本读取：当前挂载了几个运行时。 */
+export function runtimeCount(): number {
+  return activeRuntimes().length
+}
+
+
+

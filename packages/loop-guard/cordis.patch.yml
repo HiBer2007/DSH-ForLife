@@ -1,0 +1,12 @@
+# 自注册补丁：package.json 的 dsh.bundle.patch 指向本文件。
+# 任何把 @forlife/loop-guard 作为 bundle 的 profile，都会自动多出下面这一行；
+# 它**不需要任何部署相关配置**就能挂上（默认阈值即工作）。
+#
+# ★ id 刻意叫 `forlife-loop-guard`（不是 `loop-guard`）：
+#   `loop-guard` 是 `@mrweicodes/dsh-loop-guard` 的 id，两者**可以并存**
+#   （一个看思考/推理流，一个看文字流 + 工具调用），id 撞了会互相覆盖。
+#
+# 要临时关掉（不用改 profile）：FORLIFE_LOOP_GUARD=off
+- insert:
+    - id: forlife-loop-guard
+      name: '@forlife/loop-guard'

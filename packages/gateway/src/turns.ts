@@ -1,0 +1,621 @@
+/**
+ * 轮次驱动器：把"一批入站消息"变成"一次模型轮次"，再变成"若干出站动作"。
+ *
+ * ## 与 DSH 的两种接法（PLAN §八 + EXECUTION_PLAN 阶段 3 交付物 4）
+ *
+ * | 驱动 | 怎么调 | 适用 |
+ * | :--- | :--- | :--- |
+ * | `headless` | 起 `dsh --profile X --json`（**不传任务位置参数**，提示词走 stdin），逐行读 NDJSON 事件 | 默认；进程隔离好、崩溃不互相影响 |
+ * | `longconnection` | 复用常驻会话（若 U2 的长连接方案通过） | 省掉每次冷启动 |
+ * 两者实现同一个 `TurnDriver` 接口，**配置切换**（`driver.kind`）。
+ *
+ * ## 这一层负责的时序（PLAN §8.2 的完整生命周期）
+ *
+ * ```
+ * 防抖结算 → 唤醒判定 → 建轮次(running) → 组装提示词 → driver.run()
+ *   → 模型通过工具产出出站动作（走 outbox 队列）
+ *   → 轮次结束：done / deferred / failed
+ * ```
+ *
+ * 刻意**不在这里**做发送：发送归网关的 outbox 消费者（见 `outbox.ts`）。
+ * 这样"模型说了什么"与"平台收到什么"是两件事，各自可测、各自可重试。
+ *
+ * @module @forlife/gateway/turns
+ */
+import { randomUUID } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
+
+import { nowIso } from '@forlife/store'
+
+import { decideInjection, extractTimeClaims, findDrift, formatDuration, renderTimeBlock } from '@forlife/memory-core'
+
+import { classifyNoise, type NoiseFilterOptions, type NoiseVerdict } from './timing.ts'
+import { decideWake, type WakeRequest } from './wake.ts'
+import type { ConversationRef, InboundMessage } from './transport.ts'
+import { conversationKey } from './transport.ts'
+
+/** 一次模型轮次的结果。 */
+export interface TurnOutcome {
+  /** 模型产出的文本（多段 ⇒ 多次 qq_reply，这里只是汇总供日志）。 */
+  readonly segments?: readonly string[]
+  /** token 用量（有就记）。 */
+  readonly tokensIn?: number
+  readonly tokensOut?: number
+  readonly toolCalls?: number
+  /** 模型要求挂起（§8.3）。 */
+  readonly deferred?: { readonly reason: string; readonly expectedMs?: number }
+  /** 失败原因。 */
+  readonly error?: string
+}
+
+/** 轮次驱动接口。 */
+export interface TurnDriver {
+  /** 驱动名（日志与面板用）。 */
+  readonly kind: 'headless' | 'longconnection' | 'fake'
+  /**
+   * 跑一轮。
+   *
+   * @param request - 本轮输入。
+   * @returns 轮次结果。
+   */
+  run(request: TurnRequest): Promise<TurnOutcome>
+  /** 关闭（释放进程/连接）。 */
+  close?(): Promise<void>
+}
+
+/** 一轮的输入。 */
+export interface TurnRequest {
+  readonly turnId: string
+  readonly conversation: ConversationRef
+  /** 本轮包含的入站消息（防抖合并后的全部）。 */
+  readonly messages: readonly InboundMessage[]
+  /** 组装好的提示词（带上会话标签 —— 多会话单窗口的关键）。 */
+  readonly prompt: string
+  /** 取消信号。 */
+  readonly signal: AbortSignal
+}
+
+/**
+ * 组装提示词（多会话单窗口的关键：**每条消息都带会话标签**）。
+ *
+ * 为什么必须有标签：一个模型窗口同时处理多个会话（§2.17.1），
+ * 如果消息不带来源，模型无法知道该回给谁 —— 那样"`conversation` 指路正确率 100%"就不可能。
+ *
+ * @param messages - 本轮入站消息（可按会话分组）。
+ * @param options - 额外上下文。
+ * @returns 提示词文本。
+ */
+export function buildTurnPrompt(
+  messages: readonly InboundMessage[],
+  options: {
+    readonly unreadSummary?: string
+    readonly lastInteractionAt?: string
+    /** 时间读数块（由调用方按 §2.15.2 P2 的事件驱动规则决定要不要给）。 */
+    readonly timeBlock?: string
+    readonly now?: Date
+  } = {},
+): string {
+  const now = options.now ?? new Date()
+  const lines: string[] = [
+    '[message from QQ]',
+    `time: ${now.toISOString()} (UTC)`,
+  ]
+  if (options.lastInteractionAt !== undefined) {
+    const idleMs = now.getTime() - Date.parse(options.lastInteractionAt)
+    lines.push(`since last interaction in this conversation: ${formatDuration(idleMs)}`)
+  }
+  lines.push('')
+
+  // 按会话分组，组内保持到达顺序
+  const byConversation = new Map<string, InboundMessage[]>()
+  for (const message of messages) {
+    const key = conversationKey(message.conversation)
+    const list = byConversation.get(key)
+    if (list === undefined) byConversation.set(key, [message])
+    else list.push(message)
+  }
+
+  for (const [key, group] of byConversation) {
+    const first = group[0]
+    if (first === undefined) continue
+    const kindLabel = first.conversation.kind === 'group' ? 'group' : first.conversation.kind === 'temp' ? 'temp' : 'private'
+    lines.push(`### conversation ${key} (${kindLabel}, chat_id=${first.conversation.chatId})`)
+    for (const message of group) {
+      const flags: string[] = []
+      if (message.mentionedMe) flags.push('@me')
+      if (message.mentionedAll) flags.push('@all')
+      if (message.isPoke) flags.push('poke')
+      if (message.mediaKind !== undefined) flags.push(message.mediaKind)
+      // ★ 2026-10-09：`sender.role` 之前**抽出来就丢了** ——
+      //   `onebot.ts:729` 抽它、`transport.ts:94` 承载它，**全仓再无第二个消费者**。
+      //   群里「群主说话」和「路人说话」的分量不一样（群主的通知往往就是要你做事，
+      //   路人的话可能只是闲聊），模型看不到这个区别就只能一视同仁。
+      //
+      //   只在 **群主 / 管理员** 时标出来：`member` 是绝大多数，
+      //   每条都标「（成员）」纯属刷屏，反而把 @我 / 拍一拍这些真信号埋掉。
+      //   实测 `sender.role` 只有群消息有（`onebot.ts:726` 的注释），私聊拿不到 ⇒ 自然为空。
+      const roleLabel =
+        message.senderRole === 'owner' ? 'owner' : message.senderRole === 'admin' ? 'admin' : undefined
+      if (roleLabel !== undefined) flags.push(roleLabel)
+      const suffix = flags.length === 0 ? '' : ` (${flags.join(', ')})`
+      lines.push(`- [${message.at}] ${message.senderName || message.senderId}${suffix}: ${message.text}`)
+    }
+    lines.push('')
+  }
+
+  if (options.unreadSummary !== undefined && options.unreadSummary !== '') {
+    lines.push('### messages you missed while woken (summary)', options.unreadSummary, '')
+  }
+
+  // 时间读数：**放尾部**，绝不进稳定前缀（§2.15.2 P2 第 6 条：读数进前缀 = 每轮破缓存）。
+  // 措辞是权威式的，并写死"不要依据训练数据/历史消息推断现在"这条裁决规则。
+  if (options.timeBlock !== undefined && options.timeBlock !== '') {
+    lines.push(options.timeBlock, '')
+  }
+
+  lines.push('When replying, use qq_reply and name the target conversation (the conversation parameter is required).')
+  return lines.join('\n')
+}
+
+// ★ 2026-10-12（`FIX_PLAN.md` §78.16）：这里原来有一份**自己的** `formatDuration`，
+//   与 `@forlife/memory-core` 的同名函数重复（时长单位会各说各的）。
+//   改成 import —— gateway 本来就依赖 memory-core，单位从此只有一处定义。
+/** 轮次执行器的依赖。 */
+export interface TurnRunnerOptions {
+  readonly db: DatabaseSync
+  readonly driver: TurnDriver
+  /** 唤醒判定作用域解析（群/私聊各自的 scope）。 */
+  readonly scopeOf: (conversation: ConversationRef) => string
+  /** 唤醒条件解析（由调用方按消息特征判断：@我 / @全体 / 拍一拍 / 普通消息 / 回复我）。 */
+  readonly conditionOf: (messages: readonly InboundMessage[], context: ConditionContext) => WakeRequest['condition']
+  /**
+   * 「这条 id 是不是我发的」判定（`reply_to_me` 要用）。
+   *
+   * 默认由 `TurnRunner` 从 `qq_outbox.platform_msg_id` 查（`selfMessageIdDetector`）；
+   * 测试可以注入一个集合替身。**不能省成 undefined 就当没有** ——
+   * 那样 `reply_to_me` 又会变成一条永远不触发的规则（这正是本次要修的问题）。
+   */
+  readonly isSelfMessageId?: (messageId: string) => boolean
+  /** 日志。 */
+  readonly log?: (message: string) => void
+  /** 随机数（测试注入）。 */
+  readonly random?: () => number
+  /** 未读摘要提供者（唤醒提示里带上"你错过了什么"）。 */
+  readonly unreadSummaryOf?: (scope: string) => string | undefined
+  /** 噪音过滤选项（§8.5：不值得回复的消息，也不值得进记忆系统）。 */
+  readonly noise?: NoiseFilterOptions
+  /** 关掉噪音过滤（默认开启；关掉只用于排障）。 */
+  readonly disableNoiseFilter?: boolean
+  /**
+   * 时间感知钩子（阶段 4）。不给则本轮不注入时间读数。
+   *
+   * 刻意做成一组小回调而不是直接依赖 store/clock：
+   * 网关包不该反向依赖组件的存储层，而这一层只关心"要不要给、给什么文本"。
+   */
+  readonly timeHooks?: {
+    readonly lastReadingAt: (conversationKey: string) => Date | undefined
+    readonly lastInteractionAt: (conversationKey: string) => Date | undefined
+    readonly lastActionAt: () => Date | undefined
+    readonly compactedSince: (conversationKey: string, since?: Date) => boolean
+    readonly wokeSince: (conversationKey: string, since?: Date) => boolean
+    readonly clockSettings: (conversationKey: string) => { readonly conversationTimezone: string; readonly hour24: boolean }
+    readonly record: (conversationKey: string, at: Date, reason: string, timezone: string, text: string) => void
+    /** 记一次时间漂移（把"时间幻觉"变成可测指标）。 */
+    readonly recordDrift?: (input: {
+      readonly claim: string
+      readonly actualAt: Date
+      readonly driftMs: number
+      readonly severity: 'info' | 'warn' | 'bad'
+      readonly excerpt: string
+    }) => void
+    readonly intervalMs?: number
+    readonly idleThresholdMs?: number
+  }
+}
+
+/** 一轮的处理结果。 */
+export interface TurnRunResult {
+  readonly turnId?: string
+  readonly woken: boolean
+  readonly reason: string
+  readonly outcome?: TurnOutcome
+}
+
+/**
+ * 轮次执行器：把一批消息走完"唤醒判定 → 建轮次 → 调驱动 → 收尾"。
+ */
+export class TurnRunner {
+  private readonly options: TurnRunnerOptions
+  private readonly log: (message: string) => void
+  /** 最近一批被过滤掉的噪音条数（诊断用）。 */
+  private lastNoiseCount = 0
+  /**
+   * 条件判定上下文（**延迟建、只建一次**）。
+   *
+   * 为什么延迟：`selfMessageIdDetector` 要预编译一条 SQL；而 `isSelfMessageId`
+   * 可能被注入（测试），那种情况下根本不该碰库。
+   */
+  private conditionContextCache: ConditionContext | undefined
+
+  constructor(options: TurnRunnerOptions) {
+    this.options = options
+    this.log = options.log ?? ((): void => {})
+  }
+
+  /** 取条件判定上下文（含"我发过哪些 id"的判定）。 */
+  private conditionContext(): ConditionContext {
+    if (this.conditionContextCache !== undefined) return this.conditionContextCache
+    const injected = this.options.isSelfMessageId
+    const context: ConditionContext =
+      injected !== undefined ? { isSelfMessageId: injected } : { isSelfMessageId: selfMessageIdDetector(this.options.db) }
+    this.conditionContextCache = context
+    return context
+  }
+
+  /**
+   * 处理一批（已防抖合并的）消息。
+   *
+   * @param messages - 本批消息（同一会话，按到达顺序）。
+   * @param signal - 取消信号。
+   * @returns 处理结果。
+   */
+  /**
+   * 把这批入站标记为「已处理」。
+   *
+   * ## 为什么必须做这件事
+   *
+   * `processed` 是**面板口径的唯一来源**（"待处理入站"= `COUNT(*) WHERE processed = 0`）。
+   * 只写入不标记的话，这个数字只增不减 —— 用户实测就看到"待处理入站 7 条"，
+   * 而实际上那些消息早就跑完轮次、回复也发出去了。**一个永远只增的计数器比没有更糟**，
+   * 它会让人以为系统积压了。
+   *
+   * `turnId` 为 `undefined` 表示这批被判为噪音、没有进任何轮次（它们同样"处理过了"）。
+   */
+  private markProcessed(messages: readonly InboundMessage[], turnId: string | undefined): void {
+    if (messages.length === 0) return
+    const ids = messages.map((message) => message.messageId)
+    const placeholders = ids.map(() => '?').join(', ')
+    try {
+      this.options.db
+        .prepare(`UPDATE qq_inbox SET processed = 1, merged_into = ? WHERE id IN (${placeholders})`)
+        .run(turnId ?? null, ...ids)
+    } catch (error) {
+      // 标记失败不该让轮次失败：消息已经处理完了，这里只是面板口径
+      this.log(`标记入站已处理失败：${String(error)}`)
+    }
+  }
+
+  async handleBatch(messages: readonly InboundMessage[], signal: AbortSignal): Promise<TurnRunResult> {    const first = messages[0]
+    if (first === undefined) return { woken: false, reason: 'empty-batch' }
+
+    // ① 噪音过滤（§8.5）：在**队列层**就把纯闲聊挡在 DSH 之外 ——
+    //    "不值得回复的消息，也不值得进记忆系统"。被过滤掉的不进提示词、也不进待读池。
+    const survivors: InboundMessage[] = []
+    const filtered: { message: InboundMessage; verdict: NoiseVerdict }[] = []
+    for (const message of messages) {
+      const verdict =
+        this.options.disableNoiseFilter === true
+          ? ({ noise: false } as NoiseVerdict)
+          : classifyNoise(
+              {
+                text: message.text,
+                isGroup: message.conversation.kind === 'group',
+                mentionedMe: message.mentionedMe,
+                mentionedAll: message.mentionedAll,
+                isPoke: message.isPoke,
+                mediaKind: message.mediaKind ?? null,
+                senderId: message.senderId,
+              },
+              this.options.noise ?? {},
+            )
+      if (verdict.noise) filtered.push({ message, verdict })
+      else survivors.push(message)
+    }
+    this.lastNoiseCount = filtered.length
+    if (survivors.length === 0) {
+      this.log(`整批都是噪音（${filtered.map((f) => f.verdict.rule ?? '?').join(',')}），不进记忆也不占待读池`)
+      // 被判定为噪音也是**处理过了**：不标记的话面板上的"待处理"会只增不减
+      // （用户实测看到"待处理入站 7 条"就是这个原因）。
+      this.markProcessed(messages, undefined)
+      return { woken: false, reason: 'noise' }
+    }
+    const effective = survivors
+
+    const scope = this.options.scopeOf(first.conversation)
+    // ★ 条件解析要带上上下文：`reply_to_me` 必须知道"这条 id 是不是我发的"
+    const condition = this.options.conditionOf(effective, this.conditionContext())
+    const key = conversationKey(first.conversation)
+    const summary = effective.map((m) => `${m.senderName || m.senderId}: ${m.text}`).join(' / ')
+
+    const verdict = decideWake(
+      this.options.db,
+      { scope, condition, conversationKey: key, summary, ...(first.senderName === '' ? {} : { senderName: first.senderName }) },
+      this.options.random === undefined ? {} : { random: this.options.random },
+    )
+    if (verdict.decision === 'skip') {
+      this.log(`未唤醒（${verdict.reason}）：${key} ${String(messages.length)} 条已进待读池`)
+      return { woken: false, reason: verdict.reason }
+    }
+
+    const turnId = `turn_${randomUUID()}`
+    // 这批消息已经被本轮消费了，立刻标记 —— 面板的"待处理入站"必须能归零。
+    // 标记**整批**（含被噪音过滤掉的那些）：它们同样经过了本轮判定，不再"待处理"。
+    // `merged_into` 记下进了哪一轮，这正是防抖合并的证据。
+    this.markProcessed(messages, turnId)
+    const startedAt = nowIso()
+    this.options.db
+      .prepare(
+        `INSERT INTO qq_turns (id, conversation_key, status, started_at, ended_at, session_id, model, input_ids, tokens_in, tokens_out, tool_calls, defer_reason, defer_until, error)
+         VALUES (?, ?, 'running', ?, NULL, NULL, NULL, ?, 0, 0, 0, NULL, NULL, NULL)`,
+      )
+      .run(turnId, key, startedAt, JSON.stringify(effective.map((m) => m.messageId)))
+
+    // 时间读数（§2.15.2 P2 的事件驱动判定）：先决定要不要给，再生成文本。
+    // 判定顺序由 memory-core/clock.ts 保证"强事件优先于间隔"。
+    const timeBlock = this.buildTimeBlockIfNeeded(scope, key)
+
+    const prompt = buildTurnPrompt(effective, {
+      ...(this.options.unreadSummaryOf?.(scope) === undefined ? {} : { unreadSummary: this.options.unreadSummaryOf?.(scope) as string }),
+      ...(latestAt(effective) === undefined ? {} : { lastInteractionAt: latestAt(effective) as string }),
+      ...(timeBlock === undefined ? {} : { timeBlock }),
+    })
+
+    try {
+      const outcome = await this.options.driver.run({ turnId, conversation: first.conversation, messages: effective, prompt, signal })
+      this.finishTurn(turnId, outcome)
+      this.recordTimeDrift(effective, outcome)
+      return { turnId, woken: true, reason: 'matched', outcome }
+    } catch (error) {
+      const message = String(error)
+      this.options.db
+        .prepare("UPDATE qq_turns SET status = 'failed', ended_at = ?, error = ? WHERE id = ?")
+        .run(nowIso(), message, turnId)
+      this.log(`轮次失败：${message}`)
+      return { turnId, woken: true, reason: 'matched', outcome: { error: message } }
+    }
+  }
+
+  /**
+   * 直接跑一轮（**不做唤醒判定**）。
+   *
+   * 用途：后台对话 —— 面板里有人打字就是在直接跟它说话，没有"要不要吵醒它"的问题。
+   * 仍然会落一条轮次记录（可追溯：这次回答对应哪条输入、花了多少 token）。
+   *
+   * @param request - 轮次输入（提示词由调用方组装）。
+   * @returns 轮次结果。
+   */
+  async runDirect(request: {
+    readonly turnId: string
+    readonly conversation: ConversationRef
+    readonly prompt: string
+    readonly conversationKey: string
+    readonly messages: readonly string[]
+  }): Promise<TurnOutcome> {
+    const startedAt = nowIso()
+    this.options.db
+      .prepare(
+        `INSERT INTO qq_turns (id, conversation_key, status, started_at, ended_at, session_id, model, input_ids, tokens_in, tokens_out, tool_calls, defer_reason, defer_until, error)
+         VALUES (?, ?, 'running', ?, NULL, NULL, NULL, ?, 0, 0, 0, NULL, NULL, NULL)`,
+      )
+      .run(request.turnId, request.conversationKey, startedAt, JSON.stringify([]))
+
+    try {
+      const outcome = await this.options.driver.run({
+        turnId: request.turnId,
+        conversation: request.conversation,
+        messages: [],
+        prompt: request.prompt,
+        signal: new AbortController().signal,
+      })
+      this.finishTurn(request.turnId, outcome)
+      return outcome
+    } catch (error) {
+      const message = String(error)
+      this.options.db.prepare("UPDATE qq_turns SET status = 'failed', ended_at = ?, error = ? WHERE id = ?").run(nowIso(), message, request.turnId)
+      return { error: message }
+    }
+  }
+
+  /**
+   * 按事件驱动规则决定并生成时间读数块（§2.15.2 P2）。
+   *
+   * 落库是必须的：验收要断言"压缩后/唤醒后/长空闲后存在一条新鲜读数（年龄 < 30s）"，
+   * 不落库就只能靠日志肉眼看。
+   *
+   * @param scope - 会话作用域。
+   * @param conversationKey - 会话键。
+   * @returns 时间块文本，或 undefined（这一步不需要注入）。
+   */
+  private buildTimeBlockIfNeeded(scope: string, conversationKey: string): string | undefined {
+    const hooks = this.options.timeHooks
+    if (hooks === undefined) return undefined
+    const now = new Date()
+    const lastReading = hooks.lastReadingAt(conversationKey)
+    const decision = decideInjection({
+      now,
+      ...(lastReading === undefined ? {} : { lastReadingAt: lastReading }),
+      ...(hooks.lastInteractionAt(conversationKey) === undefined ? {} : { lastInteractionAt: hooks.lastInteractionAt(conversationKey) as Date }),
+      isTurnFirstStep: true, // QQ 轮次天然是"这一轮的第一步"
+      ...(hooks.compactedSince(conversationKey, lastReading) ? { compactedSinceLastReading: true } : {}),
+      ...(hooks.wokeSince(conversationKey, lastReading) ? { wokeSinceLastReading: true } : {}),
+      ...(hooks.intervalMs === undefined ? {} : { intervalMs: hooks.intervalMs }),
+      ...(hooks.idleThresholdMs === undefined ? {} : { idleThresholdMs: hooks.idleThresholdMs }),
+    })
+    if (!decision.inject || decision.reason === undefined) {
+      this.log(`本轮不注入时间读数：${decision.skipReason ?? ''}`)
+      return undefined
+    }
+    const settings = hooks.clockSettings(conversationKey)
+    const block = renderTimeBlock({
+      now,
+      timezone: settings.conversationTimezone,
+      hour24: settings.hour24,
+      reason: decision.reason,
+      ...(lastReading === undefined ? {} : { lastReadingAt: lastReading }),
+      ...(hooks.lastInteractionAt(conversationKey) === undefined ? {} : { lastInteractionAt: hooks.lastInteractionAt(conversationKey) as Date }),
+      ...(hooks.lastActionAt() === undefined ? {} : { lastActionAt: hooks.lastActionAt() as Date }),
+    })
+    hooks.record(conversationKey, now, decision.reason, settings.conversationTimezone, block)
+    this.log(`已注入时间读数（原因：${decision.reason}）`)
+    void scope
+    return block
+  }
+
+  /**
+   * 从模型的输出里抽时间表述并与真实读数比对（P4 第 11 条）。
+   *
+   * 只在**本轮真的注入过读数**时做：没有读数就没有可比对的锚点，
+   * 那时模型说错时间不算它的错。
+   *
+   * @param messages - 本轮入站消息（提供真实时刻）。
+   * @param outcome - 轮次结果（含模型输出）。
+   */
+  private recordTimeDrift(messages: readonly InboundMessage[], outcome: TurnOutcome): void {
+    const hook = this.options.timeHooks?.recordDrift
+    if (hook === undefined) return
+    const text = (outcome.segments ?? []).join('\n')
+    if (text.trim() === '') return
+    const latest = messages[messages.length - 1]
+    const actualAt = latest === undefined ? new Date() : new Date(latest.at)
+    const claims = extractTimeClaims(text, actualAt)
+    for (const finding of findDrift(claims, actualAt)) {
+      // 只记 warn 以上：info 级（1 小时内）是正常口语精度，记了会淹没真正的问题
+      if (finding.severity === 'info') continue
+      hook({
+        claim: finding.claim.text,
+        actualAt,
+        driftMs: finding.driftMs,
+        severity: finding.severity,
+        excerpt: text.slice(Math.max(0, text.indexOf(finding.claim.text) - 40), text.indexOf(finding.claim.text) + finding.claim.text.length + 40),
+      })
+    }
+  }
+
+  /** 收尾：写状态与计量。 */
+  private finishTurn(turnId: string, outcome: TurnOutcome): void {
+    if (outcome.deferred !== undefined) {
+      // §8.3：挂起时**不提交、不追加中期记忆**，等任务完成后恢复
+      const until = outcome.deferred.expectedMs === undefined ? null : new Date(Date.now() + outcome.deferred.expectedMs).toISOString()
+      this.options.db
+        .prepare("UPDATE qq_turns SET status = 'deferred', defer_reason = ?, defer_until = ? WHERE id = ?")
+        .run(outcome.deferred.reason, until, turnId)
+      return
+    }
+    this.options.db
+      .prepare(
+        "UPDATE qq_turns SET status = 'done', ended_at = ?, tokens_in = ?, tokens_out = ?, tool_calls = ? WHERE id = ?",
+      )
+      .run(nowIso(), outcome.tokensIn ?? 0, outcome.tokensOut ?? 0, outcome.toolCalls ?? 0, turnId)
+  }
+}
+
+/** 批内最新一条的时间。 */
+function latestAt(messages: readonly InboundMessage[]): string | undefined {
+  let latest: string | undefined
+  for (const message of messages) {
+    if (latest === undefined || message.at > latest) latest = message.at
+  }
+  return latest
+}
+
+/**
+ * 按消息特征判定唤醒条件（**条件互不派生**，这里只做"输入是什么"的映射）。
+ *
+ * ## `reply_to_me` 的判据（★ 2026-10-09 补：这条以前**没有生产者**）
+ *
+ * 判据是：**这批消息里有哪一条，它的 `replyToMessageId` 指向我们自己发出去的消息**。
+ *
+ * 三个必须说清的点：
+ *  1. **"是不是我发的"要靠 `qq_outbox.platform_msg_id` 反查**。
+ *     NapCat 的 `reply` 段只给被引用消息的 `id`（`onebot.ts` 把 id 带出来，见 §P0-4），
+ *     **它不告诉我们那条是谁发的** —— 所以只能拿我们自己发出去的消息 id 去比。
+ *     一行的入站事件里没有任何字段能做这件事。
+ *  2. **只在群里会走到这一支**：私聊/临时会话的 `mentionedMe` 恒为 true
+ *     （`onebot.ts` 的"对方就是在找我说话"），所以那两个类型在前面就返回了。
+ *     这也正是想要的：私聊本身已经是最高优先的唤醒条件，不需要再分"是不是回复"。
+ *  3. **优先级排在 `@我` 之后、`@全体` 之前**：`@我` 是直接点名，
+ *     而"回复我"同样是**针对我**的（`scheduler.ts` 给它的优先级 60 也高于 `@全体` 的 40）；
+ *     `@全体` 只是"顺带包含我"，所以排在后面。
+ *
+ * 没有 `isSelfMessageId` 时（例如单测直接调、或只想知道"@没@我"）本函数**不产出**
+ * `reply_to_me` —— 与补这一条之前的行为一致，不会凭空多出一个条件。
+ *
+ * @param messages - 本批消息。
+ * @param context - 判定上下文（`isSelfMessageId` 由 `TurnRunner` 从库里查）。
+ * @returns 唤醒条件。
+ */
+export function defaultConditionOf(
+  messages: readonly InboundMessage[],
+  context: ConditionContext = {},
+): WakeRequest['condition'] {
+  const first = messages[0]
+  if (first === undefined) return 'group_message_any'
+  // 只要有一条 @我，就按 @我（最明确的信号优先）
+  if (messages.some((m) => m.isPoke)) return first.conversation.kind === 'group' ? 'group_poke' : 'private_message'
+  if (messages.some((m) => m.mentionedMe)) {
+    if (first.conversation.kind === 'group') return 'group_mention'
+    return first.conversation.kind === 'temp' ? 'temp_message' : 'private_message'
+  }
+  // ★ P0-4 的下半段：上游把 `reply.data.id` 带出来了，这里判"是不是在回我"
+  if (messages.some((m) => m.replyToMessageId !== undefined && context.isSelfMessageId?.(m.replyToMessageId) === true)) {
+    return 'reply_to_me'
+  }
+  if (messages.some((m) => m.mentionedAll)) return 'group_mention_all'
+  if (messages.some((m) => m.mediaKind === 'file')) return 'file_received'
+  if (messages.some((m) => m.mediaKind !== undefined)) return 'media_received'
+  if (first.conversation.kind === 'group') return 'group_message_any'
+  return first.conversation.kind === 'temp' ? 'temp_message' : 'private_message'
+}
+
+/** `defaultConditionOf` 的判定上下文。 */
+export interface ConditionContext {
+  /**
+   * 这条消息 id 是不是**我们自己发出去**的（`reply_to_me` 的唯一依据）。
+   *
+   * 为什么做成回调而不是直接传 `db`：这一层是纯映射（可单测、无 IO），
+   * 而"我发过哪些 id"是一次库查询 —— 由调用方注入，测试就能用集合替身。
+   */
+  readonly isSelfMessageId?: (messageId: string) => boolean
+}
+
+/**
+ * 从出站队列反查"这条消息是不是我发的"。
+ *
+ * **为什么是 `qq_outbox` 而不是 `qq_inbox`**：入站表的 `is_self` 只在
+ * NapCat 上报 `message_sent` 时才为 1，而生产配置里 `reportSelfMessage: false`
+ * （NapCat 根本不发那个事件）⇒ 靠它判"我发的"永远是 false。
+ * `qq_outbox.platform_msg_id` 相反：那是**我们每一次真实发送**拿回来的 id
+ * （`confirmOutbound` 写入），是唯一稳定可靠的一份"我发过什么"的记录。
+ *
+ * 已知边界（如实写明）：**主人在别的设备上发的消息不在这个表里** ——
+ * 那种消息被引用时判不出"回我"。要覆盖它必须先打开 `reportSelfMessage`
+ * 并把 `message_sent` 的 id 也记进来（见报告的接口清单）。
+ *
+ * @param db - 数据库。
+ * @returns 判定函数（预编译语句只建一次）。
+ */
+export function selfMessageIdDetector(db: DatabaseSync): (messageId: string) => boolean {
+  // 预编译一次：这条路径在每个批次里都会问（`defaultConditionOf` 里每条带引用的消息一次）
+  const statement = db.prepare('SELECT 1 AS hit FROM qq_outbox WHERE platform_msg_id = ? LIMIT 1')
+  return (messageId: string): boolean => {
+    if (messageId === '') return false
+    try {
+      return statement.get(messageId) !== undefined
+    } catch {
+      // 查不动库（库坏了/表被删）时按"不是我发的"处理：
+      // 判定失败不能让整个轮次崩掉，代价只是退回普通消息条件（不会误唤醒）
+      return false
+    }
+  }
+}
+
+/** 默认的作用域解析。 */
+export function defaultScopeOf(conversation: ConversationRef): string {
+  if (conversation.kind === 'group') return `group:${conversation.chatId}`
+  return `private:${conversation.chatId}`
+}
+
+
+
+
+

@@ -1,0 +1,16 @@
+{
+  "name": "@forlife/gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@forlife/contracts": "workspace:*",
+    "@forlife/store": "workspace:*",
+    "ws": "^8.22.0",
+    "@forlife/memory-core": "workspace:*",
+    "@forlife/router": "workspace:*"
+  }
+}
